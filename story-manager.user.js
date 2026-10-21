@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.3.0
+// @version      2.3.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -758,6 +758,7 @@
   // so they don't each add a chat to the user's MiniApps history.
   let helperChat = null;  // { slug, id, uses }
   const lastActivity = {}; // chat id -> when the live connection last showed activity in it
+  let helperWait = null;   // what the last wait for the bot saw, for Diagnostics
 
   async function callMiniApps(prompt) {
     const slug = (settings.miniappsSlug || 'claude-37').trim();
@@ -822,7 +823,14 @@
         // The request itself is not readable; use answers pushed over the live connection since sending.
         reply = (seenMsgs[cid] ? [...seenMsgs[cid].values()] : []).filter((m) => m.role === 'assistant' && !known.has(m.id)).map((m) => m.text).join('\n');
       }
-      if (reply && reply === prev) return reply;
+      helperWait = {
+        started,
+        roles: msgs.map((m) => (m.role === 'user' ? 'u' : 'a')).join(''),
+        requestFound: at >= 0,
+        answerChars: (reply || '').length,
+        lastActivity: lastActivity[cid] || 0,
+      };
+      if (reply && reply === prev) { helperWait.done = true; return reply; }
       prev = reply || null;
       const idle = Date.now() - Math.max(started, lastActivity[cid] || 0);
       if (!reply && idle > 3 * 60000) break;
@@ -1968,7 +1976,12 @@
       'Current chat: ' + (currentId ? currentId.slice(0, 8) : 'none') +
         (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · read into memory: ' + chat.processedCount : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
-      'Memory keeper: ' + settings.provider,
+      'Memory keeper: ' + settings.provider + (settings.provider === 'miniapps' ? ' (' + settings.miniappsSlug + ')' : ''),
+      'Helper chat: ' + (helperChat ? helperChat.id.slice(0, 8) + ', ' + helperChat.uses + ' requests' : 'none yet') +
+        (helperWait ? ' · last wait: ' + Math.round((Date.now() - helperWait.started) / 1000) + 's ago started, messages ' + (helperWait.roles || '-') +
+          ', request ' + (helperWait.requestFound ? 'found' : 'not found') + ', answer ' + helperWait.answerChars + ' chars' +
+          (helperWait.done ? ', done' : '') +
+          ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
       'Messages sent on this page: ' + sentStats.sent + ' · with memory attached: ' + sentStats.withMemory +
         (currentId && lastSentInfo[currentId] ? ' · last carried: ' + lastSentInfo[currentId] : ''),
       'Hook: ' + (hookStats ? JSON.stringify(hookStats) : 'not running'),

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.4.0
+// @version      2.4.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1106,7 +1106,8 @@
   // log entries matched to the replies they describe:
   //   === STORY === … === ENTRY: Name | kind | aliases: … === … === LOG === [R1] …
   function parseKeeperAnswer(out, replies) {
-    const HEADER = /^[^\S\n]*=+[^\S\n]*(STORY|(?:STORY[^\S\n]+)?MEMORY|LOG|CAST|ENTRY[^\S\n]*:[^\n=]*?)[^\S\n]*=+[^\S\n]*$/gim;
+    // Headers may come wrapped in markdown (**=== LOG ===**, ### === LOG ===).
+    const HEADER = /^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*(STORY|(?:STORY[^\S\n]+)?MEMORY|LOG|CAST|ENTRY[^\S\n]*:[^\n=]*?)[^\S\n]*=+[^\S\n]*[*_]*[^\S\n]*$/gim;
     const marks = [];
     let m;
     while ((m = HEADER.exec(out))) marks.push({ at: m.index, end: m.index + m[0].length, head: m[1].trim() });
@@ -1124,20 +1125,26 @@
         cast = body.split(/[,\n;]/).map((n) => n.replace(/^[\s*•-]+|[\s.]+$/g, '').replace(/\s*\(.*\)$/, '').trim())
           .filter((n) => n && n.length < 60 && !/^(you|user|the user|narrator|\{\{user\}\}|none)$/i.test(n));
       } else if (/^LOG$/i.test(mk.head)) {
-        const re = /\[R(\d+)[^\]\n]*\]\s*([\s\S]*?)(?=\n\s*\[R\d+[^\]\n]*\]|$)/g;
+        // Each entry starts a line with its label: [R1], R1, **R1**, R1:, - [R1, …] …
+        const LABEL = /^[^\S\n]*(?:[-*•][^\S\n]+)?[*_]{0,2}(?:\[R(\d+)[^\]\n]*\]|R(\d+)(?![\w]))[*_]{0,2}[^\S\n]*[:.)\-–—]?[*_]{0,2}[^\S\n]*/gim;
+        const labels = [];
         let r;
-        while ((r = re.exec(body))) {
-          const reply = replies[Number(r[1]) - 1];
-          const text = r[2].replace(/\s+/g, ' ').trim();
+        while ((r = LABEL.exec(body))) labels.push({ n: Number(r[1] || r[2]), at: r.index, end: r.index + r[0].length });
+        labels.forEach((l, k) => {
+          const reply = replies[l.n - 1];
+          const text = body.slice(l.end, k + 1 < labels.length ? labels[k + 1].at : body.length).replace(/\s+/g, ' ').trim();
           if (reply && text) entries.push({ id: reply.id, text });
-        }
+        });
       } else {
         const fields = mk.head.replace(/^ENTRY\s*:\s*/i, '').split('|').map((x) => x.trim());
         const name = fields[0];
         let kind = '';
         let aliases = [];
         for (const f of fields.slice(1)) {
-          if (/^aliases?\s*:/i.test(f)) aliases = f.replace(/^aliases?\s*:/i, '').split(',').map((a) => a.trim()).filter((a) => a && a.toLowerCase() !== name.toLowerCase());
+          if (/^aliases?\s*:/i.test(f)) {
+            aliases = f.replace(/^aliases?\s*:/i, '').split(',').map((a) => a.trim())
+              .filter((a) => a && a.toLowerCase() !== name.toLowerCase() && !/^(none|n\/?a|null|nil|-+|—|no aliases?|unknown)$/i.test(a));
+          }
           else if (f) kind = f.toLowerCase();
         }
         if (name && body) updates.push({ name, kind, aliases, text: body });
@@ -1763,6 +1770,9 @@
   function buildUI() {
     if (root) return;
     const host = el('div', { id: 'story-manager-root' });
+    // A zero-size fixed box: the button and panel never change the page's own
+    // layout or scrolling (which could push the site's top bar off screen).
+    host.style.cssText = 'position:fixed!important;top:0;left:0;width:0;height:0;overflow:visible;z-index:2147483647;';
     document.documentElement.appendChild(host);
     // Keep the button on screen even if the site rebuilds its page.
     setInterval(() => { if (!host.isConnected) document.documentElement.appendChild(host); }, 2000);

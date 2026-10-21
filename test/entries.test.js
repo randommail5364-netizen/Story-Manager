@@ -109,4 +109,16 @@ test('entries the user deleted are not created again', () => {
   assert.deepStrictEqual(entries.map((e) => e.name), ['Mira', 'Ash', 'Winter']);
 });
 
+test('log labels without brackets or in markdown are understood', () => {
+  const four = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+  const p = lib.parseKeeperAnswer('**=== LOG ===**\nR1 At a private rooftop pool, Ningning posed.\n**R2:** Second.\n- [R3, entry about 300 characters] Third.\nR4. Fourth, mentioning R2D2 inside.', four);
+  assert.deepStrictEqual(p.entries.map((e) => [e.id, e.text]),
+    [['a', 'At a private rooftop pool, Ningning posed.'], ['b', 'Second.'], ['c', 'Third.'], ['d', 'Fourth, mentioning R2D2 inside.']]);
+});
+
+test('"aliases: none" adds no alias', () => {
+  const p = lib.parseKeeperAnswer('=== ENTRY: Romantic Date Setting | place | aliases: none ===\n- Private.', replies);
+  assert.deepStrictEqual(p.updates[0].aliases, []);
+});
+
 console.log('All ' + passed + ' entry checks passed.');

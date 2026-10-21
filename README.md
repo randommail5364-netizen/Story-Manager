@@ -35,7 +35,7 @@ This is a *userscript*: a small add-on that a userscript manager runs on one web
 
 ### Pasting the script in three parts
 
-Phones cut off long pastes at about 20,000 characters, and the whole script is about 51,000. The [`install-parts`](install-parts) folder has the same script split into three pieces of about 15,000 characters each.
+Phones cut off long pastes at about 20,000 characters, and the whole script is about 51,000. The [`install-parts`](install-parts) folder has the same script split into three pieces of about 17,000 characters each.
 
 1. In the Tampermonkey dashboard, delete any old or broken copy of the script, then tap **+** to make a new one.
 2. Use the editor's menu: **Edit → Select all**, then delete. The editor must be completely empty.

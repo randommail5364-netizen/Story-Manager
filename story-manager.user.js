@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.3.0
+// @version      1.4.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -693,7 +693,7 @@
     for (let i = 0; i < 80; i++) {
       await sleep(3000);
       let msgs = [];
-      try { msgs = await fetchMessages(cid, { cache: false }); } catch (e) { /* the live connection may still deliver it */ }
+      try { msgs = await fetchMessages(cid, { cache: false, mode: 'latest' }); } catch (e) { /* the live connection may still deliver it */ }
       if (seenMsgs[cid]) msgs = mergeMsgs(msgs, [...seenMsgs[cid].values()]);
       const lastUser = msgs.map((m) => m.role).lastIndexOf('user');
       const reply = msgs.slice(lastUser + 1).filter((m) => m.role === 'assistant').map((m) => m.text).join('\n');
@@ -731,6 +731,9 @@
       return who + ': ' + t;
     }).join('\n\n');
   }
+
+  // How much chat text goes to the memory keeper in one request.
+  const CHUNK_CHARS = 20000;
 
   function chunk(msgs, maxChars) {
     const out = [];
@@ -772,7 +775,7 @@
     setStatus();
     const before = chat.memory;
     try {
-      for (const part of chunk(todo, 14000)) {
+      for (const part of chunk(todo, CHUNK_CHARS)) {
         chat.memory = await mergeIntoMemory(chat, part);
         chat.processedIds = chat.processedIds.concat(part.map((m) => m.id)).slice(-300);
         chat.processedCount = msgs.indexOf(part[part.length - 1]) + 1;
@@ -887,24 +890,66 @@
   }
 
   // Ask the learned endpoint for every page of a chat's messages.
-  async function fetchLearned(id) {
-    const u = new URL(learned.template.split('{id}').join(id));
+  // Query parameters that point at a position in the chat (a "cursor").
+  // A saved cursor is only valid once, so they are never kept in the address.
+  const CURSOR_PARAM = /before|after|cursor/i;
+
+  function cleanTemplate(t) {
+    const i = t.indexOf('?');
+    if (i < 0) return t;
+    const q = new URLSearchParams(t.slice(i + 1));
+    for (const k of [...q.keys()]) if (CURSOR_PARAM.test(k)) q.delete(k);
+    const qs = q.toString().replace(/%7Bid%7D/gi, '{id}');
+    return t.slice(0, i) + (qs ? '?' + qs : '');
+  }
+
+  // Read a chat through the learned address, newest page first.
+  //   mode 'latest': only the newest page
+  //   mode 'full':   every page, back to the start of the chat
+  //   stopAt:        stop paging once a page holds one of these message ids
+  async function fetchLearned(id, { mode = 'latest', stopAt = null } = {}) {
+    const u = new URL(cleanTemplate(learned.template).split('{id}').join(id));
     let opts = null;
     try { opts = JSON.parse(u.searchParams.get('options') || 'null'); } catch (e) { /* ignore */ }
     const paged = opts && typeof opts === 'object' && 'page' in opts;
     const plainPaged = !paged && u.searchParams.has('page');
+    // Ask for bigger pages; fall back to the site's own size if refused.
+    const siteLimit = u.searchParams.get('limit');
+    if (siteLimit && Number(siteLimit) < 50) u.searchParams.set('limit', '50');
     let all = [];
-    for (let page = 1; page <= 100; page++) {
+    for (let page = 1; page <= 200; page++) {
       if (paged) { opts.page = page; u.searchParams.set('options', JSON.stringify(opts)); }
       else if (plainPaged) u.searchParams.set('page', String(page));
-      const data = await rpc('GET', u.href);
+      let data;
+      try {
+        data = await rpc('GET', u.href);
+      } catch (e) {
+        if (page === 1 && siteLimit && u.searchParams.get('limit') !== siteLimit) {
+          u.searchParams.set('limit', siteLimit);
+          page--;
+          continue;
+        }
+        throw e;
+      }
       const msgs = extractMessages(data);
       logApi('GET', u.href, 200, data, 'Story Manager, page ' + page);
       const before = all.length;
       all = mergeMsgs(all, msgs);
-      if (!paged && !plainPaged) break;
-      const per = Number((paged ? opts.itemsPerPage : u.searchParams.get('itemsPerPage')) || 0);
-      if (!msgs.length || all.length === before || (per && findMessageArray(data).length < per)) break;
+      if (mode === 'latest' || !msgs.length || all.length === before) break;
+      if (stopAt && msgs.some((m) => stopAt.has(m.id))) break;
+      if (paged || plainPaged) {
+        const per = Number((paged ? opts.itemsPerPage : u.searchParams.get('itemsPerPage')) || 0);
+        if (per && findMessageArray(data).length < per) break;
+        continue;
+      }
+      // Cursor paging: follow the "next…" value the server hands back, e.g.
+      // { hasMore, nextBeforeMessageId } -> ?beforeMessageId=…
+      const nextKey = data && typeof data === 'object' && !Array.isArray(data)
+        ? Object.keys(data).find((k) => /^next./i.test(k) && data[k] && typeof data[k] !== 'object')
+        : null;
+      if (!nextKey || data.hasMore === false) break;
+      const name = nextKey.replace(/^next/i, '');
+      u.searchParams.set(name.charAt(0).toLowerCase() + name.slice(1), String(data[nextKey]));
     }
     return all;
   }
@@ -930,7 +975,7 @@
 
   // Try the requests the page made about this chat until one returns messages,
   // then remember that address for next time.
-  async function discoverMessages(id) {
+  async function discoverMessages(id, readOpts) {
     const idRe = new RegExp(id, 'i');
     const seen = new Set();
     const cands = [];
@@ -951,36 +996,50 @@
       const msgs = extractMessages(data);
       logApi('GET', url, 200, data, 'probe');
       if (msgs.length) {
-        learned = { template: decodeUrl(url).replace(new RegExp(id, 'gi'), '{id}') };
+        learned = { template: cleanTemplate(decodeUrl(url).replace(new RegExp(id, 'gi'), '{id}')) };
         await Store.set('learned', learned);
-        try { return mergeMsgs(msgs, await fetchLearned(id)); } catch (e) { return msgs; }
+        try { return mergeMsgs(msgs, await fetchLearned(id, readOpts)); } catch (e) { return msgs; }
       }
     }
     return [];
   }
 
-  async function fetchMessages(id, { cache = true } = {}) {
+  // mode 'latest': newest messages only (cheap, for checking on replies)
+  // mode 'since':  everything after what is already in the memory
+  // mode 'full':   the whole chat
+  async function fetchMessages(id, { cache = true, mode = 'since' } = {}) {
+    const chat = cache ? await getChat(id, true) : null;
+    let readOpts = { mode: mode === 'latest' ? 'latest' : 'full', stopAt: null };
+    if (mode === 'since' && chat && chat.processedIds.length) readOpts.stopAt = new Set(chat.processedIds);
     let msgs = [];
     let firstErr = null;
-    try {
-      const data = await rpc('GET', '/conversations/' + id);
-      logApi('GET', 'https://api.miniapps.ai/conversations/' + id, 200, data, 'Story Manager');
-      msgs = extractMessages(data);
-      if (cache) {
-        const chat = await getChat(id, true);
+    // The documented address; on the current site it only has the chat's
+    // settings (and title), so skip it once a better address is known.
+    if (!learned || (chat && !chat.title)) {
+      try {
+        const data = await rpc('GET', '/conversations/' + id);
+        logApi('GET', 'https://api.miniapps.ai/conversations/' + id, 200, data, 'Story Manager');
+        msgs = extractMessages(data);
         const t = titleOf(data);
-        if (t && !chat.title) { chat.title = t; await saveChat(chat); }
-      }
-    } catch (e) { firstErr = e; logApi('GET', '/conversations/' + id, 'error', null, String(e.message || e)); }
+        if (chat && t && !chat.title) { chat.title = t; await saveChat(chat); }
+      } catch (e) { firstErr = e; logApi('GET', 'https://api.miniapps.ai/conversations/' + id, 'error', null, String(e.message || e)); }
+    }
     if (learned && learned.template) {
-      try { msgs = mergeMsgs(msgs, await fetchLearned(id)); } catch (e) { firstErr = firstErr || e; logApi('GET', learned.template, 'error', null, String(e.message || e)); }
+      try {
+        msgs = mergeMsgs(msgs, await fetchLearned(id, readOpts));
+      } catch (e) {
+        firstErr = firstErr || e;
+        logApi('GET', cleanTemplate(learned.template).split('{id}').join(id), 'error', null, String(e.message || e));
+      }
     }
     if (!msgs.length && cache && !(seenMsgs[id] && seenMsgs[id].size)) {
-      try { msgs = await discoverMessages(id); } catch (e) { logApi('GET', 'discovery', 'error', null, String(e.message || e)); }
+      try { msgs = await discoverMessages(id, readOpts); } catch (e) { logApi('GET', 'discovery', 'error', null, String(e.message || e)); }
     }
     if (!msgs.length && firstErr && !cache) throw firstErr;
     return cache ? remember(id, msgs) : msgs;
   }
+
+  const FIRST_RUN_MESSAGES = 40;
 
   // Called whenever we see (part of) a chat's history.
   async function syncChat(id, msgs, { final }) {
@@ -993,9 +1052,21 @@
     const fresh = unprocessed(chat, usable).filter((m) => m.role === 'assistant').length;
     await saveChat(chat);
     if (id === currentId) renderPanel();
-    if (chat.enabled && fresh >= Math.max(1, Number(settings.updateEvery) || 1)) {
-      await updateMemory(id, usable);
+    if (!chat.enabled || busy[id] || fresh < Math.max(1, Number(settings.updateEvery) || 1)) return;
+    // The site only loads the newest messages; fetch anything in between.
+    if (learned && chat.processedIds.length) {
+      try {
+        const all = await fetchMessages(id, { mode: 'since' });
+        usable = final || !all.length || all[all.length - 1].role !== 'assistant' ? all : all.slice(0, -1);
+      } catch (e) { /* use what we have */ }
     }
+    // A chat seen for the first time starts from its recent messages; the
+    // whole history is read only when asked (Rebuild), as it can be long.
+    if (!chat.processedIds.length && !chat.memory.trim() && usable.length > FIRST_RUN_MESSAGES) {
+      usable = usable.slice(-FIRST_RUN_MESSAGES);
+      toast('Story memory started from the latest messages. Tap 📖 → Rebuild to read the whole chat.');
+    }
+    await updateMemory(id, usable);
   }
 
   // After a message is sent, wait for the AI to finish its reply, then sync.
@@ -1008,7 +1079,7 @@
     for (let i = 0; i < 75 && polls[id] === token; i++) {
       await sleep(4000);
       let msgs;
-      try { msgs = await fetchMessages(id); } catch (e) { continue; }
+      try { msgs = await fetchMessages(id, { mode: 'latest' }); } catch (e) { continue; }
       // Nothing readable this way (the socket listener covers that case).
       if (!msgs.length && ++empty >= 3) break;
       const last = msgs[msgs.length - 1];
@@ -1073,7 +1144,7 @@
     if (!conv || helperIds.has(conv.id)) return;
     if (conv.inUrl && d.method === 'GET') {
       const decoded = (() => { try { return decodeURIComponent(d.url); } catch (e) { return d.url; } })();
-      const template = decoded.split(conv.id).join('{id}');
+      const template = cleanTemplate(decoded.split(conv.id).join('{id}'));
       if (!learned || learned.template !== template) {
         learned = { template };
         await Store.set('learned', learned);
@@ -1102,7 +1173,11 @@
     await syncChat(conv.id, remember(conv.id, msgs), { final });
   });
 
+  const sentStats = { sent: 0, withMemory: 0 };
+
   on('sent', async (d) => {
+    sentStats.sent++;
+    if (d.injected) sentStats.withMemory++;
     await ready;
     lastSent = d;
     if (!d.conversationId) return;
@@ -1304,23 +1379,30 @@
       if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
       try {
         await save();
+        toast(rebuild ? 'Reading the whole chat…' : 'Checking for new messages…');
+        const msgs = await fetchMessages(chat.id, { mode: rebuild ? 'full' : 'since' });
+        chat.knownMessages = Math.max(chat.knownMessages || 0, msgs.length);
+        if (!msgs.length) {
+          toast('Could not find any messages in this chat yet. Scroll through the chat, then try again — or open Diagnostics and send it to Claude.', true);
+          return;
+        }
         if (rebuild) {
-          if (!confirm('Re-read the whole chat and rebuild the memory from scratch? (Pinned facts are kept.)')) return;
+          const parts = chunk(msgs, CHUNK_CHARS).length;
+          const cost = settings.provider === 'miniapps'
+            ? ' Each one uses MiniApps credits and adds a small chat to your MiniApps history.'
+            : '';
+          if (!confirm('Rebuild the memory from all ' + msgs.length + ' messages? This takes ' + parts +
+            ' memory-keeper request' + (parts === 1 ? '' : 's') + '.' + cost + ' (Pinned facts are kept.)')) return;
           chat.history = [chat.memory].concat(chat.history).slice(0, 5);
           chat.memory = '';
           chat.processedIds = [];
           chat.processedCount = 0;
           await saveChat(chat);
-        }
-        toast(rebuild ? 'Reading the whole chat…' : 'Updating memory…');
-        renderPanel(true);
-        const msgs = await fetchMessages(chat.id);
-        chat.knownMessages = msgs.length;
-        if (!msgs.length) {
-          toast('Could not find any messages in this chat yet. Scroll through the chat, then try again — or open Diagnostics and send it to Claude.', true);
+          renderPanel(true);
+        } else if (!unprocessed(chat, msgs).length) {
+          toast('Memory is already up to date (' + msgs.length + ' messages checked)');
           return;
         }
-        if (!unprocessed(chat, msgs).length) { toast('Memory is already up to date (' + msgs.length + ' messages read)'); return; }
         await updateMemory(chat.id, msgs, { force: true });
         if (!chat.lastError) toast('Memory updated');
       } catch (e) {
@@ -1373,6 +1455,7 @@
         (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · read into memory: ' + chat.processedCount : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider,
+      'Messages sent on this page: ' + sentStats.sent + ' · with memory attached: ' + sentStats.withMemory,
       'Hook: ' + (hookStats ? JSON.stringify(hookStats) : 'not running'),
       '',
       'Site requests to MiniApps (newest first, no message text):',

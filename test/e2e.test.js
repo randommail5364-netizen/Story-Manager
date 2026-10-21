@@ -44,10 +44,12 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
     if (!conv) return;
     if (localStorage.getItem('wsApi')) { await window.wsLoad(); return; }
     if (localStorage.getItem('altApi')) {
-      // Like a site that loads messages from a separate, paged endpoint.
-      const opts = encodeURIComponent(JSON.stringify({ page: 1, itemsPerPage: 4 }));
-      const r = await xhr('GET', 'https://api.miniapps.ai/chat-messages/' + conv + '?options=' + opts);
-      document.getElementById('log').textContent = r.items.map(m => m.origin + ': ' + m.elements[0].text).join('\\n');
+      // Like the real site: messages come from a separate endpoint, newest
+      // page first, older pages via a cursor when the user scrolls up.
+      const base = 'https://api.miniapps.ai/conversations/' + conv + '/messages?limit=4';
+      const r = await xhr('GET', base);
+      const older = r.hasMore ? await xhr('GET', base + '&beforeMessageId=' + r.nextBeforeMessageId) : { items: [] };
+      document.getElementById('log').textContent = older.items.concat(r.items).map(m => m.origin + ': ' + m.elements[0].text).join('\\n');
       return;
     }
     const d = await xhr('GET', 'https://api.miniapps.ai/conversations/' + conv);
@@ -100,18 +102,25 @@ async function main() {
     if (url.pathname === '/auth/csrf') return json({ csrfToken: 'csrf-123' });
     if (url.pathname.startsWith('/tools/s/')) return json({ id: 'tool-helper', revision: 1, modelId: 'm-helper' });
     let m;
-    if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/(.+)$/))) {
+    if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/([^/]+)$/))) {
       const c = convs[m[1]];
       if (!c) return json({ message: 'nope' }, 404);
       const title = c.toolId === 'tool-story' ? 'Dragon Tale' : 'helper';
       return json(altApi ? { id: m[1], title } : { id: m[1], title, messages: c.messages });
     }
-    if (req.method() === 'GET' && (m = url.pathname.match(/^\/chat-messages\/(.+)$/))) {
+    if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/([^/]+)\/messages$/))) {
+      // Same shape as the real site: { items, hasMore, nextBeforeMessageId }.
       const c = convs[m[1]];
-      const o = JSON.parse(url.searchParams.get('options'));
-      // Newest first, like most chat APIs; the script must page back and re-sort.
-      const all = [...c.messages].reverse();
-      return json({ total: all.length, items: all.slice((o.page - 1) * o.itemsPerPage, o.page * o.itemsPerPage) });
+      const limit = Math.min(Number(url.searchParams.get('limit')) || 10, 50);
+      const before = url.searchParams.get('beforeMessageId');
+      let end = c.messages.length;
+      if (before) {
+        end = c.messages.findIndex((x) => x.id === before);
+        if (end < 0) return json({ message: 'Invalid message cursor' }, 400);
+      }
+      const items = c.messages.slice(Math.max(0, end - limit), end).map((x, i) => Object.assign({ conversationId: m[1], index: i }, x));
+      const hasMore = end - limit > 0;
+      return json({ items, hasMore, nextBeforeMessageId: hasMore ? items[0].id : null });
     }
     if (req.method() === 'POST' && url.pathname === '/chat') {
       const body = JSON.parse(req.postData());
@@ -247,7 +256,7 @@ async function main() {
   await page.reload();
   await page.waitForTimeout(500);
   const learnedTpl = await page.evaluate(() => localStorage.getItem('smx:learned'));
-  check(/chat-messages\/\{id\}\?options=/.test(learnedTpl || ''), 'message address learned from the site');
+  check(/conversations\/\{id\}\/messages\?limit=4"/.test(learnedTpl || ''), 'message address learned from the site (without the one-time cursor)');
   const beforeRebuild = llmCalls.length;
   await page.locator('#story-manager-root >> .fab').click();
   page.once('dialog', (d) => d.accept());
@@ -260,7 +269,7 @@ async function main() {
   console.log('10) Diagnostics shows what was seen, without message text');
   await page.getByText('Diagnostics', { exact: true }).click();
   const diag = await page.locator('#story-manager-root >> textarea[readonly]').inputValue();
-  check(/chat-messages\/\{id\}/.test(diag) && /Learned message address/.test(diag), 'diagnostics list requests');
+  check(/conversations\/\{id\}\/messages/.test(diag) && /Learned message address/.test(diag), 'diagnostics list requests');
   check(!/I am Mira/.test(diag), 'diagnostics contain no story text');
 
   console.log('11) Site loads history and sends messages over the live connection');
@@ -302,7 +311,21 @@ async function main() {
   const fromLate = llmCalls.slice(beforeLate).join('\n');
   check(/I am Mira, a healer\./.test(fromLate) && /Socket send check|Fetch path check/.test(fromLate), 'messages found from the browser\'s request list');
   const learnedLate = await page.evaluate(() => localStorage.getItem('smx:learned'));
-  check(/chat-messages\/\{id\}/.test(learnedLate || ''), 'message address learned without seeing the request');
+  check(/conversations\/\{id\}\/messages/.test(learnedLate || ''), 'message address learned without seeing the request');
+
+  console.log('13) An address saved with a stale cursor (as on a real phone) still works');
+  await page.evaluate(() => {
+    localStorage.removeItem('lateStart');
+    localStorage.setItem('smx:learned', JSON.stringify({ template: 'https://api.miniapps.ai/conversations/{id}/messages?limit=4&beforeMessageId=11111111-1111-4111-8111-111111111111' }));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const beforeStale = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(() => llmCalls.length > beforeStale, 30000, 'rebuild with stale cursor');
+  check(/I am Mira, a healer\./.test(llmCalls.slice(beforeStale).join('\n')), 'whole chat read despite the stale cursor');
 
   await browser.close();
   console.log('\nAll checks passed.');

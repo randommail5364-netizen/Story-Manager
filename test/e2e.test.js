@@ -79,12 +79,22 @@ async function main() {
   let helperDelay = 500;     // how long the MiniApps-bot memory keeper takes to answer
   const aborts = [];         // POST /chat/abort bodies         // the page's fake Socket.IO connection, once open
   function reply(conv, text, delay, convId) {
+    const msg = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text: '- **' }] };
+    // Like the real bot, a slow answer shows up half-written in the chat
+    // while it is still being streamed in small "pcm" pieces.
+    if (delay >= 10000) conv.messages.push(msg);
+    const tmpId = uuid();
+    let i = 0;
+    const typing = setInterval(() => {
+      if (liveWs) liveWs.send('42["pcm",' + JSON.stringify({ cId: convId, requestId: 'r', tmpId, tmpO: 0, payload: { type: 'text', text: i % 2 ? '- **' : ' ', i: i++ } }) + ']');
+    }, Math.min(1000, delay / 3));
     setTimeout(() => {
-      const msg = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
-      conv.messages.push(msg);
+      clearInterval(typing);
+      msg.elements = [{ type: 'text', text }];
+      if (!conv.messages.includes(msg)) conv.messages.push(msg);
       // Like the real site, finished replies are also pushed over the live connection.
       // Same shape as the real site's "cm" event: { cId, requestId, tmpId, payload: message }.
-      if (liveWs) liveWs.send('42["cm",' + JSON.stringify({ cId: convId, requestId: 'r', tmpId: 't', payload: msg }) + ']');
+      if (liveWs) liveWs.send('42["cm",' + JSON.stringify({ cId: convId, requestId: 'r', tmpId, payload: msg }) + ']');
     }, delay);
   }
 
@@ -605,6 +615,18 @@ async function main() {
   await page.locator('#story-manager-root >> .x').click();
   await page.waitForTimeout(700);
   check(await page.evaluate(() => window.scrollY) === 0, 'page scrolled back to where it was');
+
+  console.log('27) Streamed pieces of the bot\'s answer are not taken as the answer');
+  helperDelay = 15000; // pieces arrive at once, the finished answer 15s later
+  await page.evaluate(() => window.wsLoad()); // the live connection the real site always has
+  const beforeStream = await keyNow();
+  page.once('dialog', (d) => d.accept());
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> button', { hasText: 'Update now' }).click();
+  await waitFor(async () => { const c = await keyNow(); return c.lastUpdate !== beforeStream.lastUpdate || c.lastError !== beforeStream.lastError; }, 120000, 'update with streamed answer');
+  helperDelay = 500;
+  const streamed = await keyNow();
+  check(!streamed.lastError && /via MiniApps bot/.test(streamed.memory), 'finished answer used, not the streamed piece "- **"' + (streamed.lastError ? ' (got: ' + streamed.lastError + ')' : ''));
 
   await browser.close();
   console.log('\nAll checks passed.');

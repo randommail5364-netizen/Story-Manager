@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.5.1
+// @version      2.5.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -869,7 +869,9 @@
         answerChars: (reply || '').length,
         lastActivity: lastActivity[cid] || 0,
       };
-      if (reply && reply === prev) { helperWait.done = true; return reply; }
+      // Done when the answer stopped changing and the bot stopped typing.
+      const quiet = Date.now() - (lastActivity[cid] || 0) > 6000;
+      if (reply && reply === prev && quiet) { helperWait.done = true; return reply; }
       prev = reply || null;
       const idle = Date.now() - Math.max(started, lastActivity[cid] || 0);
       if (!reply && idle > 3 * 60000) break;
@@ -1649,6 +1651,9 @@
     const first = args[0] && typeof args[0] === 'object' ? args[0] : null;
     const chatOf = first && (first.cId || first.conversationId);
     if (chatOf) lastActivity[String(chatOf).toLowerCase()] = Date.now();
+    // "pcm" events are pieces of a reply still being written (a few words
+    // each), not messages; the finished reply arrives later as "cm".
+    if (d.event === 'pcm' || (first && first.tmpO !== undefined)) return;
     let msgs = extractMessages(args);
     let conv = null;
     // Events like { cId, requestId, payload: { …message… } } carry a whole message.

@@ -89,9 +89,16 @@ async function main() {
     let replies = [...input.matchAll(/\[R(\d+)[^\]\n]*\]/g)].map((r) => r[1]);
     const log = () => replies.map((r) => '[R' + r + '] Detailed summary of reply ' + r + ' in update ' + n + '.').join('\n');
     if (/LOG ENTRIES ONLY/.test(input)) return log();
+    const asked = input.match(/who have none yet: ([^.]+)\./);
+    if (/ENTRIES ONLY/.test(input) && asked) {
+      return asked[1].split(',').map((name) => '=== ENTRY: ' + name.trim() + ' | character ===\n- ' + name.trim() + ' is a member of the group.').join('\n');
+    }
+    // WINTERTEST in the chat: the keeper names Winter in the cast but forgets her entry.
+    const cast = 'Mira, Ash' + (/WINTERTEST/.test(input) ? ', Winter, Giselle' : '');
     // DROPLAST in the chat simulates a keeper that runs out of room.
     if (/DROPLAST/.test(input)) replies = replies.slice(0, -1);
     return '=== STORY ===\n## Story So Far\n- update ' + n + tag + '\n## Current Scene\n- Mira and Ash rest by the river.\n' +
+      '=== CAST ===\n' + cast + '\n' +
       '=== ENTRY: Mira | character | aliases: Miri, the healer ===\n- Mira: a healer' + tag + ' (update ' + n + ')\n' +
       '=== ENTRY: Ash | character | aliases: the dragon ===\n- Ash: a dragon\n' +
       '=== ENTRY: Old Mill | place | aliases: the mill, old mill ===\n- An abandoned mill where they once hid from hunters.\n' +
@@ -479,6 +486,41 @@ async function main() {
   }, 60000, 'new helper chat');
   await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])).log.length)) === countOf('assistant'), 60000, 'update to finish');
   check(true, 'new helper chat created and used for the update');
+
+  console.log('21) Characters named in the cast but left without an entry are asked for');
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => window.sendMsg('Winter and Giselle join us. WINTERTEST'));
+  await waitFor(() => countOf('user') === countOf('assistant'), 8000, 'reply');
+  await page.waitForTimeout(300);
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Update now').click();
+  await waitFor(async () => {
+    const c = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
+    return c.entries.some((e) => e.name === 'Winter') && c.entries.some((e) => e.name === 'Giselle');
+  }, 60000, 'entries for Winter and Giselle');
+  check(true, 'missing characters got their own entries');
+
+  console.log('22) A deleted entry is not created again');
+  await page.locator('#story-manager-root >> .x').click();
+  await page.locator('#story-manager-root >> .fab').click();
+  const scarf = page.locator('#story-manager-root >> details.entrybox', { hasText: 'Old Mill' });
+  await scarf.locator('summary').click();
+  await scarf.locator('input[type=checkbox]').uncheck();
+  page.once('dialog', (d) => d.accept());
+  await scarf.getByText('Delete').click();
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => window.sendMsg('We walk on.'));
+  await waitFor(() => countOf('user') === countOf('assistant'), 8000, 'reply');
+  await page.waitForTimeout(300);
+  await page.locator('#story-manager-root >> .fab').click();
+  const beforeDel = llmCalls.length;
+  await page.getByText('Update now').click();
+  await waitFor(() => llmCalls.length > beforeDel, 60000, 'update after delete');
+  await page.waitForTimeout(8000);
+  const afterDel = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
+  check(!afterDel.entries.some((e) => e.name === 'Old Mill') && afterDel.ignored.includes('old mill'), 'deleted entry stays deleted although the keeper wrote it again');
+  check(/NEVER write entries for \(the user removed them\): old mill/.test(llmCalls[llmCalls.length - 1]) || llmCalls.slice(beforeDel).some((c) => /NEVER write entries for/.test(c)), 'keeper told not to recreate it');
 
   await browser.close();
   console.log('\nAll checks passed.');

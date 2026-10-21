@@ -95,4 +95,18 @@ test('cloning entries does not share alias lists', () => {
   assert.deepStrictEqual(a[0].aliases, ['Miri']);
 });
 
+test('the cast list is read, without generic names', () => {
+  const p = lib.parseKeeperAnswer('=== STORY ===\n- x\n=== CAST ===\nKarina, Winter (Kim Minjeong), - Giselle\nNingning, You, Narrator\n=== LOG ===\n', replies);
+  assert.deepStrictEqual(p.cast, ['Karina', 'Winter', 'Giselle', 'Ningning']);
+});
+
+test('entries the user deleted are not created again', () => {
+  const { entries } = lib.applyUpdates(base(), [
+    { name: 'Silk Scarf', kind: 'item', aliases: [], text: '- A scarf.' },
+    { name: 'The Scarf', kind: 'item', aliases: ['silk scarf'], text: '- A scarf.' },
+    { name: 'Winter', kind: 'character', aliases: [], text: '- Singer.' },
+  ], ['silk scarf']);
+  assert.deepStrictEqual(entries.map((e) => e.name), ['Mira', 'Ash', 'Winter']);
+});
+
 console.log('All ' + passed + ' entry checks passed.');

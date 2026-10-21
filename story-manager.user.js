@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.0.0
+// @version      1.0.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @match        https://miniapps.ai/*
 // @match        https://*.miniapps.ai/*
@@ -13,6 +13,7 @@
 // @grant        GM.getValue
 // @grant        GM.setValue
 // @grant        unsafeWindow
+// @grant        GM_registerMenuCommand
 // @connect      api.anthropic.com
 // @connect      api.openai.com
 // @connect      openrouter.ai
@@ -54,11 +55,17 @@
     const doc = win.document;
     if (doc.documentElement) doc.documentElement.setAttribute('data-smx-hook', '1');
 
+    // When this runs inside Firefox's userscript sandbox instead of the page,
+    // functions and objects handed to the page must be exported / cloned.
+    const sandboxed = typeof exportFunction === 'function' && typeof cloneInto === 'function';
+    const expFn = (fn, target) => (sandboxed ? exportFunction(fn, target) : fn);
+    const toPage = (obj) => (sandboxed ? cloneInto(obj, win) : obj);
+
     const origFetch = win.fetch.bind(win);
     const state = { headers: {}, apiBase: 'https://api.miniapps.ai' };
 
     function emit(type, data) {
-      doc.dispatchEvent(new win.CustomEvent('smx:' + type, { detail: JSON.stringify(data) }));
+      doc.dispatchEvent(new win.CustomEvent('smx:' + type, toPage({ detail: JSON.stringify(data) })));
     }
 
     function classify(method, url) {
@@ -123,7 +130,7 @@
     }
 
     // --- fetch ---
-    win.fetch = function (input, init) {
+    win.fetch = expFn(function (input, init) {
       let info = null;
       try {
         const url = typeof input === 'string' ? input : (input && input.url) || String(input);
@@ -133,7 +140,7 @@
           if (input && typeof input === 'object' && input.headers) captureHeaders(input.headers);
           if (init) captureHeaders(init.headers);
           if (info.kind === 'send' && init && typeof init.body === 'string') {
-            init = Object.assign({}, init, { body: rewriteSend(init.body) });
+            init = toPage(Object.assign({}, init, { body: rewriteSend(init.body) }));
           }
         }
       } catch (e) { info = null; }
@@ -144,22 +151,22 @@
           .catch(() => {});
       }
       return p;
-    };
+    }, win);
 
     // --- XMLHttpRequest (axios etc.) ---
     const XP = win.XMLHttpRequest.prototype;
     const oOpen = XP.open;
     const oSend = XP.send;
     const oSet = XP.setRequestHeader;
-    XP.open = function (method, url) {
+    XP.open = expFn(function (method, url) {
       try { this.__smx = classify(String(method).toUpperCase(), url); } catch (e) { this.__smx = null; }
       return oOpen.apply(this, arguments);
-    };
-    XP.setRequestHeader = function (k, v) {
+    }, XP);
+    XP.setRequestHeader = expFn(function (k, v) {
       if (this.__smx) captureHeader(k, v);
       return oSet.apply(this, arguments);
-    };
-    XP.send = function (body) {
+    }, XP);
+    XP.send = expFn(function (body) {
       const info = this.__smx;
       if (info) {
         try {
@@ -179,7 +186,7 @@
         } catch (e) { /* ignore */ }
       }
       return oSend.call(this, body);
-    };
+    }, XP);
 
     // --- RPC: lets the script call the MiniApps API with the user's session ---
     doc.addEventListener('smx:rpc', function (ev) {
@@ -194,11 +201,11 @@
       // POSTs need a CSRF token; get one the way the site does if we have not seen it yet.
       const csrf = opts.method === 'GET' || state.headers['x-csrf-token']
         ? Promise.resolve()
-        : origFetch(state.apiBase + '/auth/csrf', { credentials: 'include' })
+        : origFetch(state.apiBase + '/auth/csrf', toPage({ credentials: 'include' }))
           .then((r) => r.json())
           .then((d) => { if (d && d.csrfToken) headers['x-csrf-token'] = state.headers['x-csrf-token'] = d.csrfToken; })
           .catch(() => {});
-      csrf.then(() => origFetch(state.apiBase + req.path, opts))
+      csrf.then(() => origFetch(state.apiBase + req.path, toPage(opts)))
         .then((r) => r.text().then((text) => emit('rpc:' + req.id, { ok: r.ok, status: r.status, text })))
         .catch((e) => emit('rpc:' + req.id, { ok: false, status: 0, text: String(e) }));
     });
@@ -849,6 +856,8 @@
     if (root) return;
     const host = el('div', { id: 'story-manager-root' });
     document.documentElement.appendChild(host);
+    // Keep the button on screen even if the site rebuilds its page.
+    setInterval(() => { if (!host.isConnected) document.documentElement.appendChild(host); }, 2000);
     root = host.attachShadow({ mode: 'open' });
     root.append(el('style', {}, CSS));
     ui.fab = el('button', { class: 'fab ' + settings.buttonSide, title: 'Story Manager', onclick: () => togglePanel() }, '📖', el('span', { class: 'dot' }));
@@ -1100,11 +1109,25 @@
   }
 
   function startUI() {
-    ready.then(() => {
-      buildUI();
-      const m = location.href.match(UUID_RE);
-      if (m) setCurrent(m[0].toLowerCase());
-    });
+    ready
+      .catch((e) => console.warn('[Story Manager] could not load saved data', e))
+      .then(() => {
+        try {
+          buildUI();
+        } catch (e) {
+          alert('Story Manager could not start: ' + (e && e.message ? e.message : e));
+          return;
+        }
+        let shown = false;
+        try { shown = sessionStorage.getItem('smx:hello') === '1'; sessionStorage.setItem('smx:hello', '1'); } catch (e) { /* ignore */ }
+        if (!shown) toast('📖 Story Manager is running');
+        const m = location.href.match(UUID_RE);
+        if (m) setCurrent(m[0].toLowerCase());
+      });
+  }
+
+  if (typeof GM_registerMenuCommand === 'function') {
+    GM_registerMenuCommand('📖 Open Story Manager', () => { buildUI(); togglePanel(true); });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startUI);

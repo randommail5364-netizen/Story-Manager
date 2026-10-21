@@ -30,8 +30,21 @@ This is a *userscript*: a small add-on that a userscript manager runs on one web
 3. Open the script file:
    `https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js`
    (after this branch is merged, use `main` instead of `claude/brave-mayer-u1eutx`). The manager offers to install it. Tap **Install**.
-   - If the repository is private, the link won't work. Instead, open the manager's dashboard, choose **Create a new script**, and paste in the contents of `story-manager.user.js`.
+   - If the repository is private, the link won't work. Paste the script in three parts instead (see below).
 4. Go to miniapps.ai in Firefox and log in. The 📖 button appears at the bottom right.
+
+### Pasting the script in three parts
+
+Phones cut off long pastes at about 20,000 characters, and the whole script is about 51,000. The [`install-parts`](install-parts) folder has the same script split into three pieces of about 15,000 characters each.
+
+1. In the Tampermonkey dashboard, delete any old or broken copy of the script, then tap **+** to make a new one.
+2. Use the editor's menu: **Edit → Select all**, then delete. The editor must be completely empty.
+3. Open `install-parts/part-1-of-3.js` on GitHub → **⋯ → Copy raw file** → paste into the editor.
+4. The end of the editor now says `Tap on the empty line below, then paste PART 2`. Tap that empty last line and paste `part-2-of-3.js` there.
+5. Do the same with `part-3-of-3.js`.
+6. Check that the last line is `})();` and there are no red ✖ marks. Then **File → Save**.
+
+After changing the script, run `node tools/make-parts.js` to rebuild the parts.
 
 ### iPhone / iPad
 
@@ -73,4 +86,5 @@ Other settings:
 ```sh
 npm i -D playwright   # if not installed globally
 node test/e2e.test.js
+SCRIPT_PARTS=1 node test/e2e.test.js   # same checks on the 3 install parts
 ```

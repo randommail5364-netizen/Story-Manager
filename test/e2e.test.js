@@ -9,7 +9,10 @@ const fs = require('fs');
 let chromium;
 try { ({ chromium } = require('playwright')); } catch (e) { ({ chromium } = require(require('child_process').execSync('npm root -g').toString().trim() + '/playwright')); }
 
-const SCRIPT = fs.readFileSync(path.join(__dirname, '..', 'story-manager.user.js'), 'utf8');
+// Set SCRIPT_PARTS=1 to test the three install-parts pasted together instead.
+const SCRIPT = process.env.SCRIPT_PARTS
+  ? [1, 2, 3].map((n) => fs.readFileSync(path.join(__dirname, '..', 'install-parts', 'part-' + n + '-of-3.js'), 'utf8')).join('')
+  : fs.readFileSync(path.join(__dirname, '..', 'story-manager.user.js'), 'utf8');
 
 // A tiny stand-in for the MiniApps chat page. It talks to the API with XHR the
 // way an axios-based app would, and renders the conversation.

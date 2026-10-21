@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.0.0
+// @version      2.1.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -417,6 +417,7 @@
     model: '',
     baseUrl: 'https://openrouter.ai/api/v1',
     miniappsSlug: 'claude-37',
+    helperRotate: 0,  // start a new helper chat every N requests (0 = always the same one)
     updateEvery: 3,   // AI replies between memory updates
     injectEvery: 1,   // attach memory to every Nth message (0 = never)
     maxChars: 8000,   // target size of the main memory
@@ -751,6 +752,10 @@
 
   // Uses one of the site's own chatbots as the memory keeper (costs MiniApps credits).
   let toolCache = null;
+  // All requests go to one helper chat with the bot (remembered across visits),
+  // so they don't each add a chat to the user's MiniApps history.
+  let helperChat = null;  // { slug, id, uses }
+
   async function callMiniApps(prompt) {
     const slug = (settings.miniappsSlug || 'claude-37').trim();
     if (!toolCache || toolCache.slug !== slug) {
@@ -763,25 +768,53 @@
         modelId: tool.modelId || (tool.model && tool.model.id) || tool.defaultModelId || '',
       };
     }
-    const res = await rpc('POST', '/chat', {
+    // A tag finds this request's answer among the earlier ones in the chat.
+    const tag = 'Request ' + uuid4().slice(0, 8);
+    const body = {
       toolId: toolCache.id,
       revision: toolCache.revision,
       modelId: toolCache.modelId,
       requestId: uuid4(),
-      elements: [{ type: 'text', text: prompt }],
+      elements: [{ type: 'text', text: tag + '. This is a new, separate task: ignore all earlier messages in this chat.\n\n' + prompt }],
       language: 'en',
-    });
+    };
+    const rotate = Number(settings.helperRotate) || 0;
+    let reuse = !!(helperChat && helperChat.slug === slug && !(rotate && helperChat.uses >= rotate));
+    if (reuse) body.conversationId = helperChat.id;
+    // Answers that arrive over the live connection after this point are new.
+    const known = new Set(reuse && seenMsgs[helperChat.id] ? seenMsgs[helperChat.id].keys() : []);
+    let res;
+    try {
+      res = await rpc('POST', '/chat', body);
+    } catch (e) {
+      if (!reuse) throw e;
+      // The helper chat is gone (e.g. deleted); start a new one.
+      delete body.conversationId;
+      reuse = false;
+      res = await rpc('POST', '/chat', body);
+    }
     const cid = res && res.conversationId;
     if (!cid) throw new Error('MiniApps did not start a conversation');
     helperIds.add(cid);
+    helperChat = reuse && cid === helperChat.id ? Object.assign({}, helperChat, { uses: helperChat.uses + 1 }) : { slug, id: cid, uses: 1 };
+    await Store.set('helperChat', helperChat);
     let prev = null;
     for (let i = 0; i < 80; i++) {
       await sleep(3000);
       let msgs = [];
       try { msgs = await fetchMessages(cid, { cache: false, mode: 'latest' }); } catch (e) { /* the live connection may still deliver it */ }
       if (seenMsgs[cid]) msgs = mergeMsgs(msgs, [...seenMsgs[cid].values()]);
-      const lastUser = msgs.map((m) => m.role).lastIndexOf('user');
-      const reply = msgs.slice(lastUser + 1).filter((m) => m.role === 'assistant').map((m) => m.text).join('\n');
+      let at = -1;
+      msgs.forEach((m, j) => { if (m.role === 'user' && m.text.includes(tag)) at = j; });
+      let reply;
+      if (at >= 0) {
+        const after = msgs.slice(at + 1);
+        const next = after.findIndex((m) => m.role === 'user');
+        reply = (next < 0 ? after : after.slice(0, next)).filter((m) => m.role === 'assistant').map((m) => m.text).join('\n');
+      } else {
+        // The request itself is not readable; use answers pushed over the live connection since sending.
+        reply = (seenMsgs[cid] ? [...seenMsgs[cid].values()] : []).filter((m) => m.role === 'assistant' && !known.has(m.id)).map((m) => m.text).join('\n');
+      }
       if (reply && reply === prev) return reply;
       prev = reply || null;
     }
@@ -1425,6 +1458,8 @@
     if (settings.maxChars === 3000 || settings.maxChars === 5000) settings.maxChars = DEFAULT_SETTINGS.maxChars;
     chatIndex = await Store.get('chatIndex', []);
     learned = await Store.get('learned', null);
+    helperChat = await Store.get('helperChat', null);
+    if (helperChat) helperIds.add(helperChat.id);
     for (const id of chatIndex) await getChat(id, false);
     publishInjectMap();
   })();
@@ -1720,7 +1755,7 @@
         if (rebuild) {
           const parts = chunk(msgs, CHUNK_CHARS).length;
           const cost = settings.provider === 'miniapps'
-            ? ' Each one uses MiniApps credits and adds a small chat to your MiniApps history.'
+            ? ' Each one uses MiniApps credits.'
             : '';
           if (!confirm('Rebuild the memory from all ' + msgs.length + ' messages? This takes about ' + parts +
             ' memory-keeper request' + (parts === 1 ? '' : 's') + '.' + cost +
@@ -1911,6 +1946,7 @@
     f.model = el('input', { value: s.model, placeholder: 'default: ' + (DEFAULT_MODELS[s.provider] || '') });
     f.baseUrl = el('input', { value: s.baseUrl, placeholder: 'https://openrouter.ai/api/v1' });
     f.miniappsSlug = el('input', { value: s.miniappsSlug, placeholder: 'claude-37' });
+    f.helperRotate = el('input', { type: 'number', min: '0', value: String(s.helperRotate) });
     f.updateEvery = el('input', { type: 'number', min: '1', value: String(s.updateEvery) });
     f.injectEvery = el('input', { type: 'number', min: '0', value: String(s.injectEvery) });
     f.maxChars = el('input', { type: 'number', min: '500', step: '250', value: String(s.maxChars) });
@@ -1925,7 +1961,9 @@
     const baseBox = el('div', {}, el('label', {}, 'Base URL'), f.baseUrl,
       el('div', { class: 'hint' }, 'OpenRouter: https://openrouter.ai/api/v1 · OpenAI: https://api.openai.com/v1 · Groq: https://api.groq.com/openai/v1'));
     const slugBox = el('div', {}, el('label', {}, 'MiniApps bot used as memory keeper (slug from its URL)'), f.miniappsSlug,
-      el('div', { class: 'hint' }, 'Each memory update sends one message to this bot and creates a small extra chat in your MiniApps history.'));
+      el('div', { class: 'hint' }, 'Memory updates are sent to this bot in one helper chat in your MiniApps history (uses MiniApps credits).'),
+      el('label', {}, 'Start a fresh helper chat every … requests (0 = always the same chat)'), f.helperRotate,
+      el('div', { class: 'hint' }, 'The helper chat grows with every update. If updates get slow or start failing, set this to e.g. 20.'));
     const showProvider = () => {
       const p = providerSel.value;
       keyBox.style.display = p === 'miniapps' ? 'none' : '';
@@ -1942,6 +1980,7 @@
       model: f.model.value.trim(),
       baseUrl: f.baseUrl.value.trim(),
       miniappsSlug: f.miniappsSlug.value.trim() || 'claude-37',
+      helperRotate: Math.max(0, parseInt(f.helperRotate.value, 10) || 0),
       updateEvery: Math.max(1, parseInt(f.updateEvery.value, 10) || 1),
       injectEvery: Math.max(0, parseInt(f.injectEvery.value, 10) || 0),
       maxChars: Math.max(500, parseInt(f.maxChars.value, 10) || DEFAULT_SETTINGS.maxChars),

@@ -140,6 +140,7 @@ async function main() {
       const body = JSON.parse(req.postData());
       if (req.headers()['x-csrf-token'] !== 'csrf-123') return json({ message: 'csrf' }, 403);
       chatBodies.push(body);
+      if (body.conversationId && !convs[body.conversationId]) return json({ message: 'Conversation not found' }, 404);
       const id = body.conversationId || uuid();
       const conv = convs[id] || (convs[id] = { toolId: body.toolId, messages: [] });
       const text = body.elements[0].text;
@@ -435,6 +436,49 @@ async function main() {
   await page.evaluate(() => window.sendMsg('We keep walking again.'));
   const alwaysSent = chatBodies[chatBodies.length - 1].elements[0].text;
   check(/### Old Mill \(place\)\n- An abandoned mill\. The roof leaks\. Edited by hand\./.test(alwaysSent), 'edited entry marked "Always send" is attached without being mentioned');
+
+  console.log('19) The MiniApps-bot memory keeper uses one helper chat');
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.provider = 'miniapps';
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const countOf = (o) => recapConv.messages.filter((x) => x.origin === o).length;
+  await waitFor(() => countOf('user') === countOf('assistant'), 8000, 'every message answered');
+  const helperChatsBefore = Object.values(convs).filter((c) => c.toolId === 'tool-helper').length;
+  const helperPostsBefore = chatBodies.filter((b) => b.toolId === 'tool-helper').length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(() => chatBodies.filter((b) => b.toolId === 'tool-helper').length >= helperPostsBefore + 3, 60000, 'several helper requests');
+  const replyCount19 = recapConv.messages.filter((x) => x.origin === 'assistant').length;
+  await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])).log.length)) === replyCount19, 120000, 'rebuild to finish');
+  const helperPosts = chatBodies.filter((b) => b.toolId === 'tool-helper').slice(helperPostsBefore);
+  const helperIdsUsed = new Set(helperPosts.map((b) => b.conversationId).filter(Boolean));
+  check(helperPosts.length >= 3 && helperIdsUsed.size === 1 && helperPosts.slice(1).every((b) => b.conversationId), helperPosts.length + ' memory-keeper requests all went to one helper chat');
+  check(Object.values(convs).filter((c) => c.toolId === 'tool-helper').length <= helperChatsBefore + 1, 'no new chat per request');
+  const helperChat19 = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:helperChat')));
+  check(helperChat19 && helperIdsUsed.has(helperChat19.id), 'helper chat remembered for next time');
+  const log19 = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])).log);
+  const lastUpdate19 = Math.max(...log19.map((e) => Number((e.text.match(/update (\d+)/) || [])[1] || 0)));
+  check(log19.length === recapConv.messages.filter((x) => x.origin === 'assistant').length && lastUpdate19 > 0, 'each request got its own answer from the shared chat');
+
+  console.log('20) A deleted helper chat is replaced automatically');
+  delete convs[helperChat19.id];
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => window.sendMsg('One more step.'));
+  await waitFor(() => recapConv.messages[recapConv.messages.length - 1].origin === 'assistant', 5000, 'reply');
+  await page.waitForTimeout(300);
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Update now').click();
+  await waitFor(async () => {
+    const h = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:helperChat')));
+    return h && h.id !== helperChat19.id && convs[h.id];
+  }, 60000, 'new helper chat');
+  await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])).log.length)) === countOf('assistant'), 60000, 'update to finish');
+  check(true, 'new helper chat created and used for the update');
 
   await browser.close();
   console.log('\nAll checks passed.');

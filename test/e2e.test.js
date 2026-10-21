@@ -136,6 +136,7 @@ async function main() {
     if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/([^/]+)\/messages$/))) {
       // Same shape as the real site: { items, hasMore, nextBeforeMessageId }.
       const c = convs[m[1]];
+      if (!c) return json({ message: 'Conversation not found' }, 404);
       const limit = Math.min(Number(url.searchParams.get('limit')) || 10, 50);
       const before = url.searchParams.get('beforeMessageId');
       let end = c.messages.length;
@@ -143,7 +144,8 @@ async function main() {
         end = c.messages.findIndex((x) => x.id === before);
         if (end < 0) return json({ message: 'Invalid message cursor' }, 400);
       }
-      const items = c.messages.slice(Math.max(0, end - limit), end).map((x, i) => Object.assign({ conversationId: m[1], index: i }, x));
+      const start = Math.max(0, end - limit);
+      const items = c.messages.slice(start, end).map((x, i) => Object.assign({ conversationId: m[1], index: start + i }, x));
       const hasMore = end - limit > 0;
       return json({ items, hasMore, nextBeforeMessageId: hasMore ? items[0].id : null });
     }
@@ -158,9 +160,22 @@ async function main() {
       if (body.conversationId && !convs[body.conversationId]) return json({ message: 'Conversation not found' }, 404);
       if (body.toolId === 'tool-helper' && helperBroken) return json({ message: 'Insufficient credits' }, 412);
       const id = body.conversationId || uuid();
+      const isNew = !convs[id];
       const conv = convs[id] || (convs[id] = { toolId: body.toolId, messages: [] });
       const text = body.elements[0].text;
-      conv.messages.push({ id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] });
+      const added = [];
+      // Like the real bot: a new helper chat starts with a greeting.
+      if (isNew && body.toolId === 'tool-helper') {
+        const greet = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text: 'Hi! Tell me what to write.' }] };
+        conv.messages.push(greet);
+        added.push(greet);
+      }
+      // Long requests to the helper are stored as a file, so their text can't be read back.
+      const userMsg = body.toolId === 'tool-helper'
+        ? { id: uuid(), origin: 'user', createdAt: new Date().toISOString(), text: '', elements: [{ type: 'file', name: 'message.txt' }] }
+        : { id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
+      conv.messages.push(userMsg);
+      added.push(userMsg);
       if (body.toolId === 'tool-helper') {
         llmCalls.push(text);
         reply(conv, keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)'), helperDelay, id);
@@ -168,7 +183,8 @@ async function main() {
         const n = conv.messages.filter((x) => x.origin === 'user').length;
         reply(conv, 'Story reply #' + n + ': the dragon Ash watches Mira.', 1500, id);
       }
-      return json({ conversationId: id, chatMessageId: uuid(), requestId: body.requestId });
+      return json({ conversationId: id, chatMessageId: userMsg.id, requestId: body.requestId,
+        addedMessages: added.map((x) => Object.assign({ index: conv.messages.indexOf(x) }, x)) });
     }
     return json({});
   });

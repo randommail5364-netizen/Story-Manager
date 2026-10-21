@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.4.3
+// @version      2.5.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -635,6 +635,7 @@
       role: roleOf(m),
       text: textOf(m).replace(MEM_BLOCK_RE, '').trim(),
       t: Date.parse(m.createdAt || m.created_at || '') || 0,
+      index: typeof m.index === 'number' ? m.index : null,
     })).filter((m) => m.role !== 'system' && m.text);
     if (out.length > 1 && out.every((m) => m.t)) out.sort((a, b) => a.t - b.t);
     return out;
@@ -797,8 +798,13 @@
     const rotate = Number(settings.helperRotate) || 0;
     let reuse = !!(helperChat && helperChat.slug === slug && !(rotate && helperChat.uses >= rotate));
     if (reuse) body.conversationId = helperChat.id;
-    // Answers that arrive over the live connection after this point are new.
-    const known = new Set(reuse && seenMsgs[helperChat.id] ? seenMsgs[helperChat.id].keys() : []);
+    // Messages already in the helper chat are not the answer. (The request
+    // itself may not be readable: MiniApps can store long messages as files.)
+    const before = new Set();
+    if (reuse) {
+      try { (await fetchMessages(helperChat.id, { cache: false, mode: 'latest' })).forEach((m) => before.add(m.id)); } catch (e) { /* see below */ }
+      if (seenMsgs[helperChat.id]) for (const k of seenMsgs[helperChat.id].keys()) before.add(k);
+    }
     let res;
     try {
       res = await rpc('POST', '/chat', body);
@@ -807,6 +813,7 @@
       // The helper chat is gone (e.g. deleted); start a new one.
       delete body.conversationId;
       reuse = false;
+      before.clear();
       res = await rpc('POST', '/chat', body);
     }
     const cid = res && res.conversationId;
@@ -814,6 +821,15 @@
     helperIds.add(cid);
     helperChat = reuse && cid === helperChat.id ? Object.assign({}, helperChat, { uses: helperChat.uses + 1 }) : { slug, id: cid, uses: 1 };
     await Store.set('helperChat', helperChat);
+    // The send reply lists the messages it added (our request, maybe a
+    // greeting); the answer comes after our request's position.
+    let requestIndex = -1;
+    for (const m of (res && Array.isArray(res.addedMessages) ? res.addedMessages : [])) {
+      if (!m || typeof m !== 'object') continue;
+      if (m.id) before.add(String(m.id));
+      if (typeof m.index === 'number' && roleOf(m) === 'user') requestIndex = Math.max(requestIndex, m.index);
+    }
+    if (res && res.chatMessageId) before.add(String(res.chatMessageId));
     // Long answers can take many minutes to write. Wait while the bot is
     // still typing (live connection activity), up to 20 minutes; give up
     // after 3 minutes without any sign of it.
@@ -827,23 +843,29 @@
         throw stopError();
       }
       let msgs = [];
-      try { msgs = await fetchMessages(cid, { cache: false, mode: 'latest' }); } catch (e) { /* the live connection may still deliver it */ }
+      let readOk = true;
+      try { msgs = await fetchMessages(cid, { cache: false, mode: 'latest' }); } catch (e) { readOk = false; }
+      // Whole messages pushed over the live connection count too.
       if (seenMsgs[cid]) msgs = mergeMsgs(msgs, [...seenMsgs[cid].values()]);
       let at = -1;
       msgs.forEach((m, j) => { if (m.role === 'user' && m.text.includes(tag)) at = j; });
-      let reply;
+      let answers;
       if (at >= 0) {
         const after = msgs.slice(at + 1);
         const next = after.findIndex((m) => m.role === 'user');
-        reply = (next < 0 ? after : after.slice(0, next)).filter((m) => m.role === 'assistant').map((m) => m.text).join('\n');
+        answers = (next < 0 ? after : after.slice(0, next)).filter((m) => m.role === 'assistant');
       } else {
-        // The request itself is not readable; use answers pushed over the live connection since sending.
-        reply = (seenMsgs[cid] ? [...seenMsgs[cid].values()] : []).filter((m) => m.role === 'assistant' && !known.has(m.id)).map((m) => m.text).join('\n');
+        answers = msgs.filter((m) => m.role === 'assistant' && !before.has(m.id) &&
+          (requestIndex < 0 || typeof m.index !== 'number' || m.index > requestIndex));
       }
+      // Keep only the newest answer if several new ones turned up.
+      const reply = answers.length ? answers[answers.length - 1].text : '';
       helperWait = {
         started,
         roles: msgs.map((m) => (m.role === 'user' ? 'u' : 'a')).join(''),
         requestFound: at >= 0,
+        newAnswers: answers.length,
+        readOk,
         answerChars: (reply || '').length,
         lastActivity: lastActivity[cid] || 0,
       };
@@ -2081,7 +2103,8 @@
       'Memory keeper: ' + settings.provider + (settings.provider === 'miniapps' ? ' (' + settings.miniappsSlug + ')' : ''),
       'Helper chat: ' + (helperChat ? helperChat.id.slice(0, 8) + ', ' + helperChat.uses + ' requests' : 'none yet') +
         (helperWait ? ' · last wait: ' + Math.round((Date.now() - helperWait.started) / 1000) + 's ago started, messages ' + (helperWait.roles || '-') +
-          ', request ' + (helperWait.requestFound ? 'found' : 'not found') + ', answer ' + helperWait.answerChars + ' chars' +
+          ', request ' + (helperWait.requestFound ? 'found' : 'not found') + ', new answers ' + helperWait.newAnswers +
+          (helperWait.readOk ? '' : ', last read failed') + ', answer ' + helperWait.answerChars + ' chars' +
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
       'Messages sent on this page: ' + sentStats.sent + ' · with memory attached: ' + sentStats.withMemory +
@@ -2103,6 +2126,13 @@
     for (const a of [...ownLog.values()].reverse()) lines.push(fmt(a));
     lines.push('', 'Layout (to find out what hides the top bar):');
     lines.push(...layoutReport());
+    lines.push('Since the page loaded: page scrolled up to ' + Math.round(layoutWatch.maxScroll) + ', visible area moved down up to ' +
+      Math.round(layoutWatch.maxViewportTop) + ', window height ' + (layoutWatch.maxHeight ? layoutWatch.minHeight + '–' + layoutWatch.maxHeight : innerHeight));
+    if (layoutWatch.first) {
+      lines.push('First shift ' + Math.round((Date.now() - layoutWatch.first.at) / 1000) + 's ago (page ' + Math.round(layoutWatch.first.y) +
+        ', visible area ' + Math.round(layoutWatch.first.vvTop) + ', panel ' + (layoutWatch.first.panelOpen ? 'open' : 'closed') + '):');
+      layoutWatch.first.report.forEach((l) => lines.push('  ' + l));
+    }
     lines.push('', 'All MiniApps addresses the browser requested on this page:');
     const counts = new Map();
     for (const r of apiResourceUrls()) {
@@ -2112,6 +2142,31 @@
     if (!counts.size) lines.push('(none listed)');
     for (const [k, n] of [...counts].slice(-40)) lines.push(k + (n > 1 ? ' ×' + n : ''));
     return lines.join('\n');
+  }
+
+  // Watch for the whole page shifting at any time (not just when the panel is
+  // open), keeping the worst state and a snapshot of the first shift.
+  const layoutWatch = { maxScroll: 0, maxViewportTop: 0, minHeight: Infinity, maxHeight: 0, first: null };
+
+  function watchLayout() {
+    try {
+      const se = document.scrollingElement || document.documentElement;
+      const y = Math.max(window.scrollY, se ? se.scrollTop : 0, document.body ? document.body.scrollTop : 0);
+      const vvTop = window.visualViewport ? window.visualViewport.offsetTop : 0;
+      layoutWatch.maxScroll = Math.max(layoutWatch.maxScroll, y);
+      layoutWatch.maxViewportTop = Math.max(layoutWatch.maxViewportTop, vvTop);
+      layoutWatch.minHeight = Math.min(layoutWatch.minHeight, innerHeight);
+      layoutWatch.maxHeight = Math.max(layoutWatch.maxHeight, innerHeight);
+      if ((y > 0 || vvTop > 0) && !layoutWatch.first) {
+        layoutWatch.first = { at: Date.now(), y, vvTop, panelOpen: !!(ui.panel && ui.panel.classList.contains('open')), report: layoutReport() };
+      }
+    } catch (e) { /* ignore */ }
+  }
+  window.addEventListener('scroll', watchLayout, { passive: true });
+  window.addEventListener('resize', watchLayout, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('scroll', watchLayout, { passive: true });
+    window.visualViewport.addEventListener('resize', watchLayout, { passive: true });
   }
 
   // Where the page and the site's bars are, without any text from the page.

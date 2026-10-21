@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.4.1
+// @version      2.4.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1715,6 +1715,7 @@
       border: none; background: #5b4bdb; color: #fff; font-size: 22px; box-shadow: 0 4px 14px rgba(0,0,0,.35);
       display: flex; align-items: center; justify-content: center; cursor: pointer; -webkit-tap-highlight-color: transparent; }
     .fab.right { right: 12px; } .fab.left { left: 12px; }
+    .fab.top-right { right: 12px; top: 120px; bottom: auto; } .fab.top-left { left: 12px; top: 120px; bottom: auto; }
     .fab .dot { position: absolute; top: 2px; right: 2px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; display: none; }
     .fab.busy .dot { display: block; background: #f5b400; animation: pulse 1s infinite; }
     .fab.err .dot { display: block; background: #e5484d; }
@@ -1792,10 +1793,39 @@
     setStatus();
   }
 
+  // Focusing a text box (or the keyboard opening) makes mobile browsers scroll
+  // the whole page, which pushes the site's top bar and message box off
+  // screen. Remember where the page was and put it back when the panel closes.
+  let pageScroll = null;
+
+  function scrollState() {
+    const se = document.scrollingElement || document.documentElement;
+    return { x: window.scrollX, y: window.scrollY, html: se ? se.scrollTop : 0, body: document.body ? document.body.scrollTop : 0 };
+  }
+
+  function restoreScroll(st) {
+    if (!st) return;
+    const se = document.scrollingElement || document.documentElement;
+    if (window.scrollX !== st.x || window.scrollY !== st.y) window.scrollTo(st.x, st.y);
+    if (se && se.scrollTop !== st.html) se.scrollTop = st.html;
+    if (document.body && document.body.scrollTop !== st.body) document.body.scrollTop = st.body;
+  }
+
   function togglePanel(open) {
     const want = open === undefined ? !ui.panel.classList.contains('open') : open;
+    if (want && !ui.panel.classList.contains('open')) pageScroll = scrollState();
     ui.panel.classList.toggle('open', want);
-    if (want) renderPanel(true);
+    if (want) {
+      renderPanel(true);
+    } else {
+      const active = root.activeElement;
+      if (active && active.blur) active.blur();
+      const st = pageScroll;
+      // Again after the keyboard has finished closing.
+      restoreScroll(st);
+      setTimeout(() => restoreScroll(st), 150);
+      setTimeout(() => restoreScroll(st), 600);
+    }
   }
 
   function toast(msg, bad) {
@@ -2092,8 +2122,8 @@
     };
     const copy = async () => {
       show();
-      box.select();
-      try { await navigator.clipboard.writeText(box.value); toast('Diagnostics copied — paste them to Claude'); } catch (e) { toast('Select the text in the box and copy it'); }
+      // No select()/focus here: it would scroll the page (see togglePanel).
+      try { await navigator.clipboard.writeText(box.value); toast('Diagnostics copied — paste them to Claude'); } catch (e) { toast('Long-press the text in the box to copy it'); }
     };
     return el('div', {},
       el('div', { class: 'btns' },
@@ -2124,7 +2154,9 @@
     f.injectBudget = el('input', { type: 'number', min: '2000', step: '1000', value: String(s.injectBudget) });
     f.autoEnable = el('input', { type: 'checkbox', id: 'smx-auto' });
     f.autoEnable.checked = s.autoEnable;
-    f.buttonSide = el('select', {}, el('option', { value: 'right' }, 'Right'), el('option', { value: 'left' }, 'Left'));
+    f.buttonSide = el('select', {},
+      el('option', { value: 'right' }, 'Bottom right'), el('option', { value: 'left' }, 'Bottom left'),
+      el('option', { value: 'top-right' }, 'Top right'), el('option', { value: 'top-left' }, 'Top left'));
     f.buttonSide.value = s.buttonSide;
 
     const keyBox = el('div', {}, el('label', {}, 'API key'), f.apiKey, el('label', {}, 'Model'), f.model);
@@ -2186,8 +2218,7 @@
       const data = { version: 1, settings: Object.assign({}, settings, { apiKey: '' }), chats: {} };
       for (const id of chatIndex) data.chats[id] = await getChat(id, false);
       backup.value = JSON.stringify(data);
-      backup.select();
-      try { await navigator.clipboard.writeText(backup.value); toast('Backup copied to clipboard'); } catch (e) { toast('Backup ready — copy it from the box'); }
+      try { await navigator.clipboard.writeText(backup.value); toast('Backup copied to clipboard'); } catch (e) { toast('Backup ready — long-press the box to copy it'); }
     };
     const importAll = async () => {
       let data;

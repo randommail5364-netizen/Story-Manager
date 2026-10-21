@@ -576,6 +576,20 @@ async function main() {
   await page.locator('#story-manager-root >> .fab').click();
   check(/messages are not in the memory yet/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel says how many messages are missing');
 
+  console.log('26) Closing the panel puts the page back where it was');
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => {
+    const tall = document.createElement('div');
+    tall.style.height = '3000px';
+    document.body.appendChild(tall);
+    window.scrollTo(0, 0);
+  });
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.evaluate(() => window.scrollTo(0, 400)); // what focusing a box / the keyboard does
+  await page.locator('#story-manager-root >> .x').click();
+  await page.waitForTimeout(700);
+  check(await page.evaluate(() => window.scrollY) === 0, 'page scrolled back to where it was');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

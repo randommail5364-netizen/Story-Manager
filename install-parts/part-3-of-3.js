@@ -1,11 +1,3 @@
-// ---------------------------------------------------------------------------
-// User interface
-// ---------------------------------------------------------------------------
-
-let root = null;
-let ui = {};
-let tab = 'memory';
-
 const CSS = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -65,7 +57,6 @@ function buildUI() {
 if (root) return;
 const host = el('div', { id: 'story-manager-root' });
 document.documentElement.appendChild(host);
-// Keep the button on screen even if the site rebuilds its page.
 setInterval(() => { if (!host.isConnected) document.documentElement.appendChild(host); }, 2000);
 root = host.attachShadow({ mode: 'open' });
 root.append(el('style', {}, CSS));
@@ -113,7 +104,6 @@ if (s < 86400) return Math.round(s / 3600) + ' h ago';
 return new Date(ts).toLocaleDateString();
 }
 
-// Re-render only when forced or when the user is not typing in the panel.
 function renderPanel(force) {
 if (!ui.panel || !ui.panel.classList.contains('open')) return;
 const active = root.activeElement;
@@ -126,7 +116,9 @@ ui.body.replaceChildren(tab === 'memory' ? memoryView() : settingsView());
 function memoryView() {
 const chat = currentId && chats[currentId];
 if (!chat) {
-return el('div', { class: 'empty' }, 'Open a chat (or send a message) and its story memory will appear here.');
+return el('div', {},
+el('div', { class: 'empty' }, 'Open a chat (or send a message) and its story memory will appear here.'),
+diagnosticsBox());
 }
 const isBusy = !!busy[chat.id];
 const pinned = el('textarea', { placeholder: 'e.g. My character is Mira, 24, a healer who is afraid of water.' });
@@ -167,7 +159,12 @@ await saveChat(chat);
 toast(rebuild ? 'Reading the whole chat…' : 'Updating memory…');
 renderPanel(true);
 const msgs = await fetchMessages(chat.id);
-if (!unprocessed(chat, msgs).length) { toast('Memory is already up to date'); return; }
+chat.knownMessages = msgs.length;
+if (!msgs.length) {
+toast('Could not find any messages in this chat yet. Scroll through the chat, then try again — or open Diagnostics and send it to Claude.', true);
+return;
+}
+if (!unprocessed(chat, msgs).length) { toast('Memory is already up to date (' + msgs.length + ' messages read)'); return; }
 await updateMemory(chat.id, msgs, { force: true });
 if (!chat.lastError) toast('Memory updated');
 } catch (e) {
@@ -202,7 +199,47 @@ el('div', { class: 'btns' },
 el('button', { class: 'btn primary', onclick: save }, 'Save'),
 el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(false) }, 'Update now'),
 el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat'),
-el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')));
+el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')),
+diagnosticsBox());
+}
+
+function diagnosticsText() {
+const version = typeof GM_info !== 'undefined' && GM_info && GM_info.script ? GM_info.script.version : '?';
+const chat = currentId && chats[currentId];
+const lines = [
+'Story Manager v' + version,
+'Page: ' + shortUrl(location.href),
+'Current chat: ' + (currentId ? currentId.slice(0, 8) : 'none') +
+(chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · read into memory: ' + chat.processedCount : ''),
+'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
+'Memory keeper: ' + settings.provider,
+'',
+'Recent MiniApps requests (newest first, no message text):',
+];
+for (const a of apiLog) {
+lines.push(a.method + ' ' + a.url + ' → ' + a.status + (a.note ? ' [' + a.note + ']' : '') + ' · messages: ' + a.found + ' · ' + a.info);
+}
+return lines.join('\n');
+}
+
+function diagnosticsBox() {
+const box = el('textarea', { readonly: true });
+box.style.display = 'none';
+box.style.minHeight = '220px';
+const show = () => {
+box.value = diagnosticsText();
+box.style.display = '';
+};
+const copy = async () => {
+show();
+box.select();
+try { await navigator.clipboard.writeText(box.value); toast('Diagnostics copied — paste them to Claude'); } catch (e) { toast('Select the text in the box and copy it'); }
+};
+return el('div', {},
+el('div', { class: 'btns' },
+el('button', { class: 'btn', onclick: show }, 'Diagnostics'),
+el('button', { class: 'btn', onclick: copy }, 'Copy diagnostics')),
+box);
 }
 
 function settingsView() {

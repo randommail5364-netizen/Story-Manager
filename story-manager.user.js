@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.0.2
+// @version      1.1.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @match        https://miniapps.ai/*
 // @match        https://*.miniapps.ai/*
@@ -89,7 +89,7 @@
         state.apiBase = u.origin + m[1];
         return { kind: 'conv', id: m[2] };
       }
-      return { kind: 'other' };
+      return { kind: 'other', method, url: u.href };
     }
 
     function captureHeader(name, value) {
@@ -131,9 +131,12 @@
       return injected ? JSON.stringify(body) : bodyStr;
     }
 
-    function report(info, text) {
+    function report(info, text, status) {
       if (info.kind === 'send') emit('sendResult', { text });
       else if (info.kind === 'conv') emit('conv', { id: info.id, text });
+      // Everything else is reported too, so the script can learn which
+      // request really carries a chat's messages.
+      else if (info.kind === 'other') emit('api', { method: info.method, url: info.url, status, text: text && text.length < 3000000 ? text : '' });
     }
 
     // --- fetch ---
@@ -155,6 +158,9 @@
       if (info && (info.kind === 'send' || info.kind === 'conv')) {
         p.then((r) => (r.ok ? r.clone().text() : null))
           .then((t) => { if (t) report(info, t); })
+          .catch(() => {});
+      } else if (info && info.kind === 'other') {
+        p.then((r) => (r.ok ? r.clone().text() : '').then((t) => report(info, t, r.status)))
           .catch(() => {});
       }
       return p;
@@ -178,18 +184,17 @@
       if (info) {
         try {
           if (info.kind === 'send' && typeof body === 'string') body = rewriteSend(body);
-          if (info.kind === 'send' || info.kind === 'conv') {
-            const xhr = this;
-            xhr.addEventListener('load', function () {
-              try {
-                if (xhr.status < 200 || xhr.status >= 300) return;
-                let t;
-                if (!xhr.responseType || xhr.responseType === 'text') t = xhr.responseText;
-                else if (xhr.responseType === 'json') t = JSON.stringify(xhr.response);
-                if (t) report(info, t);
-              } catch (e) { /* ignore */ }
-            });
-          }
+          const xhr = this;
+          xhr.addEventListener('load', function () {
+            try {
+              const ok = xhr.status >= 200 && xhr.status < 300;
+              if (!ok && info.kind !== 'other') return;
+              let t = '';
+              if (ok && (!xhr.responseType || xhr.responseType === 'text')) t = xhr.responseText;
+              else if (ok && xhr.responseType === 'json') t = JSON.stringify(xhr.response);
+              if (t || info.kind === 'other') report(info, t, xhr.status);
+            } catch (e) { /* ignore */ }
+          });
         } catch (e) { /* ignore */ }
       }
       return oSend.call(this, body);
@@ -212,7 +217,8 @@
           .then((r) => r.json())
           .then((d) => { if (d && d.csrfToken) headers['x-csrf-token'] = state.headers['x-csrf-token'] = d.csrfToken; })
           .catch(() => {});
-      csrf.then(() => origFetch(state.apiBase + req.path, toPage(opts)))
+      const target = /^https:\/\/([a-z0-9-]+\.)*miniapps\.ai\//i.test(req.path) ? req.path : state.apiBase + req.path;
+      csrf.then(() => origFetch(target, toPage(opts)))
         .then((r) => r.text().then((text) => emit('rpc:' + req.id, { ok: r.ok, status: r.status, text })))
         .catch((e) => emit('rpc:' + req.id, { ok: false, status: 0, text: String(e) }));
     });
@@ -423,10 +429,16 @@
     return 'assistant';
   }
 
+  function hashText(t) {
+    let h = 5381;
+    for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(36);
+  }
+
   function extractMessages(data) {
     const arr = findMessageArray(data);
-    const out = arr.filter(looksLikeMessage).map((m, i) => ({
-      id: String(m.id || m._id || m.chatMessageId || ('idx-' + i)),
+    const out = arr.filter(looksLikeMessage).map((m) => ({
+      id: String(m.id || m._id || m.chatMessageId || m.uuid || ('h-' + roleOf(m) + '-' + hashText(textOf(m)))),
       role: roleOf(m),
       text: textOf(m).replace(MEM_BLOCK_RE, '').trim(),
       t: Date.parse(m.createdAt || m.created_at || '') || 0,
@@ -588,7 +600,7 @@
     let prev = null;
     for (let i = 0; i < 80; i++) {
       await sleep(3000);
-      const msgs = extractMessages(await rpc('GET', '/conversations/' + cid));
+      const msgs = await fetchMessages(cid, { cache: false });
       const lastUser = msgs.map((m) => m.role).lastIndexOf('user');
       const reply = msgs.slice(lastUser + 1).filter((m) => m.role === 'assistant').map((m) => m.text).join('\n');
       if (reply && reply === prev) return reply;
@@ -690,12 +702,114 @@
     }
   }
 
-  async function fetchMessages(id) {
-    const data = await rpc('GET', '/conversations/' + id);
-    const chat = await getChat(id, true);
-    const t = titleOf(data);
-    if (t && !chat.title) { chat.title = t; await saveChat(chat); }
-    return extractMessages(data);
+  // ---------------------------------------------------------------------------
+  // Finding a chat's messages. MiniApps has no public API, so besides the
+  // documented GET /conversations/{id} the script learns which request the
+  // site itself uses to load messages, and reads the chat the same way.
+  // ---------------------------------------------------------------------------
+
+  let learned = null;               // { template: 'https://…{id}…' }
+  const seenMsgs = {};              // chat id -> Map(message id -> message), this page visit only
+  const apiLog = [];                // recent API calls, for Diagnostics
+
+  function mergeMsgs(...lists) {
+    const map = new Map();
+    for (const list of lists) for (const m of list) map.set(m.id, m);
+    const out = [...map.values()];
+    if (out.length > 1 && out.every((m) => m.t)) out.sort((a, b) => a.t - b.t);
+    return out;
+  }
+
+  function remember(id, msgs) {
+    const prev = seenMsgs[id] ? [...seenMsgs[id].values()] : [];
+    const all = mergeMsgs(prev, msgs);
+    seenMsgs[id] = new Map(all.map((m) => [m.id, m]));
+    return all;
+  }
+
+  function shortUrl(url) {
+    try {
+      const u = new URL(url, location.href);
+      const q = [...u.searchParams.keys()].join(',');
+      return u.pathname.replace(new RegExp(UUID_RE.source, 'gi'), '{id}') + (q ? '?' + q : '');
+    } catch (e) { return String(url).slice(0, 80); }
+  }
+
+  function describe(data) {
+    if (data === null || data === undefined) return 'no data';
+    if (Array.isArray(data)) {
+      return 'array[' + data.length + ']' + (data[0] && typeof data[0] === 'object' ? ' item keys: ' + Object.keys(data[0]).slice(0, 12).join(',') : '');
+    }
+    if (typeof data !== 'object') return typeof data;
+    const parts = ['keys: ' + Object.keys(data).slice(0, 14).join(',')];
+    for (const [k, v] of Object.entries(data)) {
+      if (Array.isArray(v) && v.length) parts.push(k + '[' + v.length + ']' + (v[0] && typeof v[0] === 'object' ? ' {' + Object.keys(v[0]).slice(0, 12).join(',') + '}' : ''));
+    }
+    return parts.join(' | ');
+  }
+
+  function logApi(method, url, status, data, note) {
+    let found = 0;
+    try { found = extractMessages(data).length; } catch (e) { /* ignore */ }
+    apiLog.unshift({ method, url: shortUrl(url), status, info: describe(data), found, note: note || '' });
+    apiLog.length = Math.min(apiLog.length, 25);
+  }
+
+  // Which chat does a message list belong to?
+  function convIdFor(url, data, arr) {
+    const cands = [];
+    const first = arr && arr[0];
+    if (first && typeof first === 'object') cands.push(first.conversationId, first.conversation_id, first.conversation && first.conversation.id);
+    if (data && typeof data === 'object') cands.push(data.conversationId, data.conversation && data.conversation.id);
+    let decoded = url;
+    try { decoded = decodeURIComponent(url); } catch (e) { /* ignore */ }
+    const inUrl = (decoded.match(new RegExp(UUID_RE.source, 'gi')) || []).map((x) => x.toLowerCase());
+    const ids = cands.filter((c) => typeof c === 'string' && UUID_RE.test(c)).map((c) => c.toLowerCase());
+    const pick = ids.find((c) => inUrl.includes(c)) || inUrl.find((c) => c === currentId || chats[c]) || ids[0] || (inUrl.length === 1 ? inUrl[0] : null);
+    return pick && !helperIds.has(pick) ? { id: pick, inUrl: inUrl.includes(pick) } : null;
+  }
+
+  // Ask the learned endpoint for every page of a chat's messages.
+  async function fetchLearned(id) {
+    const u = new URL(learned.template.split('{id}').join(id));
+    let opts = null;
+    try { opts = JSON.parse(u.searchParams.get('options') || 'null'); } catch (e) { /* ignore */ }
+    const paged = opts && typeof opts === 'object' && 'page' in opts;
+    const plainPaged = !paged && u.searchParams.has('page');
+    let all = [];
+    for (let page = 1; page <= 100; page++) {
+      if (paged) { opts.page = page; u.searchParams.set('options', JSON.stringify(opts)); }
+      else if (plainPaged) u.searchParams.set('page', String(page));
+      const data = await rpc('GET', u.href);
+      const msgs = extractMessages(data);
+      logApi('GET', u.href, 200, data, 'Story Manager, page ' + page);
+      const before = all.length;
+      all = mergeMsgs(all, msgs);
+      if (!paged && !plainPaged) break;
+      const per = Number((paged ? opts.itemsPerPage : u.searchParams.get('itemsPerPage')) || 0);
+      if (!msgs.length || all.length === before || (per && findMessageArray(data).length < per)) break;
+    }
+    return all;
+  }
+
+  async function fetchMessages(id, { cache = true } = {}) {
+    let msgs = [];
+    let firstErr = null;
+    try {
+      const data = await rpc('GET', '/conversations/' + id);
+      logApi('GET', 'https://api.miniapps.ai/conversations/' + id, 200, data, 'Story Manager');
+      msgs = extractMessages(data);
+      if (cache) {
+        const chat = await getChat(id, true);
+        const t = titleOf(data);
+        if (t && !chat.title) { chat.title = t; await saveChat(chat); }
+      }
+    } catch (e) { firstErr = e; logApi('GET', '/conversations/' + id, 'error', null, String(e.message || e)); }
+    if (learned && learned.template) {
+      try { msgs = mergeMsgs(msgs, await fetchLearned(id)); } catch (e) { firstErr = firstErr || e; logApi('GET', learned.template, 'error', null, String(e.message || e)); }
+    }
+    if (!msgs.length && firstErr && !cache) throw firstErr;
+    return cache ? remember(id, msgs) : msgs;
   }
 
   // Called whenever we see (part of) a chat's history.
@@ -754,6 +868,7 @@
   const ready = (async () => {
     settings = Object.assign({}, DEFAULT_SETTINGS, await Store.get('settings', {}));
     chatIndex = await Store.get('chatIndex', []);
+    learned = await Store.get('learned', null);
     for (const id of chatIndex) await getChat(id, false);
     publishInjectMap();
   })();
@@ -764,10 +879,35 @@
     let data;
     try { data = JSON.parse(d.text); } catch (e) { return; }
     setCurrent(d.id);
+    logApi('GET', 'https://api.miniapps.ai/conversations/' + d.id, 200, data, 'site');
     const chat = await getChat(d.id, true);
     const t = titleOf(data);
     if (t && !chat.title) chat.title = t;
-    await syncChat(d.id, extractMessages(data), { final: false });
+    await syncChat(d.id, remember(d.id, extractMessages(data)), { final: false });
+  });
+
+  on('api', async (d) => {
+    await ready;
+    let data = null;
+    try { data = d.text ? JSON.parse(d.text) : null; } catch (e) { /* not JSON */ }
+    logApi(d.method, d.url, d.status, data, 'site');
+    if (!data) return;
+    const arr = findMessageArray(data);
+    const msgs = extractMessages(data);
+    // Only trust lists that clearly are a chat: both sides talking, tied to a chat id.
+    if (!msgs.some((m) => m.role === 'user') || !msgs.some((m) => m.role === 'assistant')) return;
+    const conv = convIdFor(d.url, data, arr);
+    if (!conv) return;
+    if (conv.inUrl && d.method === 'GET') {
+      const decoded = (() => { try { return decodeURIComponent(d.url); } catch (e) { return d.url; } })();
+      const template = decoded.split(conv.id).join('{id}');
+      if (!learned || learned.template !== template) {
+        learned = { template };
+        await Store.set('learned', learned);
+      }
+    }
+    setCurrent(conv.id);
+    await syncChat(conv.id, remember(conv.id, msgs), { final: false });
   });
 
   on('sent', async (d) => {
@@ -939,7 +1079,9 @@
   function memoryView() {
     const chat = currentId && chats[currentId];
     if (!chat) {
-      return el('div', { class: 'empty' }, 'Open a chat (or send a message) and its story memory will appear here.');
+      return el('div', {},
+        el('div', { class: 'empty' }, 'Open a chat (or send a message) and its story memory will appear here.'),
+        diagnosticsBox());
     }
     const isBusy = !!busy[chat.id];
     const pinned = el('textarea', { placeholder: 'e.g. My character is Mira, 24, a healer who is afraid of water.' });
@@ -980,7 +1122,12 @@
         toast(rebuild ? 'Reading the whole chat…' : 'Updating memory…');
         renderPanel(true);
         const msgs = await fetchMessages(chat.id);
-        if (!unprocessed(chat, msgs).length) { toast('Memory is already up to date'); return; }
+        chat.knownMessages = msgs.length;
+        if (!msgs.length) {
+          toast('Could not find any messages in this chat yet. Scroll through the chat, then try again — or open Diagnostics and send it to Claude.', true);
+          return;
+        }
+        if (!unprocessed(chat, msgs).length) { toast('Memory is already up to date (' + msgs.length + ' messages read)'); return; }
         await updateMemory(chat.id, msgs, { force: true });
         if (!chat.lastError) toast('Memory updated');
       } catch (e) {
@@ -1015,7 +1162,47 @@
         el('button', { class: 'btn primary', onclick: save }, 'Save'),
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(false) }, 'Update now'),
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat'),
-        el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')));
+        el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')),
+      diagnosticsBox());
+  }
+
+  function diagnosticsText() {
+    const version = typeof GM_info !== 'undefined' && GM_info && GM_info.script ? GM_info.script.version : '?';
+    const chat = currentId && chats[currentId];
+    const lines = [
+      'Story Manager v' + version,
+      'Page: ' + shortUrl(location.href),
+      'Current chat: ' + (currentId ? currentId.slice(0, 8) : 'none') +
+        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · read into memory: ' + chat.processedCount : ''),
+      'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
+      'Memory keeper: ' + settings.provider,
+      '',
+      'Recent MiniApps requests (newest first, no message text):',
+    ];
+    for (const a of apiLog) {
+      lines.push(a.method + ' ' + a.url + ' → ' + a.status + (a.note ? ' [' + a.note + ']' : '') + ' · messages: ' + a.found + ' · ' + a.info);
+    }
+    return lines.join('\n');
+  }
+
+  function diagnosticsBox() {
+    const box = el('textarea', { readonly: true });
+    box.style.display = 'none';
+    box.style.minHeight = '220px';
+    const show = () => {
+      box.value = diagnosticsText();
+      box.style.display = '';
+    };
+    const copy = async () => {
+      show();
+      box.select();
+      try { await navigator.clipboard.writeText(box.value); toast('Diagnostics copied — paste them to Claude'); } catch (e) { toast('Select the text in the box and copy it'); }
+    };
+    return el('div', {},
+      el('div', { class: 'btns' },
+        el('button', { class: 'btn', onclick: show }, 'Diagnostics'),
+        el('button', { class: 'btn', onclick: copy }, 'Copy diagnostics')),
+      box);
   }
 
   function settingsView() {

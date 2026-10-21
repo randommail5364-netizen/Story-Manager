@@ -1,51 +1,3 @@
-// ---------------------------------------------------------------------------
-// Talking to the MiniApps API through the page hook
-// ---------------------------------------------------------------------------
-
-function rpc(method, path, body) {
-return new Promise((resolve, reject) => {
-const id = Math.random().toString(36).slice(2);
-const evName = 'smx:rpc:' + id;
-const timer = setTimeout(() => { document.removeEventListener(evName, onRes); reject(new Error('MiniApps request timed out')); }, 60000);
-function onRes(ev) {
-clearTimeout(timer);
-document.removeEventListener(evName, onRes);
-let d;
-try { d = JSON.parse(ev.detail); } catch (e) { reject(new Error('Bad response')); return; }
-let json = null;
-try { json = d.text ? JSON.parse(d.text) : {}; } catch (e) { /* not JSON */ }
-if (!d.ok) {
-const msg = (json && json.message) || d.text || 'request failed';
-reject(new Error('MiniApps HTTP ' + d.status + ': ' + String(msg).slice(0, 200)));
-return;
-}
-resolve(json);
-}
-document.addEventListener(evName, onRes);
-document.dispatchEvent(new CustomEvent('smx:rpc', { detail: JSON.stringify({ id, method, path, body }) }));
-});
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function uuid4() {
-if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
-return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-const r = Math.random() * 16 | 0;
-return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-});
-}
-
-// ---------------------------------------------------------------------------
-// Memory-keeper AI
-// ---------------------------------------------------------------------------
-
-function gmRequest() {
-if (typeof GM !== 'undefined' && GM && typeof GM.xmlHttpRequest === 'function') return GM.xmlHttpRequest;
-if (typeof GM_xmlhttpRequest === 'function') return GM_xmlhttpRequest;
-return null;
-}
-
 async function postJSON(url, headers, body) {
 const gm = gmRequest();
 let res;
@@ -106,7 +58,6 @@ return parts.map((p) => p.text || '').join('');
 return callMiniApps(system + '\n\n' + user);
 }
 
-// Uses one of the site's own chatbots as the memory keeper (costs MiniApps credits).
 let toolCache = null;
 async function callMiniApps(prompt) {
 const slug = (settings.miniappsSlug || 'claude-37').trim();
@@ -134,7 +85,7 @@ helperIds.add(cid);
 let prev = null;
 for (let i = 0; i < 80; i++) {
 await sleep(3000);
-const msgs = extractMessages(await rpc('GET', '/conversations/' + cid));
+const msgs = await fetchMessages(cid, { cache: false });
 const lastUser = msgs.map((m) => m.role).lastIndexOf('user');
 const reply = msgs.slice(lastUser + 1).filter((m) => m.role === 'assistant').map((m) => m.text).join('\n');
 if (reply && reply === prev) return reply;
@@ -202,7 +153,6 @@ throw new Error('Memory keeper gave an unusable answer: "' + out.slice(0, 120) +
 return out;
 }
 
-// Fold every not-yet-processed message of a chat into its memory.
 async function updateMemory(id, msgs, { force = false } = {}) {
 const chat = await getChat(id, true);
 if (busy[id] || (!chat.enabled && !force)) return;
@@ -236,19 +186,112 @@ renderPanel();
 }
 }
 
-async function fetchMessages(id) {
+
+let learned = null;               // { template: 'https://…{id}…' }
+const seenMsgs = {};              // chat id -> Map(message id -> message), this page visit only
+const apiLog = [];                // recent API calls, for Diagnostics
+
+function mergeMsgs(...lists) {
+const map = new Map();
+for (const list of lists) for (const m of list) map.set(m.id, m);
+const out = [...map.values()];
+if (out.length > 1 && out.every((m) => m.t)) out.sort((a, b) => a.t - b.t);
+return out;
+}
+
+function remember(id, msgs) {
+const prev = seenMsgs[id] ? [...seenMsgs[id].values()] : [];
+const all = mergeMsgs(prev, msgs);
+seenMsgs[id] = new Map(all.map((m) => [m.id, m]));
+return all;
+}
+
+function shortUrl(url) {
+try {
+const u = new URL(url, location.href);
+const q = [...u.searchParams.keys()].join(',');
+return u.pathname.replace(new RegExp(UUID_RE.source, 'gi'), '{id}') + (q ? '?' + q : '');
+} catch (e) { return String(url).slice(0, 80); }
+}
+
+function describe(data) {
+if (data === null || data === undefined) return 'no data';
+if (Array.isArray(data)) {
+return 'array[' + data.length + ']' + (data[0] && typeof data[0] === 'object' ? ' item keys: ' + Object.keys(data[0]).slice(0, 12).join(',') : '');
+}
+if (typeof data !== 'object') return typeof data;
+const parts = ['keys: ' + Object.keys(data).slice(0, 14).join(',')];
+for (const [k, v] of Object.entries(data)) {
+if (Array.isArray(v) && v.length) parts.push(k + '[' + v.length + ']' + (v[0] && typeof v[0] === 'object' ? ' {' + Object.keys(v[0]).slice(0, 12).join(',') + '}' : ''));
+}
+return parts.join(' | ');
+}
+
+function logApi(method, url, status, data, note) {
+let found = 0;
+try { found = extractMessages(data).length; } catch (e) { /* ignore */ }
+apiLog.unshift({ method, url: shortUrl(url), status, info: describe(data), found, note: note || '' });
+apiLog.length = Math.min(apiLog.length, 25);
+}
+
+function convIdFor(url, data, arr) {
+const cands = [];
+const first = arr && arr[0];
+if (first && typeof first === 'object') cands.push(first.conversationId, first.conversation_id, first.conversation && first.conversation.id);
+if (data && typeof data === 'object') cands.push(data.conversationId, data.conversation && data.conversation.id);
+let decoded = url;
+try { decoded = decodeURIComponent(url); } catch (e) { /* ignore */ }
+const inUrl = (decoded.match(new RegExp(UUID_RE.source, 'gi')) || []).map((x) => x.toLowerCase());
+const ids = cands.filter((c) => typeof c === 'string' && UUID_RE.test(c)).map((c) => c.toLowerCase());
+const pick = ids.find((c) => inUrl.includes(c)) || inUrl.find((c) => c === currentId || chats[c]) || ids[0] || (inUrl.length === 1 ? inUrl[0] : null);
+return pick && !helperIds.has(pick) ? { id: pick, inUrl: inUrl.includes(pick) } : null;
+}
+
+async function fetchLearned(id) {
+const u = new URL(learned.template.split('{id}').join(id));
+let opts = null;
+try { opts = JSON.parse(u.searchParams.get('options') || 'null'); } catch (e) { /* ignore */ }
+const paged = opts && typeof opts === 'object' && 'page' in opts;
+const plainPaged = !paged && u.searchParams.has('page');
+let all = [];
+for (let page = 1; page <= 100; page++) {
+if (paged) { opts.page = page; u.searchParams.set('options', JSON.stringify(opts)); }
+else if (plainPaged) u.searchParams.set('page', String(page));
+const data = await rpc('GET', u.href);
+const msgs = extractMessages(data);
+logApi('GET', u.href, 200, data, 'Story Manager, page ' + page);
+const before = all.length;
+all = mergeMsgs(all, msgs);
+if (!paged && !plainPaged) break;
+const per = Number((paged ? opts.itemsPerPage : u.searchParams.get('itemsPerPage')) || 0);
+if (!msgs.length || all.length === before || (per && findMessageArray(data).length < per)) break;
+}
+return all;
+}
+
+async function fetchMessages(id, { cache = true } = {}) {
+let msgs = [];
+let firstErr = null;
+try {
 const data = await rpc('GET', '/conversations/' + id);
+logApi('GET', 'https://api.miniapps.ai/conversations/' + id, 200, data, 'Story Manager');
+msgs = extractMessages(data);
+if (cache) {
 const chat = await getChat(id, true);
 const t = titleOf(data);
 if (t && !chat.title) { chat.title = t; await saveChat(chat); }
-return extractMessages(data);
+}
+} catch (e) { firstErr = e; logApi('GET', '/conversations/' + id, 'error', null, String(e.message || e)); }
+if (learned && learned.template) {
+try { msgs = mergeMsgs(msgs, await fetchLearned(id)); } catch (e) { firstErr = firstErr || e; logApi('GET', learned.template, 'error', null, String(e.message || e)); }
+}
+if (!msgs.length && firstErr && !cache) throw firstErr;
+return cache ? remember(id, msgs) : msgs;
 }
 
-// Called whenever we see (part of) a chat's history.
 async function syncChat(id, msgs, { final }) {
 if (helperIds.has(id)) return;
 const chat = await getChat(id, true);
-// While the AI may still be typing, ignore its last message for now.
 let usable = msgs;
 if (!final && usable.length && usable[usable.length - 1].role === 'assistant') usable = usable.slice(0, -1);
 chat.knownMessages = msgs.length;
@@ -260,7 +303,6 @@ await updateMemory(id, usable);
 }
 }
 
-// After a message is sent, wait for the AI to finish its reply, then sync.
 async function waitForReply(id, userText) {
 const token = {};
 polls[id] = token;
@@ -283,9 +325,6 @@ prev = last.text;
 }
 }
 
-// ---------------------------------------------------------------------------
-// Events from the page hook
-// ---------------------------------------------------------------------------
 
 function on(type, fn) {
 document.addEventListener('smx:' + type, (ev) => {
@@ -300,6 +339,7 @@ let lastSent = null;
 const ready = (async () => {
 settings = Object.assign({}, DEFAULT_SETTINGS, await Store.get('settings', {}));
 chatIndex = await Store.get('chatIndex', []);
+learned = await Store.get('learned', null);
 for (const id of chatIndex) await getChat(id, false);
 publishInjectMap();
 })();
@@ -310,10 +350,34 @@ if (helperIds.has(d.id)) return;
 let data;
 try { data = JSON.parse(d.text); } catch (e) { return; }
 setCurrent(d.id);
+logApi('GET', 'https://api.miniapps.ai/conversations/' + d.id, 200, data, 'site');
 const chat = await getChat(d.id, true);
 const t = titleOf(data);
 if (t && !chat.title) chat.title = t;
-await syncChat(d.id, extractMessages(data), { final: false });
+await syncChat(d.id, remember(d.id, extractMessages(data)), { final: false });
+});
+
+on('api', async (d) => {
+await ready;
+let data = null;
+try { data = d.text ? JSON.parse(d.text) : null; } catch (e) { /* not JSON */ }
+logApi(d.method, d.url, d.status, data, 'site');
+if (!data) return;
+const arr = findMessageArray(data);
+const msgs = extractMessages(data);
+if (!msgs.some((m) => m.role === 'user') || !msgs.some((m) => m.role === 'assistant')) return;
+const conv = convIdFor(d.url, data, arr);
+if (!conv) return;
+if (conv.inUrl && d.method === 'GET') {
+const decoded = (() => { try { return decodeURIComponent(d.url); } catch (e) { return d.url; } })();
+const template = decoded.split(conv.id).join('{id}');
+if (!learned || learned.template !== template) {
+learned = { template };
+await Store.set('learned', learned);
+}
+}
+setCurrent(conv.id);
+await syncChat(conv.id, remember(conv.id, msgs), { final: false });
 });
 
 on('sent', async (d) => {
@@ -334,7 +398,6 @@ if (!id || helperIds.has(id)) return;
 setCurrent(id);
 const chat = await getChat(id, true);
 if (lastSent && !lastSent.conversationId) {
-// First message of a brand new chat.
 chat.sentSinceInject += 1;
 await saveChat(chat);
 }
@@ -348,7 +411,6 @@ renderPanel();
 setStatus();
 }
 
-// Single-page app: also pick the chat id up from the address bar.
 let lastHref = '';
 setInterval(() => {
 if (location.href === lastHref) return;
@@ -357,5 +419,10 @@ const m = location.href.match(UUID_RE);
 if (m) ready.then(() => setCurrent(m[0].toLowerCase()));
 }, 1000);
 
-// ===== END OF PART 2 of 3 (v1.0.2) =====
+
+let root = null;
+let ui = {};
+let tab = 'memory';
+
+// ===== END OF PART 2 of 3 (v1.1.0) =====
 // ===== Tap on the empty line below, then paste PART 3 =====

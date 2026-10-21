@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.0.2
+// @version      1.1.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @match        https://miniapps.ai/*
 // @match        https://*.miniapps.ai/*
@@ -38,7 +38,6 @@
 (function () {
 'use strict';
 
-// If anything stops the script from starting, say where instead of failing silently.
 let stage = 'starting';
 let uiStarted = false;
 setTimeout(() => {
@@ -50,11 +49,6 @@ const MEM_END = '[[/STORY-MEMORY]]';
 const MEM_BLOCK_RE = /\[\[STORY-MEMORY\]\][\s\S]*?\[\[\/STORY-MEMORY\]\]\s*/g;
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-// ---------------------------------------------------------------------------
-// Page hook — runs in the website's own JavaScript world so it can see and
-// adjust the site's network requests. Talks to the rest of the script only
-// through DOM events / attributes, so it works in every userscript manager.
-// ---------------------------------------------------------------------------
 
 function pageHook(win) {
 if (win.__smxHooked) return;
@@ -62,8 +56,6 @@ win.__smxHooked = true;
 const doc = win.document;
 if (doc.documentElement) doc.documentElement.setAttribute('data-smx-hook', '1');
 
-// When this runs inside Firefox's userscript sandbox instead of the page,
-// functions and objects handed to the page must be exported / cloned.
 const sandboxed = typeof exportFunction === 'function' && typeof cloneInto === 'function';
 const expFn = (fn, target) => (sandboxed ? exportFunction(fn, target) : fn);
 const toPage = (obj) => (sandboxed ? cloneInto(obj, win) : obj);
@@ -89,7 +81,7 @@ if (method === 'GET' && (m = path.match(/^(.*)\/conversations\/([0-9a-f-]{36})$/
 state.apiBase = u.origin + m[1];
 return { kind: 'conv', id: m[2] };
 }
-return { kind: 'other' };
+return { kind: 'other', method, url: u.href };
 }
 
 function captureHeader(name, value) {
@@ -106,7 +98,6 @@ else Object.keys(h).forEach((k) => captureHeader(k, h[k]));
 } catch (e) { /* ignore */ }
 }
 
-// Attach the story memory to an outgoing chat message.
 function rewriteSend(bodyStr) {
 let body;
 try { body = JSON.parse(bodyStr); } catch (e) { return bodyStr; }
@@ -131,12 +122,12 @@ emit('sent', { conversationId: convId, injected, userText });
 return injected ? JSON.stringify(body) : bodyStr;
 }
 
-function report(info, text) {
+function report(info, text, status) {
 if (info.kind === 'send') emit('sendResult', { text });
 else if (info.kind === 'conv') emit('conv', { id: info.id, text });
+else if (info.kind === 'other') emit('api', { method: info.method, url: info.url, status, text: text && text.length < 3000000 ? text : '' });
 }
 
-// --- fetch ---
 win.fetch = expFn(function (input, init) {
 let info = null;
 try {
@@ -156,11 +147,13 @@ if (info && (info.kind === 'send' || info.kind === 'conv')) {
 p.then((r) => (r.ok ? r.clone().text() : null))
 .then((t) => { if (t) report(info, t); })
 .catch(() => {});
+} else if (info && info.kind === 'other') {
+p.then((r) => (r.ok ? r.clone().text() : '').then((t) => report(info, t, r.status)))
+.catch(() => {});
 }
 return p;
 }, win);
 
-// --- XMLHttpRequest (axios etc.) ---
 const XP = win.XMLHttpRequest.prototype;
 const oOpen = XP.open;
 const oSend = XP.send;
@@ -178,24 +171,22 @@ const info = this.__smx;
 if (info) {
 try {
 if (info.kind === 'send' && typeof body === 'string') body = rewriteSend(body);
-if (info.kind === 'send' || info.kind === 'conv') {
 const xhr = this;
 xhr.addEventListener('load', function () {
 try {
-if (xhr.status < 200 || xhr.status >= 300) return;
-let t;
-if (!xhr.responseType || xhr.responseType === 'text') t = xhr.responseText;
-else if (xhr.responseType === 'json') t = JSON.stringify(xhr.response);
-if (t) report(info, t);
+const ok = xhr.status >= 200 && xhr.status < 300;
+if (!ok && info.kind !== 'other') return;
+let t = '';
+if (ok && (!xhr.responseType || xhr.responseType === 'text')) t = xhr.responseText;
+else if (ok && xhr.responseType === 'json') t = JSON.stringify(xhr.response);
+if (t || info.kind === 'other') report(info, t, xhr.status);
 } catch (e) { /* ignore */ }
 });
-}
 } catch (e) { /* ignore */ }
 }
 return oSend.call(this, body);
 }, XP);
 
-// --- RPC: lets the script call the MiniApps API with the user's session ---
 doc.addEventListener('smx:rpc', function (ev) {
 let req;
 try { req = JSON.parse(ev.detail); } catch (e) { return; }
@@ -205,14 +196,14 @@ if (req.body !== undefined) {
 headers['Content-Type'] = 'application/json';
 opts.body = JSON.stringify(req.body);
 }
-// POSTs need a CSRF token; get one the way the site does if we have not seen it yet.
 const csrf = opts.method === 'GET' || state.headers['x-csrf-token']
 ? Promise.resolve()
 : origFetch(state.apiBase + '/auth/csrf', toPage({ credentials: 'include' }))
 .then((r) => r.json())
 .then((d) => { if (d && d.csrfToken) headers['x-csrf-token'] = state.headers['x-csrf-token'] = d.csrfToken; })
 .catch(() => {});
-csrf.then(() => origFetch(state.apiBase + req.path, toPage(opts)))
+const target = /^https:\/\/([a-z0-9-]+\.)*miniapps\.ai\//i.test(req.path) ? req.path : state.apiBase + req.path;
+csrf.then(() => origFetch(target, toPage(opts)))
 .then((r) => r.text().then((text) => emit('rpc:' + req.id, { ok: r.ok, status: r.status, text })))
 .catch((e) => emit('rpc:' + req.id, { ok: false, status: 0, text: String(e) }));
 });
@@ -227,8 +218,6 @@ s.textContent = '(' + pageHook.toString() + ')(window);';
 (document.head || document.documentElement).appendChild(s);
 s.remove();
 } catch (e) { /* ignore */ }
-// Inline scripts can be blocked by a Content-Security-Policy; fall back to
-// patching the page directly through unsafeWindow.
 if (!document.documentElement || document.documentElement.getAttribute('data-smx-hook') !== '1') {
 try { pageHook(W); } catch (e) { console.warn('[Story Manager] could not hook the page', e); }
 }
@@ -238,15 +227,10 @@ stage = 'hooking the page';
 try { installPageHook(); } catch (e) { console.warn('[Story Manager] could not hook the page', e); }
 stage = 'loading storage';
 
-// ---------------------------------------------------------------------------
-// Storage
-// ---------------------------------------------------------------------------
 
 let hasGM = typeof GM !== 'undefined' && GM && typeof GM.getValue === 'function';
 let hasGMLegacy = typeof GM_getValue === 'function';
 
-// Some userscript managers never answer storage calls; fall back to the
-// browser's own storage instead of hanging.
 function withTimeout(promise, ms) {
 return Promise.race([promise, new Promise((resolve, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
 }
@@ -345,9 +329,6 @@ await Store.set('chat:' + chat.id, chat);
 publishInjectMap();
 }
 
-// ---------------------------------------------------------------------------
-// Memory injection
-// ---------------------------------------------------------------------------
 
 function buildBlock(chat) {
 const parts = [];
@@ -370,14 +351,10 @@ const block = buildBlock(c);
 if (block) map[id] = block;
 }
 }
-// At document-start the <html> element may not exist yet.
 if (document.documentElement) document.documentElement.setAttribute('data-smx-inject', JSON.stringify(map));
 else setTimeout(publishInjectMap, 50);
 }
 
-// ---------------------------------------------------------------------------
-// Conversation parsing
-// ---------------------------------------------------------------------------
 
 function looksLikeMessage(o) {
 return o && typeof o === 'object' && !Array.isArray(o) &&
@@ -423,10 +400,16 @@ if (/user|human/.test(r) || m.isUser === true) return 'user';
 return 'assistant';
 }
 
+function hashText(t) {
+let h = 5381;
+for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0;
+return (h >>> 0).toString(36);
+}
+
 function extractMessages(data) {
 const arr = findMessageArray(data);
-const out = arr.filter(looksLikeMessage).map((m, i) => ({
-id: String(m.id || m._id || m.chatMessageId || ('idx-' + i)),
+const out = arr.filter(looksLikeMessage).map((m) => ({
+id: String(m.id || m._id || m.chatMessageId || m.uuid || ('h-' + roleOf(m) + '-' + hashText(textOf(m)))),
 role: roleOf(m),
 text: textOf(m).replace(MEM_BLOCK_RE, '').trim(),
 t: Date.parse(m.createdAt || m.created_at || '') || 0,
@@ -441,7 +424,6 @@ const c = data.conversation || data;
 return String(c.title || (c.tool && c.tool.title) || (data.tool && data.tool.title) || '').slice(0, 80);
 }
 
-// Messages that come after the last one we already folded into memory.
 function unprocessed(chat, msgs) {
 const done = new Set(chat.processedIds);
 let last = -1;
@@ -452,5 +434,47 @@ if (last === -1 && chat.processedCount > 0) last = Math.min(chat.processedCount,
 return msgs.slice(last + 1);
 }
 
-// ===== END OF PART 1 of 3 (v1.0.2) =====
+
+function rpc(method, path, body) {
+return new Promise((resolve, reject) => {
+const id = Math.random().toString(36).slice(2);
+const evName = 'smx:rpc:' + id;
+const timer = setTimeout(() => { document.removeEventListener(evName, onRes); reject(new Error('MiniApps request timed out')); }, 60000);
+function onRes(ev) {
+clearTimeout(timer);
+document.removeEventListener(evName, onRes);
+let d;
+try { d = JSON.parse(ev.detail); } catch (e) { reject(new Error('Bad response')); return; }
+let json = null;
+try { json = d.text ? JSON.parse(d.text) : {}; } catch (e) { /* not JSON */ }
+if (!d.ok) {
+const msg = (json && json.message) || d.text || 'request failed';
+reject(new Error('MiniApps HTTP ' + d.status + ': ' + String(msg).slice(0, 200)));
+return;
+}
+resolve(json);
+}
+document.addEventListener(evName, onRes);
+document.dispatchEvent(new CustomEvent('smx:rpc', { detail: JSON.stringify({ id, method, path, body }) }));
+});
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function uuid4() {
+if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+const r = Math.random() * 16 | 0;
+return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+});
+}
+
+
+function gmRequest() {
+if (typeof GM !== 'undefined' && GM && typeof GM.xmlHttpRequest === 'function') return GM.xmlHttpRequest;
+if (typeof GM_xmlhttpRequest === 'function') return GM_xmlhttpRequest;
+return null;
+}
+
+// ===== END OF PART 1 of 3 (v1.1.0) =====
 // ===== Tap on the empty line below, then paste PART 2 =====

@@ -37,6 +37,13 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
   }
   async function load() {
     if (!conv) return;
+    if (localStorage.getItem('altApi')) {
+      // Like a site that loads messages from a separate, paged endpoint.
+      const opts = encodeURIComponent(JSON.stringify({ page: 1, itemsPerPage: 4 }));
+      const r = await xhr('GET', 'https://api.miniapps.ai/chat-messages/' + conv + '?options=' + opts);
+      document.getElementById('log').textContent = r.items.map(m => m.origin + ': ' + m.elements[0].text).join('\\n');
+      return;
+    }
     const d = await xhr('GET', 'https://api.miniapps.ai/conversations/' + conv);
     document.getElementById('log').textContent = d.messages.map(m => m.origin + ': ' + m.elements[0].text).join('\\n');
   }
@@ -55,6 +62,7 @@ function uuid() { return require('crypto').randomUUID(); }
 
 async function main() {
   const convs = {};          // id -> { toolId, messages: [] }
+  let altApi = false;        // when true, /conversations/{id} has no messages (like a paged real API)
   const chatBodies = [];     // every POST /chat body the "server" received
   const llmCalls = [];       // prompts the memory keeper received
 
@@ -84,7 +92,16 @@ async function main() {
     let m;
     if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/(.+)$/))) {
       const c = convs[m[1]];
-      return c ? json({ id: m[1], title: c.toolId === 'tool-story' ? 'Dragon Tale' : 'helper', messages: c.messages }) : json({ message: 'nope' }, 404);
+      if (!c) return json({ message: 'nope' }, 404);
+      const title = c.toolId === 'tool-story' ? 'Dragon Tale' : 'helper';
+      return json(altApi ? { id: m[1], title } : { id: m[1], title, messages: c.messages });
+    }
+    if (req.method() === 'GET' && (m = url.pathname.match(/^\/chat-messages\/(.+)$/))) {
+      const c = convs[m[1]];
+      const o = JSON.parse(url.searchParams.get('options'));
+      // Newest first, like most chat APIs; the script must page back and re-sort.
+      const all = [...c.messages].reverse();
+      return json({ total: all.length, items: all.slice((o.page - 1) * o.itemsPerPage, o.page * o.itemsPerPage) });
     }
     if (req.method() === 'POST' && url.pathname === '/chat') {
       const body = JSON.parse(req.postData());
@@ -196,6 +213,28 @@ async function main() {
   await page.evaluate(() => window.sendMsg('Fetch path check'));
   const viaFetch = chatBodies[chatBodies.length - 1].elements[0].text;
   check(viaFetch.startsWith('[[STORY-MEMORY]]') && viaFetch.endsWith('Fetch path check'), 'memory attached via fetch hook');
+
+  console.log('9) Site loads messages from another, paged endpoint (learned automatically)');
+  altApi = true;
+  await page.evaluate(() => localStorage.setItem('altApi', '1'));
+  await page.reload();
+  await page.waitForTimeout(500);
+  const learnedTpl = await page.evaluate(() => localStorage.getItem('smx:learned'));
+  check(/chat-messages\/\{id\}\?options=/.test(learnedTpl || ''), 'message address learned from the site');
+  const beforeRebuild = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(() => llmCalls.length > beforeRebuild, 30000, 'rebuild via learned endpoint');
+  const rebuiltFrom = llmCalls.slice(beforeRebuild).join('\n');
+  check(/I am Mira, a healer\./.test(rebuiltFrom) && /Fetch path check/.test(rebuiltFrom), 'all pages read (oldest and newest messages)');
+  check(rebuiltFrom.indexOf('I am Mira, a healer.') < rebuiltFrom.indexOf('Fetch path check'), 'messages put back in order');
+
+  console.log('10) Diagnostics shows what was seen, without message text');
+  await page.getByText('Diagnostics', { exact: true }).click();
+  const diag = await page.locator('#story-manager-root >> textarea[readonly]').inputValue();
+  check(/chat-messages\/\{id\}/.test(diag) && /Learned message address/.test(diag), 'diagnostics list requests');
+  check(!/I am Mira/.test(diag), 'diagnostics contain no story text');
 
   await browser.close();
   console.log('\nAll checks passed.');

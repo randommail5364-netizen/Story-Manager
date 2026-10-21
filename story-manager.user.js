@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.4.0
+// @version      1.5.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -716,6 +716,14 @@
       '- Never invent anything. Only record what actually happened or was stated.',
       '- Write terse bullet points, not prose. No commentary, no warnings, no questions.',
       '- Stay under ' + settings.maxChars + ' characters. When space is tight, compress older events into short summaries, but never drop character names, key relationships or unresolved plot threads.',
+      '',
+      'Recaps:',
+      '- Some messages are RECAPS: summaries of earlier events, often written to continue the story in a new chat. They are marked [RECAP], but also recognise unmarked ones (e.g. "Previously…", "So far…", "Last time…", or a long summary of past events at the start of a chat).',
+      '- A recap describes the PAST, not something happening now. Put its events into Story So Far in the right order, before the events that come after the recap in the chat. Only change Current Scene if the recap clearly ends by describing where things stand now.',
+      '- A recap often repeats what the memory already has, and recaps can contain older recaps. Merge them: record each event once, and use the recap to fill gaps and correct details.',
+      '- If a recap written by the USER disagrees with the memory, trust the recap. If one written by the STORY AI disagrees, keep the memory unless the recap is clearly more detailed and accurate.',
+      '- Anything that happens in the chat after a recap always overrides the recap.',
+      '',
       '- Use these sections (omit empty ones):',
       '## Characters', '## Relationships', '## World & Places', '## Items & Status', '## Story So Far', '## Current Scene', '## Open Threads',
       '',
@@ -723,12 +731,26 @@
     ].join('\n');
   }
 
+  // Messages that summarise earlier events, e.g. "Recap: …", "Previously, …",
+  // "Story so far: …", "Last time …", "Quick recap of what happened".
+  const RECAP_START = /^[\s*_#>()[\]~-]*(ooc\W*)?(recap\b|previously\s*(on\b|[:,.…—–-])|summary\s*[:—–-]|(the )?story so far\b|so far\s*[:—–-]|last time\s*(on\b|[:,…—–-])|catch(ing)?[ -]?up\s*[:—–-]|what happened (so far|before|previously)\b|in the (last|previous) (chapter|session|part|chat)\b)/i;
+  const RECAP_EARLY = /\b(recap\s*(of\b|:)|summary of (the )?(story|events|previous|what happened|our))/i;
+
+  function isRecap(text) {
+    return RECAP_START.test(text) || RECAP_EARLY.test(text.slice(0, 150));
+  }
+
+  // Recaps can be long and are worth keeping whole; other messages are capped.
+  function textLimit(m) {
+    return isRecap(m.text) ? 20000 : 8000;
+  }
+
   function formatMessages(msgs, botName) {
     return msgs.map((m) => {
       const who = m.role === 'user' ? 'USER' : (botName ? 'STORY AI (' + botName + ')' : 'STORY AI');
       let t = m.text;
-      if (t.length > 8000) t = t.slice(0, 8000) + ' […]';
-      return who + ': ' + t;
+      if (t.length > textLimit(m)) t = t.slice(0, textLimit(m)) + ' […]';
+      return (isRecap(m.text) ? '[RECAP] ' : '') + who + ': ' + t;
     }).join('\n\n');
   }
 
@@ -740,7 +762,7 @@
     let cur = [];
     let size = 0;
     for (const m of msgs) {
-      const len = Math.min(m.text.length, 8000) + 40;
+      const len = Math.min(m.text.length, textLimit(m)) + 40;
       if (cur.length && size + len > maxChars) { out.push(cur); cur = []; size = 0; }
       cur.push(m);
       size += len;

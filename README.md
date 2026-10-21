@@ -72,4 +72,5 @@ Other settings:
 ```sh
 npm i -D playwright   # if not installed globally
 node test/e2e.test.js
+node test/recap.test.js
 ```

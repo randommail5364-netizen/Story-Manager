@@ -327,6 +327,21 @@ async function main() {
   await waitFor(() => llmCalls.length > beforeStale, 30000, 'rebuild with stale cursor');
   check(/I am Mira, a healer\./.test(llmCalls.slice(beforeStale).join('\n')), 'whole chat read despite the stale cursor');
 
+  console.log('14) Recaps are labelled for the memory keeper, with rules for them');
+  await page.locator('#story-manager-root >> .x').click();
+  const recapConv = convs[convId];
+  await page.evaluate(() => window.sendMsg('Recap: earlier, Mira and Ash escaped the hunters in the old mill.'));
+  await waitFor(() => recapConv.messages[recapConv.messages.length - 1].origin === 'assistant', 5000, 'reply after recap');
+  const beforeRecap = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(() => llmCalls.length > beforeRecap, 30000, 'rebuild with a recap');
+  const withRecap = llmCalls.slice(beforeRecap).join('\n');
+  check(/\[RECAP\] USER: Recap: earlier, Mira and Ash escaped/.test(withRecap), 'recap message labelled [RECAP]');
+  check(!/\[RECAP\] USER: I am Mira/.test(withRecap), 'ordinary messages not labelled');
+  check(/A recap describes the PAST/.test(withRecap), 'memory keeper told how to handle recaps');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

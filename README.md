@@ -7,8 +7,10 @@ You don't need to do anything once it's set up.
 ## What it does
 
 1. **Watches your chats.** It reads the conversation the same way the miniapps.ai website does, using your normal login.
-2. **Writes the memory.** Every few AI replies (3 by default), a "memory keeper" AI reads the new messages and updates a short summary of the story. The summary is split into sections: Characters, Relationships, World & Places, Items & Status, Story So Far, Current Scene and Open Threads.
-3. **Gives the memory back to the AI.** Each time you send a message, the memory is added in front of it inside `[[STORY-MEMORY]] … [[/STORY-MEMORY]]` markers. The storyteller AI always gets the facts, and is told to use them silently.
+2. **Writes the memory.** Every few AI replies (3 by default), a "memory keeper" AI reads the new messages and updates two things:
+   - **The main memory:** a detailed summary of the story, split into sections: Characters, Relationships, World & Places, Items & Status, Story So Far, Current Scene and Open Threads.
+   - **The reply log:** a 300–500 character summary of *every* AI reply, covering what happened, key dialogue, decisions, feelings and changes. Every entry is kept.
+3. **Gives the memory back to the AI.** Each time you send a message, the main memory and the 15 newest reply summaries are added in front of it, inside `[[STORY-MEMORY]] … [[/STORY-MEMORY]]` markers. The storyteller AI always gets the facts, and is told to use them silently.
 
 Each chat has its own memory. A 📖 button floats over the site. Tap it to:
 
@@ -56,7 +58,8 @@ Other settings:
 
 - **Update every … AI replies.** Lower means fresher memory but more summary calls.
 - **Attach the memory every … messages.** `1` attaches it to every message, which is the most reliable. `0` turns attaching off.
-- **Maximum memory size.** About 3000 characters by default (~750 tokens).
+- **Main memory size.** About 5,000 characters by default.
+- **Detailed reply summaries attached to each message.** 15 by default, about 6,000 characters. More helps the AI remember detail, but makes every message longer.
 - **Backup.** Export and import all your chats' memories, e.g. to move to another device. Your API key is never included.
 
 ## Good to know

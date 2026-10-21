@@ -145,11 +145,16 @@ async function main() {
   // Fake OpenAI-compatible memory keeper.
   await ctx.route('https://mock-llm.test/**', async (route) => {
     const body = JSON.parse(route.request().postData());
-    llmCalls.push(body.messages[1].content);
+    const input = body.messages[1].content;
+    llmCalls.push(input);
     const n = llmCalls.length;
+    // Answer like a real memory keeper: the memory, then one entry per [R#] reply.
+    const replies = (input.match(/\[R\d+\]/g) || []).map((r) => r.slice(2, -1));
+    const log = replies.map((r) => '[R' + r + '] Detailed summary of reply ' + r + ' in update ' + n + '.').join('\n');
+    const content = '=== MEMORY ===\n## Characters\n- Mira: a healer\n- Ash: a dragon\n## Story So Far\n- update ' + n + '\n=== LOG ===\n' + log;
     await route.fulfill({
       status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ choices: [{ message: { content: '## Characters\n- Mira: a healer\n- Ash: a dragon\n## Story So Far\n- update ' + n } }] }),
+      body: JSON.stringify({ choices: [{ message: { content } }] }),
     });
   });
 
@@ -199,11 +204,14 @@ async function main() {
   const mem = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
   check(mem && /Ash: a dragon/.test(mem.memory), 'memory saved for this chat');
   check(mem.title === 'Dragon Tale', 'chat title picked up');
+  check(!/=== (MEMORY|LOG) ===/.test(mem.memory), 'answer split into memory and log');
+  check(mem.log.length === 2 && /reply 1 in update 1/.test(mem.log[0].text) && /reply 2 in update 1/.test(mem.log[1].text), 'one detailed log entry per AI reply');
 
   console.log('3) Next message has the memory attached');
   await page.evaluate(() => window.sendMsg('What do I do next?'));
   const sent = chatBodies[chatBodies.length - 1].elements[0].text;
   check(sent.startsWith('[[STORY-MEMORY]]') && /Ash: a dragon/.test(sent) && sent.endsWith('What do I do next?'), 'memory block prepended to user message');
+  check(/## Recent events in detail[\s\S]*reply 1 in update 1[\s\S]*reply 2 in update 1/.test(sent), 'recent reply summaries attached, oldest first');
 
   console.log('4) The memory block is stripped before the keeper sees history again');
   await waitFor(() => convs[convId].messages.length === 6, 5000, 'reply 3');
@@ -268,7 +276,7 @@ async function main() {
 
   console.log('10) Diagnostics shows what was seen, without message text');
   await page.getByText('Diagnostics', { exact: true }).click();
-  const diag = await page.locator('#story-manager-root >> textarea[readonly]').inputValue();
+  const diag = await page.locator('#story-manager-root >> textarea.diag').inputValue();
   check(/conversations\/\{id\}\/messages/.test(diag) && /Learned message address/.test(diag), 'diagnostics list requests');
   check(!/I am Mira/.test(diag), 'diagnostics contain no story text');
 
@@ -290,7 +298,7 @@ async function main() {
   check(frame.startsWith('[[STORY-MEMORY]]') && frame.endsWith('Socket send check'), 'memory attached to messages sent over the live connection');
   await page.locator('#story-manager-root >> .fab').click();
   await page.getByText('Diagnostics', { exact: true }).click();
-  const diag2 = await page.locator('#story-manager-root >> textarea[readonly]').inputValue();
+  const diag2 = await page.locator('#story-manager-root >> textarea.diag').inputValue();
   check(/in reply · messages: \d+/.test(diag2) && /Hook: \{"mode":"page"/.test(diag2), 'diagnostics show socket events and hook activity');
 
   console.log('12) Script starts after the site already loaded the chat');
@@ -339,6 +347,7 @@ async function main() {
   await waitFor(() => llmCalls.length > beforeRecap, 30000, 'rebuild with a recap');
   const withRecap = llmCalls.slice(beforeRecap).join('\n');
   check(/\[RECAP\] USER: Recap: earlier, Mira and Ash escaped/.test(withRecap), 'recap message labelled [RECAP]');
+  check(/\[R1\] STORY AI/.test(withRecap), 'story replies numbered for the log');
   check(!/\[RECAP\] USER: I am Mira/.test(withRecap), 'ordinary messages not labelled');
   check(/A recap describes the PAST/.test(withRecap), 'memory keeper told how to handle recaps');
 

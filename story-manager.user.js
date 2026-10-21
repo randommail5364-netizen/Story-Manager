@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.0.1
+// @version      1.0.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @match        https://miniapps.ai/*
 // @match        https://*.miniapps.ai/*
@@ -37,6 +37,13 @@
 
 (function () {
   'use strict';
+
+  // If anything stops the script from starting, say where instead of failing silently.
+  let stage = 'starting';
+  let uiStarted = false;
+  setTimeout(() => {
+    if (!uiStarted) alert('Story Manager did not finish starting (stuck at: ' + stage + '). Please send this message to Claude.');
+  }, 15000);
 
   const MEM_START = '[[STORY-MEMORY]]';
   const MEM_END = '[[/STORY-MEMORY]]';
@@ -227,22 +234,37 @@
     }
   }
 
-  installPageHook();
+  stage = 'hooking the page';
+  try { installPageHook(); } catch (e) { console.warn('[Story Manager] could not hook the page', e); }
+  stage = 'loading storage';
 
   // ---------------------------------------------------------------------------
   // Storage
   // ---------------------------------------------------------------------------
 
-  const hasGM = typeof GM !== 'undefined' && GM && typeof GM.getValue === 'function';
-  const hasGMLegacy = typeof GM_getValue === 'function';
+  let hasGM = typeof GM !== 'undefined' && GM && typeof GM.getValue === 'function';
+  let hasGMLegacy = typeof GM_getValue === 'function';
+
+  // Some userscript managers never answer storage calls; fall back to the
+  // browser's own storage instead of hanging.
+  function withTimeout(promise, ms) {
+    return Promise.race([promise, new Promise((resolve, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
+  }
 
   const Store = {
     async get(key, def) {
       try {
         let raw;
-        if (hasGM) raw = await GM.getValue(key);
-        else if (hasGMLegacy) raw = GM_getValue(key);
-        else raw = localStorage.getItem('smx:' + key);
+        try {
+          if (hasGM) raw = await withTimeout(GM.getValue(key), 3000);
+          else if (hasGMLegacy) raw = GM_getValue(key);
+          else raw = localStorage.getItem('smx:' + key);
+        } catch (e) {
+          if (!hasGM && !hasGMLegacy) throw e;
+          console.warn('[Story Manager] userscript storage failed, using browser storage', e);
+          hasGM = hasGMLegacy = false;
+          raw = localStorage.getItem('smx:' + key);
+        }
         if (raw === undefined || raw === null) return def;
         return typeof raw === 'string' ? JSON.parse(raw) : raw;
       } catch (e) { return def; }
@@ -250,7 +272,7 @@
     async set(key, value) {
       const raw = JSON.stringify(value);
       try {
-        if (hasGM) await GM.setValue(key, raw);
+        if (hasGM) await withTimeout(GM.setValue(key, raw), 3000);
         else if (hasGMLegacy) GM_setValue(key, raw);
         else localStorage.setItem('smx:' + key, raw);
       } catch (e) { console.warn('[Story Manager] could not save', e); }
@@ -1108,13 +1130,20 @@
         el('button', { class: 'btn', onclick: importAll }, 'Import')));
   }
 
+  let startCalled = false;
   function startUI() {
+    if (startCalled) return;
+    startCalled = true;
+    stage = 'waiting for saved data';
     ready
       .catch((e) => console.warn('[Story Manager] could not load saved data', e))
       .then(() => {
+        stage = 'building the button';
         try {
           buildUI();
+          uiStarted = true;
         } catch (e) {
+          uiStarted = true;
           alert('Story Manager could not start: ' + (e && e.message ? e.message : e));
           return;
         }
@@ -1126,10 +1155,17 @@
       });
   }
 
-  if (typeof GM_registerMenuCommand === 'function') {
-    GM_registerMenuCommand('📖 Open Story Manager', () => { buildUI(); togglePanel(true); });
-  }
+  try {
+    if (typeof GM_registerMenuCommand === 'function') {
+      GM_registerMenuCommand('📖 Open Story Manager', () => { buildUI(); togglePanel(true); });
+    }
+  } catch (e) { /* ignore */ }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startUI);
-  else startUI();
+  stage = 'waiting for the page to load';
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startUI);
+    window.addEventListener('load', startUI);
+  } else {
+    startUI();
+  }
 })();

@@ -74,13 +74,15 @@ async function main() {
   const chatBodies = [];     // every POST /chat body the "server" received
   const llmCalls = [];       // prompts the memory keeper received
 
-  let liveWs = null;         // the page's fake Socket.IO connection, once open
+  let liveWs = null;
+  let helperBroken = false;  // makes the MiniApps-bot memory keeper fail         // the page's fake Socket.IO connection, once open
   function reply(conv, text, delay, convId) {
     setTimeout(() => {
       const msg = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
       conv.messages.push(msg);
       // Like the real site, finished replies are also pushed over the live connection.
-      if (liveWs) liveWs.send('42["chat-message",' + JSON.stringify(Object.assign({ conversationId: convId }, msg)) + ']');
+      // Same shape as the real site's "cm" event: { cId, requestId, tmpId, payload: message }.
+      if (liveWs) liveWs.send('42["cm",' + JSON.stringify({ cId: convId, requestId: 'r', tmpId: 't', payload: msg }) + ']');
     }, delay);
   }
 
@@ -148,6 +150,7 @@ async function main() {
       if (req.headers()['x-csrf-token'] !== 'csrf-123') return json({ message: 'csrf' }, 403);
       chatBodies.push(body);
       if (body.conversationId && !convs[body.conversationId]) return json({ message: 'Conversation not found' }, 404);
+      if (body.toolId === 'tool-helper' && helperBroken) return json({ message: 'Insufficient credits' }, 412);
       const id = body.conversationId || uuid();
       const conv = convs[id] || (convs[id] = { toolId: body.toolId, messages: [] });
       const text = body.elements[0].text;
@@ -521,6 +524,19 @@ async function main() {
   const afterDel = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
   check(!afterDel.entries.some((e) => e.name === 'Old Mill') && afterDel.ignored.includes('old mill'), 'deleted entry stays deleted although the keeper wrote it again');
   check(/NEVER write entries for \(the user removed them\): old mill/.test(llmCalls[llmCalls.length - 1]) || llmCalls.slice(beforeDel).some((c) => /NEVER write entries for/.test(c)), 'keeper told not to recreate it');
+
+  console.log('23) A rebuild that fails completely keeps the previous memory');
+  const keyNow = () => page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
+  const beforeFail = await keyNow();
+  helperBroken = true;
+  await page.locator('#story-manager-root >> .x').click();
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(async () => /Rebuild failed/.test(await page.locator('#story-manager-root >> .toast').allInnerTexts().then((t) => t.join(' '))), 60000, 'rebuild failure message');
+  const afterFail = await keyNow();
+  helperBroken = false;
+  check(afterFail.memory === beforeFail.memory && afterFail.entries.length === beforeFail.entries.length && afterFail.log.length === beforeFail.log.length, 'story, entries and log restored after the failed rebuild');
 
   await browser.close();
   console.log('\nAll checks passed.');

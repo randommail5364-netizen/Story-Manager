@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.2.0
+// @version      2.3.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -438,6 +438,7 @@
   const chats = {};             // id -> chat state (cache)
   let currentId = null;
   const busy = {};              // id -> true while a memory update runs
+  const progress = {};          // id -> { done, total } requests of the running update
   const polls = {};             // id -> poll token
   const helperIds = new Set();  // conversations created by the memory keeper itself
 
@@ -756,6 +757,7 @@
   // All requests go to one helper chat with the bot (remembered across visits),
   // so they don't each add a chat to the user's MiniApps history.
   let helperChat = null;  // { slug, id, uses }
+  const lastActivity = {}; // chat id -> when the live connection last showed activity in it
 
   async function callMiniApps(prompt) {
     const slug = (settings.miniappsSlug || 'claude-37').trim();
@@ -799,9 +801,13 @@
     helperIds.add(cid);
     helperChat = reuse && cid === helperChat.id ? Object.assign({}, helperChat, { uses: helperChat.uses + 1 }) : { slug, id: cid, uses: 1 };
     await Store.set('helperChat', helperChat);
+    // Long answers can take many minutes to write. Wait while the bot is
+    // still typing (live connection activity), up to 20 minutes; give up
+    // after 3 minutes without any sign of it.
+    const started = Date.now();
     let prev = null;
-    for (let i = 0; i < 80; i++) {
-      await sleep(3000);
+    while (Date.now() - started < 20 * 60000) {
+      await sleep(4000);
       let msgs = [];
       try { msgs = await fetchMessages(cid, { cache: false, mode: 'latest' }); } catch (e) { /* the live connection may still deliver it */ }
       if (seenMsgs[cid]) msgs = mergeMsgs(msgs, [...seenMsgs[cid].values()]);
@@ -818,9 +824,11 @@
       }
       if (reply && reply === prev) return reply;
       prev = reply || null;
+      const idle = Date.now() - Math.max(started, lastActivity[cid] || 0);
+      if (!reply && idle > 3 * 60000) break;
     }
     if (prev) return prev;
-    throw new Error('MiniApps memory keeper did not answer in time');
+    throw new Error('The MiniApps bot did not answer (no activity for 3 minutes). Try again, or use a different memory keeper in Settings.');
   }
 
   function systemPrompt() {
@@ -1146,8 +1154,11 @@
     busy[id] = true;
     setStatus();
     const before = snapshot(chat);
+    const parts = chunk(todo, CHUNK_CHARS);
+    progress[id] = { done: 0, total: parts.length };
+    renderPanel();
     try {
-      for (const part of chunk(todo, CHUNK_CHARS)) {
+      for (const part of parts) {
         const result = await mergeIntoMemory(chat, part);
         chat.memory = result.memory;
         const applied = applyUpdates(chat.entries, result.updates, chat.ignored);
@@ -1159,6 +1170,7 @@
         chat.processedCount = msgs.indexOf(part[part.length - 1]) + 1;
         chat.lastUpdate = Date.now();
         chat.lastError = '';
+        progress[id].done++;
         await saveChat(chat);
         renderPanel();
       }
@@ -1172,6 +1184,7 @@
       toast('Story memory update failed: ' + chat.lastError, true);
     } finally {
       busy[id] = false;
+      delete progress[id];
       setStatus();
       renderPanel();
     }
@@ -1246,7 +1259,9 @@
   function logSocket(dir, event, args) {
     let found = 0;
     try { found = extractMessages(args).length; } catch (e) { /* ignore */ }
-    const info = describe(args && args.length === 1 ? args[0] : args);
+    let info = describe(args && args.length === 1 ? args[0] : args);
+    const pl = args && args[0] && args[0].payload;
+    if (pl && typeof pl === 'object') info += ' | payload: ' + describe(pl);
     addTo(sockLog, dir + ' ' + event + ' ' + info, { dir, event, info, found }, 30);
   }
 
@@ -1540,9 +1555,23 @@
     try { args = d.text ? JSON.parse(d.text) : null; } catch (e) { /* ignore */ }
     logSocket(d.dir, d.event, args);
     if (d.dir !== 'in' || !args) return;
-    const msgs = extractMessages(args);
+    const first = args[0] && typeof args[0] === 'object' ? args[0] : null;
+    const chatOf = first && (first.cId || first.conversationId);
+    if (chatOf) lastActivity[String(chatOf).toLowerCase()] = Date.now();
+    let msgs = extractMessages(args);
+    let conv = null;
+    // Events like { cId, requestId, payload: { …message… } } carry a whole message.
+    if (!msgs.length && chatOf && first.payload && typeof first.payload === 'object' && !Array.isArray(first.payload)) {
+      const pm = first.payload;
+      const text = textOf(pm).replace(MEM_BLOCK_RE, '').trim();
+      const role = roleOf(pm);
+      if (text && role !== 'system') {
+        msgs = [{ id: String(pm.id || first.tmpId || first.requestId || ('h-' + hashText(text))), role, text, t: Date.parse(pm.createdAt || '') || Date.now() }];
+        conv = { id: String(chatOf).toLowerCase() };
+      }
+    }
     if (!msgs.length) return;
-    const conv = convIdFor('', args && args.length === 1 ? args[0] : args, findMessageArray(args)) || (currentId ? { id: currentId } : null);
+    conv = conv || convIdFor('', args && args.length === 1 ? args[0] : args, findMessageArray(args)) || (currentId ? { id: currentId } : null);
     if (!conv) return;
     // Replies of the MiniApps-bot memory keeper are only collected for it.
     if (helperIds.has(conv.id)) { remember(conv.id, msgs); return; }
@@ -1797,7 +1826,8 @@
             ' (Pinned facts and entries marked "Always send" are kept.)')) return;
           // Let an automatic update that started meanwhile finish first.
           for (let i = 0; busy[chat.id] && i < 600; i++) await sleep(500);
-          chat.history = [snapshot(chat)].concat(chat.history).slice(0, 5);
+          const old = { snap: snapshot(chat), log: chat.log.slice(), ids: chat.processedIds.slice(), count: chat.processedCount };
+          chat.history = [old.snap].concat(chat.history).slice(0, 5);
           chat.memory = '';
           chat.entries = chat.entries.filter((e) => e.always);
           chat.log = [];
@@ -1805,6 +1835,23 @@
           chat.processedCount = 0;
           await saveChat(chat);
           renderPanel(true);
+          await updateMemory(chat.id, msgs, { force: true });
+          if (chat.lastError && !chat.processedIds.length) {
+            // Nothing was rebuilt: put the previous memory back.
+            restore(chat, old.snap);
+            chat.log = old.log;
+            chat.processedIds = old.ids;
+            chat.processedCount = old.count;
+            chat.history.shift();
+            await saveChat(chat);
+            toast('Rebuild failed, so the previous memory was kept: ' + chat.lastError, true);
+          } else if (chat.lastError) {
+            toast('Rebuild stopped partway: ' + chat.lastError + ' Tap "Update now" to continue from where it stopped.', true);
+          } else {
+            toast('Memory rebuilt');
+          }
+          renderPanel(true);
+          return;
         } else if (!unprocessed(chat, msgs).length) {
           toast('Memory is already up to date (' + msgs.length + ' messages checked)');
           return;
@@ -1833,7 +1880,8 @@
         el('div', {}, 'Messages read: ', el('b', {}, String(chat.processedCount)), total ? ' of ' + total : '',
           ' · Last update: ', el('b', {}, ago(chat.lastUpdate))),
         lastSentInfo[chat.id] ? el('div', {}, 'Last message carried: ' + lastSentInfo[chat.id]) : null,
-        isBusy ? el('div', {}, '⏳ Updating memory…') : null,
+        isBusy ? el('div', {}, '⏳ Updating memory…' + (progress[chat.id] && progress[chat.id].total > 1
+          ? ' (request ' + Math.min(progress[chat.id].done + 1, progress[chat.id].total) + ' of ' + progress[chat.id].total + ')' : '')) : null,
         chat.lastError ? el('div', { class: 'error' }, '⚠ ' + chat.lastError) : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),
       el('label', {}, '📌 Pinned facts (never changed automatically, always sent)'),

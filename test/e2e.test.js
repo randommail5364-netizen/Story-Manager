@@ -161,7 +161,9 @@ async function main() {
 
   const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, injectEvery: 1 };
   await ctx.addInitScript((s) => { if (!localStorage.getItem('smx:settings')) localStorage.setItem('smx:settings', JSON.stringify(s)); }, settings);
-  await ctx.addInitScript({ content: SCRIPT });
+  // 'lateStart' simulates a userscript manager that starts the script only
+  // after the site has already loaded the chat (seen on Firefox for Android).
+  await ctx.addInitScript({ content: "if (!localStorage.getItem('lateStart')) {\n" + SCRIPT + '\n}' });
 
   const page = await ctx.newPage();
   page.on('console', (m) => { if (/Story Manager/.test(m.text())) console.log('  [page]', m.text()); });
@@ -281,6 +283,26 @@ async function main() {
   await page.getByText('Diagnostics', { exact: true }).click();
   const diag2 = await page.locator('#story-manager-root >> textarea[readonly]').inputValue();
   check(/in reply · messages: \d+/.test(diag2) && /Hook: \{"mode":"page"/.test(diag2), 'diagnostics show socket events and hook activity');
+
+  console.log('12) Script starts after the site already loaded the chat');
+  await page.evaluate(() => {
+    localStorage.removeItem('smx:learned');
+    localStorage.removeItem('wsApi');
+    localStorage.setItem('lateStart', '1');
+  });
+  await page.reload();
+  await page.waitForTimeout(500);
+  await page.addScriptTag({ content: SCRIPT });
+  await page.waitForTimeout(800);
+  const beforeLate = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(() => llmCalls.length > beforeLate, 30000, 'rebuild after late start');
+  const fromLate = llmCalls.slice(beforeLate).join('\n');
+  check(/I am Mira, a healer\./.test(fromLate) && /Socket send check|Fetch path check/.test(fromLate), 'messages found from the browser\'s request list');
+  const learnedLate = await page.evaluate(() => localStorage.getItem('smx:learned'));
+  check(/chat-messages\/\{id\}/.test(learnedLate || ''), 'message address learned without seeing the request');
 
   await browser.close();
   console.log('\nAll checks passed.');

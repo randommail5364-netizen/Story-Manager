@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.2.0
+// @version      1.3.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -73,12 +73,22 @@
     const origFetch = win.fetch.bind(win);
     const state = { headers: {}, apiBase: 'https://api.miniapps.ai' };
 
-    // Counters shown in Diagnostics, to see whether the hook sees anything.
-    const stats = { mode: sandboxed ? 'sandbox' : 'page', fetch: 0, xhr: 0, wsIn: 0, wsOut: 0 };
-    function bump(k) {
-      stats[k]++;
-      if (doc.documentElement) doc.documentElement.setAttribute('data-smx-stats', JSON.stringify(stats));
-    }
+    // Counters shown in Diagnostics, to see whether the hook sees anything and
+    // how late it started (API requests the page had already made by then).
+    let earlier = 0;
+    try {
+      earlier = win.performance.getEntriesByType('resource')
+        .filter((e) => /^https:\/\/([a-z0-9-]+\.)*miniapps\.ai\//i.test(e.name) && /api\./i.test(e.name)).length;
+    } catch (e) { /* ignore */ }
+    const stats = { mode: sandboxed ? 'sandbox' : 'page', startedWhile: doc.readyState, apiCallsBeforeStart: earlier, fetch: 0, xhr: 0, wsIn: 0, wsOut: 0 };
+    function bump(k) { stats[k]++; }
+    doc.addEventListener('smx:ping', function () { emit('stats', stats); });
+
+    // The memory to attach, per chat; sent by the script whenever it changes.
+    let injectMap = null;
+    doc.addEventListener('smx:inject', function (ev) {
+      try { injectMap = JSON.parse(ev.detail); } catch (e) { /* ignore */ }
+    });
 
     function emit(type, data) {
       doc.dispatchEvent(new win.CustomEvent('smx:' + type, toPage({ detail: JSON.stringify(data) })));
@@ -133,8 +143,10 @@
         : null;
       userText = textEl ? textEl.text : (typeof body.text === 'string' ? body.text : '');
       if (convId) {
-        let map = {};
-        try { map = JSON.parse(doc.documentElement.getAttribute('data-smx-inject') || '{}'); } catch (e) { /* ignore */ }
+        let map = injectMap || {};
+        if (!injectMap) {
+          try { map = JSON.parse(doc.documentElement.getAttribute('data-smx-inject') || '{}'); } catch (e) { /* ignore */ }
+        }
         const block = map[convId];
         if (block) {
           if (textEl) { textEl.text = block + '\n\n' + textEl.text; injected = true; }
@@ -447,7 +459,9 @@
         if (block) map[id] = block;
       }
     }
-    // At document-start the <html> element may not exist yet.
+    // Sent as an event (the site may rewrite <html> attributes), plus an
+    // attribute as a fallback. At document-start <html> may not exist yet.
+    document.dispatchEvent(new CustomEvent('smx:inject', { detail: JSON.stringify(map) }));
     if (document.documentElement) document.documentElement.setAttribute('data-smx-inject', JSON.stringify(map));
     else setTimeout(publishInjectMap, 50);
   }
@@ -895,6 +909,56 @@
     return all;
   }
 
+  // Every address the page has requested from MiniApps, from the browser's own
+  // list. This works even when the hook started too late to see the requests.
+  function apiResourceUrls() {
+    const out = [];
+    try {
+      for (const e of performance.getEntriesByType('resource')) {
+        if (/^https:\/\/([a-z0-9-]+\.)*miniapps\.ai\//i.test(e.name) &&
+          !/\.(js|mjs|css|png|jpe?g|webp|avif|svg|gif|woff2?|ttf|ico|mp3|mp4|webm|json)(\?|$)/i.test(e.name)) {
+          out.push({ url: e.name, type: e.initiatorType });
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return out;
+  }
+
+  function decodeUrl(url) {
+    try { return decodeURIComponent(url); } catch (e) { return url; }
+  }
+
+  // Try the requests the page made about this chat until one returns messages,
+  // then remember that address for next time.
+  async function discoverMessages(id) {
+    const idRe = new RegExp(id, 'i');
+    const seen = new Set();
+    const cands = [];
+    for (const r of apiResourceUrls().reverse()) {
+      const dec = decodeUrl(r.url);
+      if (!idRe.test(dec)) continue;
+      let path = '';
+      try { path = new URL(r.url).pathname; } catch (e) { continue; }
+      if (/\/conversations\/[0-9a-f-]{36}\/?$/i.test(path) || /\/chat\/?$/.test(path)) continue;
+      const key = shortUrl(r.url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      cands.push(r.url);
+    }
+    for (const url of cands.slice(0, 8)) {
+      let data;
+      try { data = await rpc('GET', url); } catch (e) { logApi('GET', url, 'error', null, 'probe: ' + String(e.message || e).slice(0, 60)); continue; }
+      const msgs = extractMessages(data);
+      logApi('GET', url, 200, data, 'probe');
+      if (msgs.length) {
+        learned = { template: decodeUrl(url).replace(new RegExp(id, 'gi'), '{id}') };
+        await Store.set('learned', learned);
+        try { return mergeMsgs(msgs, await fetchLearned(id)); } catch (e) { return msgs; }
+      }
+    }
+    return [];
+  }
+
   async function fetchMessages(id, { cache = true } = {}) {
     let msgs = [];
     let firstErr = null;
@@ -910,6 +974,9 @@
     } catch (e) { firstErr = e; logApi('GET', '/conversations/' + id, 'error', null, String(e.message || e)); }
     if (learned && learned.template) {
       try { msgs = mergeMsgs(msgs, await fetchLearned(id)); } catch (e) { firstErr = firstErr || e; logApi('GET', learned.template, 'error', null, String(e.message || e)); }
+    }
+    if (!msgs.length && cache && !(seenMsgs[id] && seenMsgs[id].size)) {
+      try { msgs = await discoverMessages(id); } catch (e) { logApi('GET', 'discovery', 'error', null, String(e.message || e)); }
     }
     if (!msgs.length && firstErr && !cache) throw firstErr;
     return cache ? remember(id, msgs) : msgs;
@@ -1292,7 +1359,11 @@
       diagnosticsBox());
   }
 
+  let hookStats = null;
+  on('stats', (d) => { hookStats = d; });
+
   function diagnosticsText() {
+    document.dispatchEvent(new CustomEvent('smx:ping'));
     const version = typeof GM_info !== 'undefined' && GM_info && GM_info.script ? GM_info.script.version : '?';
     const chat = currentId && chats[currentId];
     const lines = [
@@ -1302,7 +1373,7 @@
         (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · read into memory: ' + chat.processedCount : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider,
-      'Hook: ' + (document.documentElement.getAttribute('data-smx-stats') || 'no activity seen'),
+      'Hook: ' + (hookStats ? JSON.stringify(hookStats) : 'not running'),
       '',
       'Site requests to MiniApps (newest first, no message text):',
     ];
@@ -1317,6 +1388,14 @@
     for (const w of sock) lines.push(w.dir + ' ' + w.event + (w.count > 1 ? ' ×' + w.count : '') + ' · messages: ' + w.found + ' · ' + w.info);
     lines.push('', 'Story Manager\'s own requests:');
     for (const a of ownLog) lines.push(fmt(a));
+    lines.push('', 'All MiniApps addresses the browser requested on this page:');
+    const counts = new Map();
+    for (const r of apiResourceUrls()) {
+      const k = r.type + ' ' + shortUrl(r.url) + (currentId && new RegExp(currentId, 'i').test(decodeUrl(r.url)) ? '  ← this chat' : '');
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+    if (!counts.size) lines.push('(none listed)');
+    for (const [k, n] of [...counts].slice(-40)) lines.push(k + (n > 1 ? ' ×' + n : ''));
     return lines.join('\n');
   }
 

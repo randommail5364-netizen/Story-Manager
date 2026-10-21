@@ -9,7 +9,7 @@ You don't need to do anything once it's set up.
 1. **Watches your chats.** It reads the conversation the same way the miniapps.ai website does, using your normal login.
 2. **Writes the memory.** Every few AI replies (3 by default), a "memory keeper" AI reads the new messages and updates two things:
    - **The main memory:** a detailed summary of the story, split into sections: Characters, Relationships, World & Places, Items & Status, Story So Far, Current Scene and Open Threads.
-   - **The reply log:** a 300–500 character summary of *every* AI reply, covering what happened, key dialogue, decisions, feelings and changes. Every entry is kept.
+   - **The reply log:** a summary of *every* AI reply, covering what happened, key dialogue, decisions, feelings and changes. Entries are at least 300 characters, and longer replies get longer ones (about 15% of the reply, up to 1,500). Every entry is kept.
 3. **Gives the memory back to the AI.** Each time you send a message, the main memory and the 15 newest reply summaries are added in front of it, inside `[[STORY-MEMORY]] … [[/STORY-MEMORY]]` markers. The storyteller AI always gets the facts, and is told to use them silently.
 
 Each chat has its own memory. A 📖 button floats over the site. Tap it to:
@@ -58,9 +58,16 @@ Other settings:
 
 - **Update every … AI replies.** Lower means fresher memory but more summary calls.
 - **Attach the memory every … messages.** `1` attaches it to every message, which is the most reliable. `0` turns attaching off.
-- **Main memory size.** About 5,000 characters by default.
+- **Main memory size.** About 8,000 characters by default.
 - **Detailed reply summaries attached to each message.** 15 by default, about 6,000 characters. More helps the AI remember detail, but makes every message longer.
 - **Backup.** Export and import all your chats' memories, e.g. to move to another device. Your API key is never included.
+
+## Making sure nothing gets lost
+
+- **Messages are read whole.** Long messages aren't trimmed before the memory keeper reads them.
+- **Missing summaries are re-requested.** If the memory keeper skips a reply's summary, or its answer gets cut off, that reply is sent again (up to 3 times) until it has one.
+- **Facts aren't dropped.** The memory keeper is told never to remove a fact unless the story changed it. If an update would make the memory much shorter, it's retried, and if it's still too short the previous memory is kept (the reply log is still updated).
+- **Each request is kept small.** It covers at most 6 AI replies, so the memory keeper's answer doesn't run out of room.
 
 ## Good to know
 

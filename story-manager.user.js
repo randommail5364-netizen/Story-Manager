@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.6.0
+// @version      1.7.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -376,7 +376,7 @@
     miniappsSlug: 'claude-37',
     updateEvery: 3,   // AI replies between memory updates
     injectEvery: 1,   // attach memory to every Nth message (0 = never)
-    maxChars: 5000,   // target size of the main memory
+    maxChars: 8000,   // target size of the main memory
     logAttach: 15,    // detailed reply summaries attached to each message
     autoEnable: true, // manage new chats automatically
     buttonSide: 'right',
@@ -720,13 +720,15 @@
       '- Never invent anything. Only record what actually happened or was stated.',
       '- Use bullet points with full, specific details. No commentary, no warnings, no questions.',
       '- Story So Far is an overview of the whole story in order. The LOG holds the reply-by-reply detail, so keep Story So Far to the main events and turning points.',
-      '- Use the space you have: up to ' + settings.maxChars + ' characters. When space is tight, shorten Story So Far first; never drop characters, relationships, promises or unresolved threads.',
+      '- Use the space you have: up to ' + settings.maxChars + ' characters.',
+      '- Never remove a fact unless the story changed it. When space is tight, shorten the wording, merge related bullets and condense Story So Far (the LOG keeps every detail of past replies) — but keep every fact.',
       '- Use these sections (omit empty ones):',
       '## Characters', '## Relationships', '## World & Places', '## Items & Status', '## Story So Far', '## Current Scene', '## Open Threads',
       '',
       'LOG rules:',
       '- Story replies in the new messages are numbered [R1], [R2], … Write exactly one log entry for EACH of them.',
-      '- Each entry is 300–500 characters of past-tense prose describing what happened in that reply and what the user did just before it: actions, important dialogue (short quotes are fine), decisions, revelations, emotions, changes in relationships, injuries, items, where and when it happened. Use names, be concrete; no vague phrases like "they talked".',
+      '- Each entry is past-tense prose describing what happened in that reply and what the user did just before it: actions, important dialogue (short quotes are fine), decisions, revelations, emotions, changes in relationships, injuries, items, where and when it happened. Use names, be concrete; no vague phrases like "they talked".',
+      '- Each [R…] label says how long its entry should be (longer replies get longer entries). Reach that length with real details from the reply, never padding. Cover the whole reply, including its end.',
       '',
       'Recaps:',
       '- Some messages are RECAPS: summaries of earlier events, often written to continue the story in a new chat. They are marked [RECAP], but also recognise unmarked ones (e.g. "Previously…", "So far…", "Last time…", or a long summary of past events at the start of a chat).',
@@ -754,9 +756,15 @@
     return RECAP_START.test(text) || RECAP_EARLY.test(text.slice(0, 150));
   }
 
-  // Recaps can be long and are worth keeping whole; other messages are capped.
-  function textLimit(m) {
-    return isRecap(m.text) ? 20000 : 8000;
+  // Messages are passed on whole; this cap only guards against absurd sizes.
+  function textLimit() {
+    return 60000;
+  }
+
+  // How long a reply's log entry should be: at least 300 characters, about
+  // 15% of the reply, at most 1,500.
+  function entryTarget(m) {
+    return Math.max(300, Math.min(1500, Math.round(m.text.length * 0.15 / 50) * 50));
   }
 
   // Story replies are numbered [R1], [R2], … so the log entries can be matched.
@@ -766,7 +774,7 @@
       const who = m.role === 'user' ? 'USER' : (botName ? 'STORY AI (' + botName + ')' : 'STORY AI');
       let t = m.text;
       if (t.length > textLimit(m)) t = t.slice(0, textLimit(m)) + ' […]';
-      const num = m.role === 'assistant' ? '[R' + (++n) + '] ' : '';
+      const num = m.role === 'assistant' ? '[R' + (++n) + ', entry about ' + entryTarget(m) + ' characters] ' : '';
       return num + (isRecap(m.text) ? '[RECAP] ' : '') + who + ': ' + t;
     }).join('\n\n');
   }
@@ -776,7 +784,7 @@
 
   // At most this many story replies per request, so the answer (memory plus
   // one log entry per reply) stays a manageable length.
-  const REPLIES_PER_CHUNK = 12;
+  const REPLIES_PER_CHUNK = 6;
 
   function chunk(msgs, maxChars) {
     const out = [];
@@ -804,12 +812,56 @@
       (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true, do not repeat them in the memory):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
       'NEW MESSAGES (oldest first):\n<<<\n' + formatMessages(msgs, chat.title) + '\n>>>\n\n' +
       'Write the complete updated STORY MEMORY and one LOG entry for each [R…] reply now.';
-    const out = cleanOutput(await callLLM(systemPrompt(), user));
-    const parsed = parseKeeperAnswer(out, msgs.filter((m) => m.role === 'assistant'));
-    if (parsed.memory.length < 40 || !/#|^\s*[-*•]/m.test(parsed.memory)) {
-      throw new Error('Memory keeper gave an unusable answer: "' + out.slice(0, 120) + '"');
+    const replies = msgs.filter((m) => m.role === 'assistant');
+    const old = chat.memory.trim();
+    let parsed = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const extra = attempt === 1 ? '' : '\n\nIMPORTANT: your previous answer left out much of the existing memory. Keep EVERY fact from the current memory; only add and update.';
+      const out = cleanOutput(await callLLM(systemPrompt(), user + extra));
+      parsed = parseKeeperAnswer(out, replies);
+      if (parsed.memory.length < 40 || !/#|^\s*[-*•]/m.test(parsed.memory)) {
+        throw new Error('Memory keeper gave an unusable answer: "' + out.slice(0, 120) + '"');
+      }
+      // A much shorter memory means facts were dropped (or the answer was cut off).
+      if (!(old.length > 1500 && parsed.memory.length < old.length * 0.6)) break;
+      if (attempt === 2) {
+        parsed.memory = chat.memory;
+        toast('The memory keeper tried to drop facts, so the previous memory was kept and only the reply log was updated.', true);
+      }
     }
+    // Replies whose log entry is missing (skipped, or the answer was cut off)
+    // are asked for again, a few at a time.
+    for (let round = 0; round < 3; round++) {
+      const have = new Set(parsed.entries.map((e) => e.id));
+      const missing = replies.filter((r) => !have.has(r.id));
+      if (!missing.length) break;
+      const before = parsed.entries.length;
+      for (let i = 0; i < missing.length; i += 3) {
+        parsed.entries = parsed.entries.concat(await logEntriesFor(chat, msgs, missing.slice(i, i + 3)));
+      }
+      // A keeper that won't write log entries at all is not asked forever.
+      if (parsed.entries.length === before) break;
+    }
+    const order = new Map(replies.map((r, i) => [r.id, i]));
+    parsed.entries = dedupeEntries(parsed.entries).sort((a, b) => order.get(a.id) - order.get(b.id));
     return parsed;
+  }
+
+  // Ask only for log entries of some replies (with the user message before each).
+  async function logEntriesFor(chat, msgs, replies) {
+    const parts = [];
+    for (const r of replies) {
+      const i = msgs.indexOf(r);
+      const prevUser = msgs.slice(0, i).reverse().find((m) => m.role === 'user');
+      parts.push(prevUser && !parts.includes(prevUser) ? prevUser : null, r);
+    }
+    const list = parts.filter(Boolean);
+    const user = 'STORY MEMORY (for context only, do not rewrite it):\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
+      'MESSAGES:\n<<<\n' + formatMessages(list, chat.title) + '\n>>>\n\n' +
+      'LOG ENTRIES ONLY: write one log entry for each [R…] reply, in the format "[R1] entry". Nothing else.';
+    const out = cleanOutput(await callLLM(systemPrompt(), user));
+    const logOnly = /^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out;
+    return parseKeeperAnswer(logOnly, list.filter((m) => m.role === 'assistant')).entries;
   }
 
   // Split "=== MEMORY === … === LOG === [R1] …" into the memory and log
@@ -821,7 +873,7 @@
     const entries = [];
     if (logAt >= 0) {
       const logText = out.slice(logAt).replace(/^.*\n/, '');
-      const re = /\[R(\d+)\]\s*([\s\S]*?)(?=\n\s*\[R\d+\]|$)/g;
+      const re = /\[R(\d+)[^\]\n]*\]\s*([\s\S]*?)(?=\n\s*\[R\d+[^\]\n]*\]|$)/g;
       let m;
       while ((m = re.exec(logText))) {
         const reply = replies[Number(m[1]) - 1];
@@ -829,7 +881,23 @@
         if (reply && text) entries.push({ id: reply.id, text });
       }
     }
-    return { memory, entries };
+    return { memory, entries: dedupeEntries(entries) };
+  }
+
+  // One entry per reply; if the keeper wrote two, keep the longer one.
+  function dedupeEntries(entries) {
+    const best = new Map();
+    for (const e of entries) if (!best.has(e.id) || e.text.length > best.get(e.id).text.length) best.set(e.id, e);
+    return entries.filter((e) => best.get(e.id) === e);
+  }
+
+  // Story order: entries for older messages (not in this list) first, as they
+  // were; then the rest in the order their replies appear in the chat.
+  function sortLog(log, msgs) {
+    const pos = new Map(msgs.map((m, i) => [m.id, i]));
+    const older = log.filter((e) => !pos.has(e.id));
+    const known = log.filter((e) => pos.has(e.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id));
+    return older.concat(known);
   }
 
   // Fold every not-yet-processed message of a chat into its memory.
@@ -847,7 +915,7 @@
         chat.memory = result.memory;
         // One entry per reply; a regenerated or re-read reply replaces its old entry.
         const ids = new Set(result.entries.map((e) => e.id));
-        chat.log = chat.log.filter((e) => !ids.has(e.id)).concat(result.entries);
+        chat.log = sortLog(chat.log.filter((e) => !ids.has(e.id)).concat(result.entries), msgs);
         chat.processedIds = chat.processedIds.concat(part.map((m) => m.id)).slice(-300);
         chat.processedCount = msgs.indexOf(part[part.length - 1]) + 1;
         chat.lastUpdate = Date.now();
@@ -1183,7 +1251,7 @@
   const ready = (async () => {
     settings = Object.assign({}, DEFAULT_SETTINGS, await Store.get('settings', {}));
     // Memories used to be much shorter; move the old default up.
-    if (settings.maxChars === 3000) settings.maxChars = DEFAULT_SETTINGS.maxChars;
+    if (settings.maxChars === 3000 || settings.maxChars === 5000) settings.maxChars = DEFAULT_SETTINGS.maxChars;
     chatIndex = await Store.get('chatIndex', []);
     learned = await Store.get('learned', null);
     for (const id of chatIndex) await getChat(id, false);
@@ -1465,8 +1533,10 @@
           const cost = settings.provider === 'miniapps'
             ? ' Each one uses MiniApps credits and adds a small chat to your MiniApps history.'
             : '';
-          if (!confirm('Rebuild the memory from all ' + msgs.length + ' messages? This takes ' + parts +
+          if (!confirm('Rebuild the memory from all ' + msgs.length + ' messages? This takes about ' + parts +
             ' memory-keeper request' + (parts === 1 ? '' : 's') + '.' + cost + ' (Pinned facts are kept.)')) return;
+          // Let an automatic update that started meanwhile finish first.
+          for (let i = 0; busy[chat.id] && i < 600; i++) await sleep(500);
           chat.history = [chat.memory].concat(chat.history).slice(0, 5);
           chat.memory = '';
           chat.log = [];

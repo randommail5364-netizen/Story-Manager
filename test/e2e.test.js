@@ -84,6 +84,16 @@ async function main() {
     }, delay);
   }
 
+  // Answers like a real memory keeper: the memory, then one entry per [R#] reply.
+  function keeperAnswer(input, n, tag) {
+    let replies = [...input.matchAll(/\[R(\d+)[^\]\n]*\]/g)].map((r) => r[1]);
+    const log = () => replies.map((r) => '[R' + r + '] Detailed summary of reply ' + r + ' in update ' + n + '.').join('\n');
+    if (/LOG ENTRIES ONLY/.test(input)) return log();
+    // DROPLAST in the chat simulates a keeper that runs out of room.
+    if (/DROPLAST/.test(input)) replies = replies.slice(0, -1);
+    return '=== MEMORY ===\n## Characters\n- Mira: a healer' + tag + '\n- Ash: a dragon\n## Story So Far\n- update ' + n + '\n=== LOG ===\n' + log();
+  }
+
   const browser = await chromium.launch();
   const ctx = await browser.newContext();
 
@@ -132,7 +142,7 @@ async function main() {
       conv.messages.push({ id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] });
       if (body.toolId === 'tool-helper') {
         llmCalls.push(text);
-        reply(conv, '## Characters\n- Mira: healer (via MiniApps bot)', 500, id);
+        reply(conv, keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)'), 500, id);
       } else {
         const n = conv.messages.filter((x) => x.origin === 'user').length;
         reply(conv, 'Story reply #' + n + ': the dragon Ash watches Mira.', 1500, id);
@@ -147,11 +157,7 @@ async function main() {
     const body = JSON.parse(route.request().postData());
     const input = body.messages[1].content;
     llmCalls.push(input);
-    const n = llmCalls.length;
-    // Answer like a real memory keeper: the memory, then one entry per [R#] reply.
-    const replies = (input.match(/\[R\d+\]/g) || []).map((r) => r.slice(2, -1));
-    const log = replies.map((r) => '[R' + r + '] Detailed summary of reply ' + r + ' in update ' + n + '.').join('\n');
-    const content = '=== MEMORY ===\n## Characters\n- Mira: a healer\n- Ash: a dragon\n## Story So Far\n- update ' + n + '\n=== LOG ===\n' + log;
+    const content = keeperAnswer(input, llmCalls.length, '');
     await route.fulfill({
       status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' },
       body: JSON.stringify({ choices: [{ message: { content } }] }),
@@ -347,9 +353,58 @@ async function main() {
   await waitFor(() => llmCalls.length > beforeRecap, 30000, 'rebuild with a recap');
   const withRecap = llmCalls.slice(beforeRecap).join('\n');
   check(/\[RECAP\] USER: Recap: earlier, Mira and Ash escaped/.test(withRecap), 'recap message labelled [RECAP]');
-  check(/\[R1\] STORY AI/.test(withRecap), 'story replies numbered for the log');
+  check(/\[R1, entry about \d+ characters\] STORY AI/.test(withRecap), 'story replies numbered for the log');
   check(!/\[RECAP\] USER: I am Mira/.test(withRecap), 'ordinary messages not labelled');
   check(/A recap describes the PAST/.test(withRecap), 'memory keeper told how to handle recaps');
+
+  console.log('15) Long replies are passed on whole, and missing log entries are asked for again');
+  await page.locator('#story-manager-root >> .x').click();
+  const longText = 'LONGSTART ' + 'Mira walks on through the endless forest. '.repeat(300) + 'LONGEND DROPLAST';
+  await page.evaluate((t) => window.sendMsg(t), longText);
+  await waitFor(() => recapConv.messages[recapConv.messages.length - 1].origin === 'assistant', 5000, 'reply after long message');
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.provider = 'openai';
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const beforeLong = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(() => llmCalls.slice(beforeLong).some((c) => /LOG ENTRIES ONLY/.test(c)), 30000, 'follow-up for the missing entry');
+  await page.waitForTimeout(1500);
+  const longCalls = llmCalls.slice(beforeLong).join('\n');
+  check(/LONGEND/.test(longCalls) && longText.length > 12000, 'a ' + longText.length + '-character message reached the memory keeper whole');
+  const replyIds = recapConv.messages.filter((x) => x.origin === 'assistant').map((x) => x.id);
+  const longChat = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
+  check(replyIds.every((rid) => longChat.log.some((e) => e.id === rid)), 'every AI reply has a log entry (' + replyIds.length + '), including the one first left out');
+  check(longChat.log.map((e) => e.id).join() === replyIds.join(), 'log entries are in story order');
+  check(/\[R1, entry about 300 characters\]/.test(longCalls), 'each reply labelled with its target entry length');
+
+  console.log('16) An update that would drop most of the memory is retried, then refused');
+  const bigMemory = '## Characters\n' + Array.from({ length: 60 }, (_, i) => '- Fact number ' + i + ' about Mira and Ash that must survive.').join('\n');
+  await page.evaluate((mem) => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    c.memory = mem;
+    localStorage.setItem(key, JSON.stringify(c));
+  }, bigMemory);
+  await page.reload();
+  await page.waitForTimeout(800);
+  await page.evaluate(() => window.sendMsg('We rest by the fire.'));
+  await waitFor(() => recapConv.messages[recapConv.messages.length - 1].origin === 'assistant', 5000, 'reply before shrink test');
+  await page.waitForTimeout(500);
+  const beforeShrink = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Update now').click();
+  await waitFor(() => llmCalls.slice(beforeShrink).some((c) => /IMPORTANT: your previous answer left out/.test(c)), 30000, 'retry after shrinking');
+  await page.waitForTimeout(1500);
+  const shrinkChat = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
+  check(shrinkChat.memory === bigMemory, 'memory kept when the keeper tried to drop facts');
+  const lastReply = recapConv.messages[recapConv.messages.length - 1].id;
+  check(shrinkChat.log.some((e) => e.id === lastReply), 'reply log still updated');
 
   await browser.close();
   console.log('\nAll checks passed.');

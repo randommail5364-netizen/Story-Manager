@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.4.2
+// @version      2.4.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2101,6 +2101,8 @@
     for (const w of sock) lines.push(w.dir + ' ' + w.event + (w.count > 1 ? ' ×' + w.count : '') + ' · messages: ' + w.found + ' · ' + w.info);
     lines.push('', 'Story Manager\'s own requests:');
     for (const a of [...ownLog.values()].reverse()) lines.push(fmt(a));
+    lines.push('', 'Layout (to find out what hides the top bar):');
+    lines.push(...layoutReport());
     lines.push('', 'All MiniApps addresses the browser requested on this page:');
     const counts = new Map();
     for (const r of apiResourceUrls()) {
@@ -2110,6 +2112,57 @@
     if (!counts.size) lines.push('(none listed)');
     for (const [k, n] of [...counts].slice(-40)) lines.push(k + (n > 1 ? ' ×' + n : ''));
     return lines.join('\n');
+  }
+
+  // Where the page and the site's bars are, without any text from the page.
+  function layoutReport() {
+    const out = [];
+    const r = (n) => Math.round(n);
+    const se = document.scrollingElement || document.documentElement;
+    const vv = window.visualViewport;
+    out.push('Window ' + innerWidth + '×' + innerHeight + (vv ? ', visible ' + r(vv.width) + '×' + r(vv.height) + ' at ' + r(vv.offsetTop) : '') +
+      ' · page scrolled ' + r(window.scrollY) + ' (page height ' + (se ? se.scrollHeight : '?') + ', body scroll ' + (document.body ? document.body.scrollTop : '?') + ')' +
+      (pageScroll ? ' · when panel opened: ' + r(pageScroll.y) : ''));
+    const cs = (e) => getComputedStyle(e);
+    out.push('html overflow ' + cs(document.documentElement).overflowY + ', height ' + cs(document.documentElement).height +
+      ' · body overflow ' + (document.body ? cs(document.body).overflowY + ', height ' + cs(document.body).height + ', position ' + cs(document.body).position : '?'));
+    out.push('Elements around the page: ' + [...document.documentElement.children].map((e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '')).join(', '));
+    const label = (e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') +
+      (typeof e.className === 'string' && e.className ? '.' + e.className.trim().split(/\s+/).slice(0, 3).join('.') : '');
+    // Fixed or sticky bars, and anything near the top of the page.
+    const bars = [];
+    if (document.body) {
+      for (const e of document.body.querySelectorAll('*')) {
+        if (bars.length >= 8) break;
+        const st = cs(e);
+        if (st.position !== 'fixed' && st.position !== 'sticky') continue;
+        const b = e.getBoundingClientRect();
+        if (b.width < innerWidth * 0.5 || b.height < 20 || b.height > innerHeight * 0.5) continue;
+        bars.push(label(e).slice(0, 60) + ' ' + st.position + ' top ' + r(b.top) + ' bottom ' + r(b.bottom) +
+          (st.transform && st.transform !== 'none' ? ' transform ' + st.transform : '') + (st.display === 'none' || st.visibility === 'hidden' ? ' hidden' : ''));
+      }
+    }
+    out.push('Fixed/sticky bars: ' + (bars.length ? '' : 'none found'));
+    bars.forEach((b) => out.push('  ' + b));
+    // Scrolled containers (e.g. the chat).
+    const scrolled = [];
+    if (document.body) {
+      for (const e of document.body.querySelectorAll('*')) {
+        if (scrolled.length >= 5) break;
+        if (e.scrollTop > 0 && e.scrollHeight > e.clientHeight + 10) {
+          const b = e.getBoundingClientRect();
+          scrolled.push('  ' + label(e).slice(0, 60) + ' top ' + r(b.top) + ' height ' + r(b.height) + ' scrolled ' + r(e.scrollTop) + ' of ' + e.scrollHeight);
+        }
+      }
+    }
+    out.push('Scrolled containers: ' + (scrolled.length ? '' : 'none'));
+    out.push(...scrolled);
+    const host = document.getElementById('story-manager-root');
+    if (host) {
+      const b = host.getBoundingClientRect();
+      out.push('Story Manager box: ' + cs(host).position + ' ' + r(b.width) + '×' + r(b.height) + ' at ' + r(b.top) + ',' + r(b.left));
+    }
+    return out;
   }
 
   function diagnosticsBox() {

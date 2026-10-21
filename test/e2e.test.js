@@ -227,6 +227,16 @@ async function main() {
   });
 
   const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, injectEvery: 1 };
+  // A fake screen wake lock that records when it is taken and released.
+  await ctx.addInitScript(() => {
+    window.wakeLog = [];
+    Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: { request: async () => {
+      window.wakeLog.push('on');
+      const l = new EventTarget();
+      l.release = async () => { window.wakeLog.push('off'); l.dispatchEvent(new Event('release')); };
+      return l;
+    } } });
+  });
   await ctx.addInitScript((s) => { if (!localStorage.getItem('smx:settings')) localStorage.setItem('smx:settings', JSON.stringify(s)); }, settings);
   // 'lateStart' simulates a userscript manager that starts the script only
   // after the site has already loaded the chat (seen on Firefox for Android).
@@ -260,6 +270,9 @@ async function main() {
   check(mem.title === 'Dragon Tale', 'chat title picked up');
   check(!/===/.test(mem.memory) && !mem.entries.some((e) => /===/.test(e.text)), 'answer split into story, entries and log');
   check(mem.log.length === 2 && /reply 1 in update 1/.test(mem.log[0].text) && /reply 2 in update 1/.test(mem.log[1].text), 'one detailed log entry per AI reply');
+
+  await page.waitForTimeout(500);
+  check((await page.evaluate(() => window.wakeLog.join())) === 'on,off', 'screen kept on during the update and released after');
 
   console.log('3) Next message has the memory attached');
   await page.evaluate(() => window.sendMsg('What do I do next?'));

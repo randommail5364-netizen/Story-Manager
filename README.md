@@ -80,6 +80,7 @@ Other settings:
 
 ## Good to know
 
+- **The screen stays on while the memory is updated.** Updates with the MiniApps bot can take many minutes, and they stop if the phone locks or you switch away from the tab. Story Manager asks the browser to keep the screen on until the update is done (Diagnostics shows whether that worked). Keep the miniapps.ai tab open in front until it finishes.
 - **You'll see the memory block in your own messages.** It's added to the text you send, so the chat shows it above what you typed. The add-on ignores these blocks when it updates the memory.
 - **Your data stays on your phone.** Memories and settings are saved in your browser's userscript storage. The only places they're sent are miniapps.ai and the memory-keeper AI you choose.
 - **MiniApps has no official API.** The add-on watches the same requests the website makes (`POST /chat`, `GET /conversations/{id}`, `GET /tools/s/{slug}`). These endpoints come from the reverse-engineered [MiniappsAI-API](https://github.com/cyber-wojtek/MiniappsAI-API) project. If MiniApps changes its website, the add-on may need an update. If the 📖 button shows a red dot, open it to see the error.

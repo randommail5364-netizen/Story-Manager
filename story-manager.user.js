@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.6.0
+// @version      2.6.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1216,6 +1216,34 @@
     chat.entries = cloneEntries(snap.entries || []);
   }
 
+  // Keeps the phone screen on while an update runs, so it isn't interrupted
+  // by the screen turning off (Screen Wake Lock API; Firefox 126+).
+  const wake = { lock: null, want: false, state: 'not used yet' };
+  async function keepAwake(on) {
+    wake.want = on;
+    if (!on) {
+      if (wake.lock) { try { await wake.lock.release(); } catch (e) { /* already gone */ } }
+      wake.lock = null;
+      return;
+    }
+    if (wake.lock || document.visibilityState !== 'visible') return;
+    const wl = navigator.wakeLock;
+    if (!wl || !wl.request) { wake.state = 'not supported by this browser'; return; }
+    try {
+      wake.lock = await wl.request('screen');
+      wake.state = 'kept on during updates';
+      wake.lock.addEventListener('release', () => { wake.lock = null; });
+      if (!wake.want) keepAwake(false);
+    } catch (e) {
+      wake.state = 'refused (' + String(e.message || e).slice(0, 60) + ')';
+    }
+  }
+  // The browser drops the lock when the tab is hidden; take it again on return.
+  document.addEventListener('visibilitychange', () => { if (wake.want) keepAwake(true); });
+  function anyBusy() {
+    return Object.values(busy).some(Boolean);
+  }
+
   // Fold every not-yet-processed message of a chat into its memory.
   // Returns 'done', 'stopped', 'failed' or 'skipped'.
   async function updateMemory(id, msgs, { force = false } = {}) {
@@ -1224,6 +1252,7 @@
     const todo = unprocessed(chat, msgs);
     if (!todo.length) return 'skipped';
     busy[id] = true;
+    keepAwake(true);
     stopRequested[id] = false;
     activeChatId = id;
     chat.backlog = null;
@@ -1271,6 +1300,7 @@
       return 'failed';
     } finally {
       busy[id] = false;
+      if (!anyBusy()) keepAwake(false);
       stopRequested[id] = false;
       if (activeChatId === id) activeChatId = null;
       delete progress[id];
@@ -2116,6 +2146,7 @@
     const lines = [
       'Story Manager v' + version,
       'Page: ' + shortUrl(location.href),
+      'Screen: ' + wake.state,
       'Current chat: ' + (currentId ? currentId.slice(0, 8) : 'none') +
         (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · in memory: ' + (chat.readCount || chat.processedCount) : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),

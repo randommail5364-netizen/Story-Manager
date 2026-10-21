@@ -10,12 +10,12 @@ You don't need to do anything once it's set up.
 2. **Writes the memory.** Every few AI replies (3 by default), a "memory keeper" AI reads the new messages and updates three things:
    - **The story:** the big picture. It covers what has happened so far, the current scene (where, when, who's there), open plot threads, and world rules and timeline.
    - **Entries:** one for **each character**, including yours. Each covers appearance, personality, how they talk, background, feelings, their relationship with every other character, current condition, secrets, nicknames and more. Important **places, items, groups and lore** get entries too. The memory keeper only rewrites entries that changed, so the rest can't be damaged by an update.
-   - **The reply log:** a summary of *every* AI reply, covering what happened, key dialogue, decisions, feelings and changes. Entries are at least 300 characters, and longer replies get longer ones (about 15% of the reply, up to 1,500). Every entry is kept.
+   - **The reply log:** a summary of *every* AI reply, covering what happened, key dialogue, decisions, feelings and changes. How long they are depends on **Summary detail** in Settings: *Standard* 300–1,500 characters per reply, *Detailed* (the default) 700–3,000, *Maximum* 1,200–5,000, with longer replies getting longer summaries. Every entry is kept.
 3. **Gives the AI what it needs.** Each time you send a message, the relevant parts are added in front of it, inside `[[STORY-MEMORY]] … [[/STORY-MEMORY]]` markers:
    - **always:** your pinned facts and the story
    - entries for everyone and everything **in the current scene** or the last few messages
    - entries **your message mentions**, by name or any nickname
-   - the **newest reply summaries**, filling the space left (16,000 characters by default)
+   - the **newest reply summaries**, filling the space left (24,000 characters by default)
 
    A character who isn't involved right now doesn't take up space, but comes back the moment they're mentioned. The storyteller AI is told to use the notes silently.
 
@@ -65,8 +65,10 @@ Other settings:
 
 - **Update every … AI replies.** Lower means fresher memory but more summary calls.
 - **Attach the memory every … messages.** `1` attaches it to every message, which is the most reliable. `0` turns attaching off.
-- **Main memory size.** About 8,000 characters by default.
-- **Detailed reply summaries attached to each message.** 15 by default, about 6,000 characters. More helps the AI remember detail, but makes every message longer.
+- **Summary detail.** Standard, Detailed or Maximum: how long reply summaries and character entries are. More detail means more memory-keeper requests, because each one covers fewer replies. Existing summaries keep their length until you tap Rebuild.
+- **Story entry size.** About 12,000 characters by default.
+- **Most characters attached to one message.** 24,000 by default.
+- **Detailed reply summaries attached to each message.** 15 by default, as far as the space allows. More helps the AI remember detail, but makes every message longer.
 - **Backup.** Export and import all your chats' memories, e.g. to move to another device. Your API key is never included.
 
 ## Making sure nothing gets lost
@@ -74,7 +76,7 @@ Other settings:
 - **Messages are read whole.** Long messages aren't trimmed before the memory keeper reads them.
 - **Missing summaries are re-requested.** If the memory keeper skips a reply's summary, or its answer gets cut off, that reply is sent again (up to 3 times) until it has one.
 - **Facts aren't dropped.** The memory keeper is told never to remove a fact unless the story changed it. If an update would make the memory much shorter, it's retried, and if it's still too short the previous memory is kept (the reply log is still updated).
-- **Each request is kept small.** It covers at most 6 AI replies, so the memory keeper's answer doesn't run out of room.
+- **Each request is kept small.** It covers at most 6 AI replies (4 on Detailed, 3 on Maximum), so the memory keeper's answer doesn't run out of room.
 
 ## Good to know
 

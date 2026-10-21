@@ -314,6 +314,13 @@ async function main() {
   const viaFetch = chatBodies[chatBodies.length - 1].elements[0].text;
   check(viaFetch.startsWith('[[STORY-MEMORY]]') && viaFetch.endsWith('Fetch path check'), 'memory attached via fetch hook');
 
+  // Waits until a multi-request rebuild has sent all its requests.
+  const settle = async () => {
+    let n;
+    const stopShown = () => page.locator('#story-manager-root >> button', { hasText: 'Stop' }).count();
+    do { n = llmCalls.length; await page.waitForTimeout(3000); } while (llmCalls.length !== n || await stopShown());
+  };
+
   console.log('9) Site loads messages from another, paged endpoint (learned automatically)');
   altApi = true;
   await page.evaluate(() => localStorage.setItem('altApi', '1'));
@@ -325,7 +332,7 @@ async function main() {
   await page.locator('#story-manager-root >> .fab').click();
   page.once('dialog', (d) => d.accept());
   await page.getByText('Rebuild from whole chat').click();
-  await waitFor(() => llmCalls.length > beforeRebuild, 30000, 'rebuild via learned endpoint');
+  await waitFor(() => /Fetch path check/.test(llmCalls.slice(beforeRebuild).join('\n')), 60000, 'rebuild via learned endpoint');
   const rebuiltFrom = llmCalls.slice(beforeRebuild).join('\n');
   check(/I am Mira, a healer\./.test(rebuiltFrom) && /Fetch path check/.test(rebuiltFrom), 'all pages read (oldest and newest messages)');
   check(rebuiltFrom.indexOf('I am Mira, a healer.') < rebuiltFrom.indexOf('Fetch path check'), 'messages put back in order');
@@ -345,6 +352,7 @@ async function main() {
   page.once('dialog', (d) => d.accept());
   await page.getByText('Rebuild from whole chat').click();
   await waitFor(() => llmCalls.length > beforeWs, 30000, 'rebuild from socket history');
+  await settle();
   const fromWs = llmCalls.slice(beforeWs).join('\n');
   check(/I am Mira, a healer\./.test(fromWs) && /Fetch path check/.test(fromWs), 'messages from the live connection used for the memory');
   await page.locator('#story-manager-root >> .x').click();
@@ -372,6 +380,7 @@ async function main() {
   page.once('dialog', (d) => d.accept());
   await page.getByText('Rebuild from whole chat').click();
   await waitFor(() => llmCalls.length > beforeLate, 30000, 'rebuild after late start');
+  await settle();
   const fromLate = llmCalls.slice(beforeLate).join('\n');
   check(/I am Mira, a healer\./.test(fromLate) && /Socket send check|Fetch path check/.test(fromLate), 'messages found from the browser\'s request list');
   const learnedLate = await page.evaluate(() => localStorage.getItem('smx:learned'));
@@ -389,6 +398,7 @@ async function main() {
   page.once('dialog', (d) => d.accept());
   await page.getByText('Rebuild from whole chat').click();
   await waitFor(() => llmCalls.length > beforeStale, 30000, 'rebuild with stale cursor');
+  await settle();
   check(/I am Mira, a healer\./.test(llmCalls.slice(beforeStale).join('\n')), 'whole chat read despite the stale cursor');
 
   console.log('14) Recaps are labelled for the memory keeper, with rules for them');
@@ -401,6 +411,7 @@ async function main() {
   page.once('dialog', (d) => d.accept());
   await page.getByText('Rebuild from whole chat').click();
   await waitFor(() => llmCalls.length > beforeRecap, 30000, 'rebuild with a recap');
+  await settle();
   const withRecap = llmCalls.slice(beforeRecap).join('\n');
   check(/\[RECAP\] USER: Recap: earlier, Mira and Ash escaped/.test(withRecap), 'recap message labelled [RECAP]');
   check(/\[R1, entry about \d+ characters\] STORY AI/.test(withRecap), 'story replies numbered for the log');
@@ -431,7 +442,7 @@ async function main() {
   const longChat = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
   check(replyIds.every((rid) => longChat.log.some((e) => e.id === rid)), 'every AI reply has a log entry (' + replyIds.length + '), including the one first left out');
   check(longChat.log.map((e) => e.id).join() === replyIds.join(), 'log entries are in story order');
-  check(/\[R1, entry about 300 characters\]/.test(longCalls), 'each reply labelled with its target entry length');
+  check(/\[R1, entry about 700 characters\]/.test(longCalls), 'each reply labelled with its target entry length');
 
   console.log('16) An update that would drop most of the memory is retried, then refused');
   const bigMemory = '## Characters\n' + Array.from({ length: 60 }, (_, i) => '- Fact number ' + i + ' about Mira and Ash that must survive.').join('\n');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.5.2
+// @version      2.6.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -420,9 +420,10 @@
     helperRotate: 0,  // start a new helper chat every N requests (0 = always the same one)
     updateEvery: 3,   // AI replies between memory updates
     injectEvery: 1,   // attach memory to every Nth message (0 = never)
-    maxChars: 8000,   // target size of the main memory
+    detail: 'detailed', // how long summaries and entries are: standard | detailed | maximum
+    maxChars: 12000,  // target size of the main memory
     logAttach: 15,    // detailed reply summaries attached to each message
-    injectBudget: 16000, // most characters attached to one message
+    injectBudget: 24000, // most characters attached to one message
     autoEnable: true, // manage new chats automatically
     buttonSide: 'right',
   };
@@ -543,7 +544,7 @@
       core: chat.entries.filter((e) => inPlay.has(e)).map(pack),
       extra: chat.entries.filter((e) => !inPlay.has(e)).map(pack),
       log: chat.log.slice(-Math.max(0, Number(settings.logAttach) || 0)).map((e) => e.text),
-      budget: Math.max(2000, Number(settings.injectBudget) || 16000),
+      budget: Math.max(2000, Number(settings.injectBudget) || DEFAULT_SETTINGS.injectBudget),
     };
     return plan.head || plan.core.length || plan.extra.length || plan.log.length ? plan : null;
   }
@@ -890,7 +891,7 @@
       'Only the parts that matter at the moment are shown to the storyteller, so every fact must sit in the right entry.',
       '',
       'STORY rules:',
-      '- Sections: ## Story So Far (the main events and turning points, in order), ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries), ## World & Timeline (world rules, the date and time, how much time has passed). Omit empty sections.',
+      '- Sections: ## Story So Far (every important event and turning point, in order, with who was involved and what changed), ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries), ## World & Timeline (world rules, the date and time, how much time has passed). Omit empty sections.',
       '- Up to ' + settings.maxChars + ' characters. Details about a character, place or item belong in its entry, not here.',
       '- Always output the complete STORY.',
       '',
@@ -898,6 +899,7 @@
       '- EVERY named character gets an entry, including the user\'s character and side characters, even if they only appear briefly. List them all in CAST.',
       '- Places, groups and lore get an entry when the story keeps coming back to them. Items get an entry only when they are important to the plot over several scenes (e.g. a weapon, a gift, an heirloom, a key); never for props, clothing or objects used within a scene.',
       '- A character entry covers: who they are; appearance, clothing and distinguishing features; personality, mannerisms and how they talk; abilities; likes, dislikes and boundaries; backstory; their relationship with each other character and the moments that shaped it; feelings; current condition, injuries and whereabouts; what they carry or own; goals, promises and secrets; nicknames and running jokes. Be detailed and specific, with bullet points.',
+      '- Length: main characters ' + detail().mainChar + ' characters each, growing as the story reveals more; side characters and places as long as their facts need. Record specifics (exact words said, what was worn, where things are, how someone reacted), not general impressions.',
       '- Header format: === ENTRY: Name | kind | aliases: other names, nicknames, titles === where kind is character, place, item, group or lore. Aliases are every other way the story refers to it (used to find the entry when it is mentioned).',
       '- Output ONLY entries that are new or changed by the new messages, each one complete (all old facts plus the new ones). Do not output unchanged entries. Use the exact existing name for an existing entry.',
       '- Never remove a fact unless the story changed it; then update it. When something changes, update every entry it affects (e.g. both sides of a relationship).',
@@ -905,7 +907,7 @@
       '',
       'LOG rules:',
       '- Story replies in the new messages are numbered [R1], [R2], … Write exactly one log entry for EACH of them.',
-      '- Each entry is past-tense prose describing what happened in that reply and what the user did just before it: actions, important dialogue (short quotes are fine), decisions, revelations, emotions, changes in relationships, injuries, items, where and when it happened. Use names, be concrete; no vague phrases like "they talked".',
+      '- Each entry is past-tense prose describing what happened in that reply and what the user did just before it, step by step in order: actions, important dialogue (short quotes are fine), decisions, revelations, emotions and reactions, changes in relationships, injuries, clothing and items, where and when it happened, and any new facts about the world. Use names, be concrete; no vague phrases like "they talked" or "things got intense".',
       '- Each [R…] label says how long its entry should be (longer replies get longer entries). Reach that length with real details from the reply, never padding. Cover the whole reply, including its end.',
       '',
       'Recaps:',
@@ -944,10 +946,11 @@
     return 60000;
   }
 
-  // How long a reply's log entry should be: at least 300 characters, about
-  // 15% of the reply, at most 1,500.
+  // How long a reply's log entry should be: a share of the reply's length,
+  // within limits that depend on the detail setting.
   function entryTarget(m) {
-    return Math.max(300, Math.min(1500, Math.round(m.text.length * 0.15 / 50) * 50));
+    const d = detail();
+    return Math.max(d.logMin, Math.min(d.logMax, Math.round(m.text.length * d.logShare / 50) * 50));
   }
 
   // Story replies are numbered [R1], [R2], … so the log entries can be matched.
@@ -962,12 +965,21 @@
     }).join('\n\n');
   }
 
+  // Longer summaries mean longer answers, so fewer replies fit in one request.
+  const DETAIL = {
+    standard: { label: 'Standard', logMin: 300, logShare: 0.15, logMax: 1500, perChunk: 6, mainChar: '800–1,500' },
+    detailed: { label: 'Detailed', logMin: 700, logShare: 0.3, logMax: 3000, perChunk: 4, mainChar: '1,500–3,000' },
+    maximum: { label: 'Maximum', logMin: 1200, logShare: 0.5, logMax: 5000, perChunk: 3, mainChar: '3,000–5,000' },
+  };
+  function detail() {
+    return DETAIL[settings.detail] || DETAIL.detailed;
+  }
+
   // How much chat text goes to the memory keeper in one request.
   const CHUNK_CHARS = 20000;
 
-  // At most this many story replies per request, so the answer (memory plus
-  // one log entry per reply) stays a manageable length.
-  const REPLIES_PER_CHUNK = 6;
+  // At most detail().perChunk story replies per request, so the answer
+  // (memory plus one log entry per reply) stays a manageable length.
 
   function chunk(msgs, maxChars) {
     const out = [];
@@ -976,7 +988,7 @@
     let replies = 0;
     for (const m of msgs) {
       const len = Math.min(m.text.length, textLimit(m)) + 40;
-      const full = size + len > maxChars || (m.role === 'assistant' && replies >= REPLIES_PER_CHUNK);
+      const full = size + len > maxChars || (m.role === 'assistant' && replies >= detail().perChunk);
       if (cur.length && full) { out.push(cur); cur = []; size = 0; replies = 0; }
       cur.push(m);
       size += len;
@@ -1595,7 +1607,9 @@
   const ready = (async () => {
     settings = Object.assign({}, DEFAULT_SETTINGS, await Store.get('settings', {}));
     // Memories used to be much shorter; move the old default up.
-    if (settings.maxChars === 3000 || settings.maxChars === 5000) settings.maxChars = DEFAULT_SETTINGS.maxChars;
+    if ([3000, 5000, 8000].includes(settings.maxChars)) settings.maxChars = DEFAULT_SETTINGS.maxChars;
+    if (settings.injectBudget === 16000) settings.injectBudget = DEFAULT_SETTINGS.injectBudget;
+    if (!DETAIL[settings.detail]) settings.detail = DEFAULT_SETTINGS.detail;
     chatIndex = await Store.get('chatIndex', []);
     learned = await Store.get('learned', null);
     helperChat = await Store.get('helperChat', null);
@@ -2262,6 +2276,7 @@
     f.helperRotate = el('input', { type: 'number', min: '0', value: String(s.helperRotate) });
     f.updateEvery = el('input', { type: 'number', min: '1', value: String(s.updateEvery) });
     f.injectEvery = el('input', { type: 'number', min: '0', value: String(s.injectEvery) });
+    f.detail = el('select', {}, ...Object.entries(DETAIL).map(([k, d]) => el('option', { value: k, selected: s.detail === k ? '' : null }, d.label)));
     f.maxChars = el('input', { type: 'number', min: '500', step: '250', value: String(s.maxChars) });
     f.logAttach = el('input', { type: 'number', min: '0', value: String(s.logAttach) });
     f.injectBudget = el('input', { type: 'number', min: '2000', step: '1000', value: String(s.injectBudget) });
@@ -2298,6 +2313,7 @@
       helperRotate: Math.max(0, parseInt(f.helperRotate.value, 10) || 0),
       updateEvery: Math.max(1, parseInt(f.updateEvery.value, 10) || 1),
       injectEvery: Math.max(0, parseInt(f.injectEvery.value, 10) || 0),
+      detail: f.detail.value,
       maxChars: Math.max(500, parseInt(f.maxChars.value, 10) || DEFAULT_SETTINGS.maxChars),
       logAttach: Math.max(0, parseInt(f.logAttach.value, 10) || 0),
       injectBudget: Math.max(2000, parseInt(f.injectBudget.value, 10) || DEFAULT_SETTINGS.injectBudget),
@@ -2354,11 +2370,13 @@
       keyBox, baseBox, slugBox,
       el('label', {}, 'Update the memory every … AI replies'), f.updateEvery,
       el('label', {}, 'Attach the memory to every … messages you send (0 = never)'), f.injectEvery,
+      el('label', {}, 'Summary detail'), f.detail,
+      el('div', { class: 'hint' }, 'How long reply summaries and character entries are. Standard: 300–1,500 characters per reply summary. Detailed: 700–3,000. Maximum: 1,200–5,000. More detail needs more memory-keeper requests (each one covers fewer replies). Summaries already written stay as they are; Rebuild from whole chat rewrites them.'),
       el('label', {}, 'Story entry size (characters)'), f.maxChars,
       el('label', {}, 'Most characters attached to one message'), f.injectBudget,
       el('div', { class: 'hint' }, 'The story and entries in play are always attached; entries your message mentions and the newest reply summaries fill the rest of this space.'),
       el('label', {}, 'Detailed reply summaries attached to each message'), f.logAttach,
-      el('div', { class: 'hint' }, 'Every AI reply gets a 300–500 character summary. The newest ones are attached to your messages in full; 15 is about 6,000 characters. More helps the AI remember detail, but makes every message longer.'),
+      el('div', { class: 'hint' }, 'Every AI reply gets a summary (length set by Summary detail above). The newest ones are attached to your messages in full, as far as the space above allows. More helps the AI remember detail, but makes every message longer.'),
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),
       el('label', {}, 'Button position'), f.buttonSide,
       el('div', { class: 'btns' },

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.1.1
+// @version      1.2.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -73,6 +73,13 @@
     const origFetch = win.fetch.bind(win);
     const state = { headers: {}, apiBase: 'https://api.miniapps.ai' };
 
+    // Counters shown in Diagnostics, to see whether the hook sees anything.
+    const stats = { mode: sandboxed ? 'sandbox' : 'page', fetch: 0, xhr: 0, wsIn: 0, wsOut: 0 };
+    function bump(k) {
+      stats[k]++;
+      if (doc.documentElement) doc.documentElement.setAttribute('data-smx-stats', JSON.stringify(stats));
+    }
+
     function emit(type, data) {
       doc.dispatchEvent(new win.CustomEvent('smx:' + type, toPage({ detail: JSON.stringify(data) })));
     }
@@ -113,6 +120,11 @@
       let body;
       try { body = JSON.parse(bodyStr); } catch (e) { return bodyStr; }
       if (!body || typeof body !== 'object') return bodyStr;
+      return injectInto(body) ? JSON.stringify(body) : bodyStr;
+    }
+
+    // Returns true when the memory was added to `body` (modified in place).
+    function injectInto(body) {
       const convId = body.conversationId || null;
       let injected = false;
       let userText = '';
@@ -130,7 +142,7 @@
         }
       }
       emit('sent', { conversationId: convId, injected, userText });
-      return injected ? JSON.stringify(body) : bodyStr;
+      return injected;
     }
 
     function report(info, text, status) {
@@ -145,6 +157,7 @@
     win.fetch = expFn(function (input, init) {
       let info = null;
       try {
+        bump('fetch');
         const url = typeof input === 'string' ? input : (input && input.url) || String(input);
         const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
         info = classify(method, url);
@@ -182,6 +195,7 @@
       return oSet.apply(this, arguments);
     }, XP);
     XP.send = expFn(function (body) {
+      bump('xhr');
       const info = this.__smx;
       if (info) {
         try {
@@ -201,6 +215,60 @@
       }
       return oSend.call(this, body);
     }, XP);
+
+    // --- WebSocket (Socket.IO): the site may load and send chats over it ---
+    // Socket.IO frames look like 42["event",{...}] (or 43<id>[...] for replies).
+    function sioParse(data) {
+      if (typeof data !== 'string') return null;
+      const m = data.match(/^(4([23])(?:\/[^,]*,)?(\d*))(\[[\s\S]*\])$/);
+      if (!m) return null;
+      try {
+        const arr = JSON.parse(m[4]);
+        if (!Array.isArray(arr)) return null;
+        return m[2] === '2'
+          ? { prefix: m[1], event: String(arr[0]), args: arr.slice(1), ack: m[3] }
+          : { prefix: m[1], event: 'reply', args: arr, ack: m[3] };
+      } catch (e) { return null; }
+    }
+
+    function reportWs(dir, p) {
+      let text = '';
+      try { text = JSON.stringify(p.args); } catch (e) { /* ignore */ }
+      emit('ws', { dir, event: p.event, ack: p.ack, text: text.length < 3000000 ? text : '' });
+    }
+
+    const onWsMessage = function (ev) {
+      try {
+        bump('wsIn');
+        const p = sioParse(ev.data);
+        if (p) reportWs('in', p);
+      } catch (e) { /* ignore */ }
+    };
+
+    if (win.WebSocket && win.WebSocket.prototype) {
+      const WP = win.WebSocket.prototype;
+      const oWsSend = WP.send;
+      WP.send = expFn(function (data) {
+        try {
+          bump('wsOut');
+          // Start listening to this socket the first time it sends anything.
+          if (!this.__smxListening) {
+            this.__smxListening = true;
+            this.addEventListener('message', sandboxed ? expFn(onWsMessage, win) : onWsMessage);
+          }
+          const p = sioParse(data);
+          if (p) {
+            const obj = p.args[0];
+            // A chat message sent over the socket: attach the memory here too.
+            if (obj && typeof obj === 'object' && Array.isArray(obj.elements) && (obj.conversationId || obj.toolId)) {
+              if (injectInto(obj)) data = p.prefix + JSON.stringify([p.event].concat(p.args));
+            }
+            reportWs('out', p);
+          }
+        } catch (e) { /* ignore */ }
+        return oWsSend.call(this, data);
+      }, WP);
+    }
 
     // --- RPC: lets the script call the MiniApps API with the user's session ---
     doc.addEventListener('smx:rpc', function (ev) {
@@ -229,6 +297,7 @@
   function installPageHook() {
     const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
     if (W === window) { pageHook(window); return; }
+    if (W.__smxHooked) return;
     try {
       const s = document.createElement('script');
       s.textContent = '(' + pageHook.toString() + ')(window);';
@@ -387,10 +456,14 @@
   // Conversation parsing
   // ---------------------------------------------------------------------------
 
+  const ROLE_KEYS = ['origin', 'role', 'sender', 'author', 'from', 'senderType', 'isBot', 'isUser', 'fromUser', 'byUser'];
+  const TEXT_KEYS = ['elements', 'text', 'content', 'message', 'body', 'markdown'];
+  const ROLE_WORD = /^(user|human|assistant|bot|ai|model|character|system)$/i;
+
   function looksLikeMessage(o) {
-    return o && typeof o === 'object' && !Array.isArray(o) &&
-      ('origin' in o || 'role' in o || 'sender' in o || 'author' in o) &&
-      ('elements' in o || 'text' in o || 'content' in o || 'message' in o);
+    return !!o && typeof o === 'object' && !Array.isArray(o) &&
+      (ROLE_KEYS.some((k) => k in o) || (typeof o.type === 'string' && ROLE_WORD.test(o.type))) &&
+      TEXT_KEYS.some((k) => k in o);
   }
 
   function findMessageArray(data) {
@@ -416,7 +489,7 @@
       const t = m.elements.filter((e) => e && typeof e.text === 'string').map((e) => e.text).join('\n');
       if (t) return t;
     }
-    for (const k of ['text', 'content', 'message']) {
+    for (const k of ['text', 'content', 'message', 'body', 'markdown']) {
       const v = m[k];
       if (typeof v === 'string') return v;
       if (Array.isArray(v)) return v.map((p) => (typeof p === 'string' ? p : (p && p.text) || '')).join('\n');
@@ -425,9 +498,12 @@
   }
 
   function roleOf(m) {
-    const r = String(m.origin || m.role || m.sender || m.author || '').toLowerCase();
+    if (m.isUser === true || m.fromUser === true || m.byUser === true) return 'user';
+    if (m.isBot === true || m.isUser === false || m.fromUser === false) return 'assistant';
+    const typeRole = typeof m.type === 'string' && ROLE_WORD.test(m.type) ? m.type : '';
+    const r = String(m.origin || m.role || m.sender || m.author || m.from || m.senderType || typeRole || '').toLowerCase();
     if (/system/.test(r)) return 'system';
-    if (/user|human/.test(r) || m.isUser === true) return 'user';
+    if (/user|human/.test(r)) return 'user';
     return 'assistant';
   }
 
@@ -602,7 +678,9 @@
     let prev = null;
     for (let i = 0; i < 80; i++) {
       await sleep(3000);
-      const msgs = await fetchMessages(cid, { cache: false });
+      let msgs = [];
+      try { msgs = await fetchMessages(cid, { cache: false }); } catch (e) { /* the live connection may still deliver it */ }
+      if (seenMsgs[cid]) msgs = mergeMsgs(msgs, [...seenMsgs[cid].values()]);
       const lastUser = msgs.map((m) => m.role).lastIndexOf('user');
       const reply = msgs.slice(lastUser + 1).filter((m) => m.role === 'assistant').map((m) => m.text).join('\n');
       if (reply && reply === prev) return reply;
@@ -712,7 +790,9 @@
 
   let learned = null;               // { template: 'https://…{id}…' }
   const seenMsgs = {};              // chat id -> Map(message id -> message), this page visit only
-  const apiLog = [];                // recent API calls, for Diagnostics
+  const siteLog = new Map();        // the site's own requests, for Diagnostics
+  const ownLog = [];                // Story Manager's requests, for Diagnostics
+  const sockLog = new Map();        // Socket.IO events, for Diagnostics
 
   function mergeMsgs(...lists) {
     const map = new Map();
@@ -750,11 +830,32 @@
     return parts.join(' | ');
   }
 
+  function addTo(map, key, entry, max) {
+    const prev = map.get(key);
+    map.delete(key);
+    map.set(key, Object.assign(entry, { count: prev ? prev.count + 1 : 1 }));
+    while (map.size > max) map.delete(map.keys().next().value);
+  }
+
   function logApi(method, url, status, data, note) {
     let found = 0;
     try { found = extractMessages(data).length; } catch (e) { /* ignore */ }
-    apiLog.unshift({ method, url: shortUrl(url), status, info: describe(data), found, note: note || '' });
-    apiLog.length = Math.min(apiLog.length, 25);
+    const entry = { method, url: shortUrl(url), status, info: describe(data), found, note: note || '' };
+    if (note === 'site') {
+      addTo(siteLog, method + ' ' + entry.url + ' ' + status + ' ' + entry.info, entry, 40);
+    } else {
+      const last = ownLog[0];
+      if (last && last.url === entry.url && last.status === status && last.info === entry.info) last.count++;
+      else ownLog.unshift(Object.assign(entry, { count: 1 }));
+      ownLog.length = Math.min(ownLog.length, 6);
+    }
+  }
+
+  function logSocket(dir, event, args) {
+    let found = 0;
+    try { found = extractMessages(args).length; } catch (e) { /* ignore */ }
+    const info = describe(args && args.length === 1 ? args[0] : args);
+    addTo(sockLog, dir + ' ' + event + ' ' + info, { dir, event, info, found }, 30);
   }
 
   // Which chat does a message list belong to?
@@ -768,7 +869,7 @@
     const inUrl = (decoded.match(new RegExp(UUID_RE.source, 'gi')) || []).map((x) => x.toLowerCase());
     const ids = cands.filter((c) => typeof c === 'string' && UUID_RE.test(c)).map((c) => c.toLowerCase());
     const pick = ids.find((c) => inUrl.includes(c)) || inUrl.find((c) => c === currentId || chats[c]) || ids[0] || (inUrl.length === 1 ? inUrl[0] : null);
-    return pick && !helperIds.has(pick) ? { id: pick, inUrl: inUrl.includes(pick) } : null;
+    return pick ? { id: pick, inUrl: inUrl.includes(pick) } : null;
   }
 
   // Ask the learned endpoint for every page of a chat's messages.
@@ -836,10 +937,13 @@
     polls[id] = token;
     const want = String(userText || '').trim().slice(0, 60);
     let prev = null;
+    let empty = 0;
     for (let i = 0; i < 75 && polls[id] === token; i++) {
       await sleep(4000);
       let msgs;
       try { msgs = await fetchMessages(id); } catch (e) { continue; }
+      // Nothing readable this way (the socket listener covers that case).
+      if (!msgs.length && ++empty >= 3) break;
       const last = msgs[msgs.length - 1];
       if (!last || last.role !== 'assistant') { prev = null; continue; }
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
@@ -899,7 +1003,7 @@
     // Only trust lists that clearly are a chat: both sides talking, tied to a chat id.
     if (!msgs.some((m) => m.role === 'user') || !msgs.some((m) => m.role === 'assistant')) return;
     const conv = convIdFor(d.url, data, arr);
-    if (!conv) return;
+    if (!conv || helperIds.has(conv.id)) return;
     if (conv.inUrl && d.method === 'GET') {
       const decoded = (() => { try { return decodeURIComponent(d.url); } catch (e) { return d.url; } })();
       const template = decoded.split(conv.id).join('{id}');
@@ -910,6 +1014,25 @@
     }
     setCurrent(conv.id);
     await syncChat(conv.id, remember(conv.id, msgs), { final: false });
+  });
+
+  // Messages that arrive over the live connection (history or new replies).
+  on('ws', async (d) => {
+    await ready;
+    let args = null;
+    try { args = d.text ? JSON.parse(d.text) : null; } catch (e) { /* ignore */ }
+    logSocket(d.dir, d.event, args);
+    if (d.dir !== 'in' || !args) return;
+    const msgs = extractMessages(args);
+    if (!msgs.length) return;
+    const conv = convIdFor('', args && args.length === 1 ? args[0] : args, findMessageArray(args)) || (currentId ? { id: currentId } : null);
+    if (!conv) return;
+    // Replies of the MiniApps-bot memory keeper are only collected for it.
+    if (helperIds.has(conv.id)) { remember(conv.id, msgs); return; }
+    setCurrent(conv.id);
+    // A single finished AI message means the reply is complete.
+    const final = msgs.length === 1 && msgs[0].role === 'assistant';
+    await syncChat(conv.id, remember(conv.id, msgs), { final });
   });
 
   on('sent', async (d) => {
@@ -1111,6 +1234,7 @@
     };
 
     const runNow = async (rebuild) => {
+      if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
       try {
         await save();
         if (rebuild) {
@@ -1178,12 +1302,21 @@
         (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · read into memory: ' + chat.processedCount : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider,
+      'Hook: ' + (document.documentElement.getAttribute('data-smx-stats') || 'no activity seen'),
       '',
-      'Recent MiniApps requests (newest first, no message text):',
+      'Site requests to MiniApps (newest first, no message text):',
     ];
-    for (const a of apiLog) {
-      lines.push(a.method + ' ' + a.url + ' → ' + a.status + (a.note ? ' [' + a.note + ']' : '') + ' · messages: ' + a.found + ' · ' + a.info);
-    }
+    const fmt = (a) => a.method + ' ' + a.url + ' → ' + a.status + (a.count > 1 ? ' ×' + a.count : '') +
+      (a.note && a.note !== 'site' ? ' [' + a.note + ']' : '') + ' · messages: ' + a.found + ' · ' + a.info;
+    const site = [...siteLog.values()].reverse();
+    if (!site.length) lines.push('(none seen)');
+    for (const a of site) lines.push(fmt(a));
+    lines.push('', 'Live connection events (newest first):');
+    const sock = [...sockLog.values()].reverse();
+    if (!sock.length) lines.push('(none seen)');
+    for (const w of sock) lines.push(w.dir + ' ' + w.event + (w.count > 1 ? ' ×' + w.count : '') + ' · messages: ' + w.found + ' · ' + w.info);
+    lines.push('', 'Story Manager\'s own requests:');
+    for (const a of ownLog) lines.push(fmt(a));
     return lines.join('\n');
   }
 

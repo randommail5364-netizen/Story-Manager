@@ -32,8 +32,17 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
       x.send(body ? JSON.stringify(body) : null);
     });
   }
+  // Like a site that loads history and sends messages over Socket.IO.
+  window.wsLoad = () => new Promise((res) => {
+    const ws = new WebSocket('wss://api.miniapps.ai/socket.io/?EIO=4&transport=websocket');
+    window.sock = ws;
+    ws.onopen = () => { ws.send('40'); ws.send('421["messages:list",' + JSON.stringify({ conversationId: conv }) + ']'); };
+    ws.onmessage = (ev) => { if (String(ev.data).startsWith('431')) res(); };
+  });
+  window.wsSend = (text) => window.sock.send('42["chat",' + JSON.stringify({ conversationId: conv, toolId: 'tool-story', elements: [{ type: 'text', text }] }) + ']');
   async function load() {
     if (!conv) return;
+    if (localStorage.getItem('wsApi')) { await window.wsLoad(); return; }
     if (localStorage.getItem('altApi')) {
       // Like a site that loads messages from a separate, paged endpoint.
       const opts = encodeURIComponent(JSON.stringify({ page: 1, itemsPerPage: 4 }));
@@ -63,9 +72,13 @@ async function main() {
   const chatBodies = [];     // every POST /chat body the "server" received
   const llmCalls = [];       // prompts the memory keeper received
 
-  function reply(conv, text, delay) {
+  let liveWs = null;         // the page's fake Socket.IO connection, once open
+  function reply(conv, text, delay, convId) {
     setTimeout(() => {
-      conv.messages.push({ id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] });
+      const msg = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
+      conv.messages.push(msg);
+      // Like the real site, finished replies are also pushed over the live connection.
+      if (liveWs) liveWs.send('42["chat-message",' + JSON.stringify(Object.assign({ conversationId: convId }, msg)) + ']');
     }, delay);
   }
 
@@ -110,10 +123,10 @@ async function main() {
       conv.messages.push({ id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] });
       if (body.toolId === 'tool-helper') {
         llmCalls.push(text);
-        reply(conv, '## Characters\n- Mira: healer (via MiniApps bot)', 500);
+        reply(conv, '## Characters\n- Mira: healer (via MiniApps bot)', 500, id);
       } else {
         const n = conv.messages.filter((x) => x.origin === 'user').length;
-        reply(conv, 'Story reply #' + n + ': the dragon Ash watches Mira.', 1500);
+        reply(conv, 'Story reply #' + n + ': the dragon Ash watches Mira.', 1500, id);
       }
       return json({ conversationId: id, chatMessageId: uuid(), requestId: body.requestId });
     }
@@ -128,6 +141,21 @@ async function main() {
     await route.fulfill({
       status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*' },
       body: JSON.stringify({ choices: [{ message: { content: '## Characters\n- Mira: a healer\n- Ash: a dragon\n## Story So Far\n- update ' + n } }] }),
+    });
+  });
+
+  const wsFrames = [];       // chat messages the fake socket server received
+  await ctx.routeWebSocket(/socket\.io/, (ws) => {
+    liveWs = ws;
+    ws.onMessage((msg) => {
+      msg = String(msg);
+      if (msg === '40') return ws.send('40{"sid":"s1"}');
+      if (msg.startsWith('421[')) {
+        const id = JSON.parse(msg.slice(3))[1].conversationId;
+        const items = convs[id].messages.map((m) => Object.assign({ conversationId: id }, m));
+        return ws.send('431' + JSON.stringify([{ items }]));
+      }
+      if (msg.startsWith('42["chat"')) wsFrames.push(msg);
     });
   });
 
@@ -232,6 +260,27 @@ async function main() {
   const diag = await page.locator('#story-manager-root >> textarea[readonly]').inputValue();
   check(/chat-messages\/\{id\}/.test(diag) && /Learned message address/.test(diag), 'diagnostics list requests');
   check(!/I am Mira/.test(diag), 'diagnostics contain no story text');
+
+  console.log('11) Site loads history and sends messages over the live connection');
+  await page.evaluate(() => { localStorage.removeItem('smx:learned'); localStorage.setItem('wsApi', '1'); });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const beforeWs = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(() => llmCalls.length > beforeWs, 30000, 'rebuild from socket history');
+  const fromWs = llmCalls.slice(beforeWs).join('\n');
+  check(/I am Mira, a healer\./.test(fromWs) && /Fetch path check/.test(fromWs), 'messages from the live connection used for the memory');
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => window.wsSend('Socket send check'));
+  await waitFor(() => wsFrames.length > 0, 5000, 'socket chat frame');
+  const frame = JSON.parse(wsFrames[0].slice(2))[1].elements[0].text;
+  check(frame.startsWith('[[STORY-MEMORY]]') && frame.endsWith('Socket send check'), 'memory attached to messages sent over the live connection');
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Diagnostics', { exact: true }).click();
+  const diag2 = await page.locator('#story-manager-root >> textarea[readonly]').inputValue();
+  check(/in reply · messages: \d+/.test(diag2) && /Hook: \{"mode":"page"/.test(diag2), 'diagnostics show socket events and hook activity');
 
   await browser.close();
   console.log('\nAll checks passed.');

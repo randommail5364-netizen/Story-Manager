@@ -75,7 +75,9 @@ async function main() {
   const llmCalls = [];       // prompts the memory keeper received
 
   let liveWs = null;
-  let helperBroken = false;  // makes the MiniApps-bot memory keeper fail         // the page's fake Socket.IO connection, once open
+  let helperBroken = false;  // makes the MiniApps-bot memory keeper fail
+  let helperDelay = 500;     // how long the MiniApps-bot memory keeper takes to answer
+  const aborts = [];         // POST /chat/abort bodies         // the page's fake Socket.IO connection, once open
   function reply(conv, text, delay, convId) {
     setTimeout(() => {
       const msg = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
@@ -145,6 +147,10 @@ async function main() {
       const hasMore = end - limit > 0;
       return json({ items, hasMore, nextBeforeMessageId: hasMore ? items[0].id : null });
     }
+    if (req.method() === 'POST' && url.pathname === '/chat/abort') {
+      aborts.push(JSON.parse(req.postData()));
+      return json({});
+    }
     if (req.method() === 'POST' && url.pathname === '/chat') {
       const body = JSON.parse(req.postData());
       if (req.headers()['x-csrf-token'] !== 'csrf-123') return json({ message: 'csrf' }, 403);
@@ -157,7 +163,7 @@ async function main() {
       conv.messages.push({ id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] });
       if (body.toolId === 'tool-helper') {
         llmCalls.push(text);
-        reply(conv, keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)'), 500, id);
+        reply(conv, keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)'), helperDelay, id);
       } else {
         const n = conv.messages.filter((x) => x.origin === 'user').length;
         reply(conv, 'Story reply #' + n + ': the dragon Ash watches Mira.', 1500, id);
@@ -537,6 +543,38 @@ async function main() {
   const afterFail = await keyNow();
   helperBroken = false;
   check(afterFail.memory === beforeFail.memory && afterFail.entries.length === beforeFail.entries.length && afterFail.log.length === beforeFail.log.length, 'story, entries and log restored after the failed rebuild');
+
+  console.log('24) Stop cancels a running rebuild and keeps the previous memory');
+  const beforeStop = await keyNow();
+  helperDelay = 60000;
+  await page.locator('#story-manager-root >> .x').click();
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await page.locator('#story-manager-root >> button', { hasText: 'Stop' }).click({ timeout: 30000 });
+  await waitFor(async () => /Rebuild stopped/.test((await page.locator('#story-manager-root >> .toast').allInnerTexts()).join(' ')), 30000, 'stop message');
+  helperDelay = 500;
+  const afterStop = await keyNow();
+  check(aborts.length > 0, 'MiniApps asked to stop writing the answer');
+  check(afterStop.memory === beforeStop.memory && afterStop.log.length === beforeStop.log.length, 'previous memory kept after stopping');
+
+  console.log('25) A big backlog is not caught up automatically');
+  await page.evaluate(() => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    c.processedIds = c.processedIds.slice(0, 2);
+    localStorage.setItem(key, JSON.stringify(c));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const callsBeforeBacklog = llmCalls.length;
+  await page.evaluate(() => window.sendMsg('Onward.'));
+  await waitFor(() => countOf('user') === countOf('assistant'), 8000, 'reply');
+  await page.waitForTimeout(6000);
+  const backlogChat = await keyNow();
+  check(backlogChat.backlog && backlogChat.backlog.requests > 2 && llmCalls.length === callsBeforeBacklog, 'no automatic catch-up of ' + (backlogChat.backlog && backlogChat.backlog.messages) + ' messages; waiting for the user');
+  await page.locator('#story-manager-root >> .fab').click();
+  check(/messages are not in the memory yet/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel says how many messages are missing');
 
   await browser.close();
   console.log('\nAll checks passed.');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.3.1
+// @version      2.4.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -439,6 +439,19 @@
   let currentId = null;
   const busy = {};              // id -> true while a memory update runs
   const progress = {};          // id -> { done, total } requests of the running update
+  const stopRequested = {};     // id -> true when the user tapped Stop
+  let activeChatId = null;      // chat whose memory is being updated right now
+  const AUTO_MAX_REQUESTS = 2;  // bigger catch-ups only run when the user asks
+
+  function stopError() {
+    const e = new Error('Stopped');
+    e.stopped = true;
+    return e;
+  }
+
+  function checkStop() {
+    if (activeChatId && stopRequested[activeChatId]) throw stopError();
+  }
   const polls = {};             // id -> poll token
   const helperIds = new Set();  // conversations created by the memory keeper itself
 
@@ -640,7 +653,6 @@
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (done.has(msgs[i].id)) { last = i; break; }
     }
-    if (last === -1 && chat.processedCount > 0) last = Math.min(chat.processedCount, msgs.length) - 1;
     return msgs.slice(last + 1);
   }
 
@@ -809,6 +821,11 @@
     let prev = null;
     while (Date.now() - started < 20 * 60000) {
       await sleep(4000);
+      if (activeChatId && stopRequested[activeChatId]) {
+        // Ask MiniApps to stop writing the answer (endpoint from MiniappsAI-API).
+        rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
+        throw stopError();
+      }
       let msgs = [];
       try { msgs = await fetchMessages(cid, { cache: false, mode: 'latest' }); } catch (e) { /* the live connection may still deliver it */ }
       if (seenMsgs[cid]) msgs = mergeMsgs(msgs, [...seenMsgs[cid].values()]);
@@ -972,6 +989,7 @@
     for (let attempt = 1; attempt <= 2; attempt++) {
       const extra = attempt === 1 ? '' : '\n\nIMPORTANT: your previous answer left out much of what is already known. Keep EVERY fact; only add and update.';
       const out = cleanOutput(await callLLM(systemPrompt(), user + extra));
+      checkStop();
       parsed = parseKeeperAnswer(out, replies);
       if (parsed.memory.length < 40 && !parsed.updates.length) {
         throw new Error('Memory keeper gave an unusable answer: "' + out.slice(0, 120) + '"');
@@ -995,6 +1013,7 @@
       if (!missing.length) break;
       const count = parsed.updates.length;
       for (let i = 0; i < missing.length; i += 4) {
+        checkStop();
         parsed.updates = parsed.updates.concat(await entriesFor(chat, msgs, parsed.memory, missing.slice(i, i + 4)));
       }
       if (parsed.updates.length === count) break;
@@ -1007,6 +1026,7 @@
       if (!missing.length) break;
       const count = parsed.entries.length;
       for (let i = 0; i < missing.length; i += 3) {
+        checkStop();
         parsed.entries = parsed.entries.concat(await logEntriesFor(chat, msgs, missing.slice(i, i + 3)));
       }
       // A keeper that won't write log entries at all is not asked forever.
@@ -1154,12 +1174,16 @@
   }
 
   // Fold every not-yet-processed message of a chat into its memory.
+  // Returns 'done', 'stopped', 'failed' or 'skipped'.
   async function updateMemory(id, msgs, { force = false } = {}) {
     const chat = await getChat(id, true);
-    if (busy[id] || (!chat.enabled && !force)) return;
+    if (busy[id] || (!chat.enabled && !force)) return 'skipped';
     const todo = unprocessed(chat, msgs);
-    if (!todo.length) return;
+    if (!todo.length) return 'skipped';
     busy[id] = true;
+    stopRequested[id] = false;
+    activeChatId = id;
+    chat.backlog = null;
     setStatus();
     const before = snapshot(chat);
     const parts = chunk(todo, CHUNK_CHARS);
@@ -1167,6 +1191,7 @@
     renderPanel();
     try {
       for (const part of parts) {
+        checkStop();
         const result = await mergeIntoMemory(chat, part);
         chat.memory = result.memory;
         const applied = applyUpdates(chat.entries, result.updates, chat.ignored);
@@ -1176,6 +1201,7 @@
         chat.log = sortLog(chat.log.filter((e) => !ids.has(e.id)).concat(result.entries), msgs);
         chat.processedIds = chat.processedIds.concat(part.map((m) => m.id)).slice(-300);
         chat.processedCount = msgs.indexOf(part[part.length - 1]) + 1;
+        chat.readCount = (chat.readCount || 0) + part.length;
         chat.lastUpdate = Date.now();
         chat.lastError = '';
         progress[id].done++;
@@ -1186,12 +1212,24 @@
         chat.history = [before].concat(chat.history).slice(0, 5);
       }
       await saveChat(chat);
+      return 'done';
     } catch (e) {
+      if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) {
+        chat.history = [before].concat(chat.history).slice(0, 5);
+      }
+      if (e.stopped) {
+        await saveChat(chat);
+        toast('Stopped. What was finished is kept; tap "Update now" to continue.');
+        return 'stopped';
+      }
       chat.lastError = String(e.message || e);
       await saveChat(chat);
       toast('Story memory update failed: ' + chat.lastError, true);
+      return 'failed';
     } finally {
       busy[id] = false;
+      stopRequested[id] = false;
+      if (activeChatId === id) activeChatId = null;
       delete progress[id];
       setStatus();
       renderPanel();
@@ -1446,23 +1484,39 @@
     // While the AI may still be typing, ignore its last message for now.
     let usable = msgs;
     if (!final && usable.length && usable[usable.length - 1].role === 'assistant') usable = usable.slice(0, -1);
-    chat.knownMessages = msgs.length;
+    chat.knownMessages = Math.max(chat.knownMessages || 0, msgs.length);
+    if (!chat.enabled || busy[id]) return;
+    // The site only loads the newest messages. When they don't reach back to
+    // what the memory already holds, read further back to see what is missing.
+    const done = new Set(chat.processedIds);
+    const sinceRead = async () => {
+      try {
+        const all = await fetchMessages(id, { mode: 'since' });
+        return final || !all.length || all[all.length - 1].role !== 'assistant' ? all : all.slice(0, -1);
+      } catch (e) { return usable; }
+    };
+    if (learned && done.size && !usable.some((m) => done.has(m.id))) usable = await sinceRead();
     const fresh = unprocessed(chat, usable).filter((m) => m.role === 'assistant').length;
     await saveChat(chat);
     if (id === currentId) renderPanel();
-    if (!chat.enabled || busy[id] || fresh < Math.max(1, Number(settings.updateEvery) || 1)) return;
-    // The site only loads the newest messages; fetch anything in between.
-    if (learned && chat.processedIds.length) {
-      try {
-        const all = await fetchMessages(id, { mode: 'since' });
-        usable = final || !all.length || all[all.length - 1].role !== 'assistant' ? all : all.slice(0, -1);
-      } catch (e) { /* use what we have */ }
-    }
+    if (fresh < Math.max(1, Number(settings.updateEvery) || 1)) return;
+    if (learned && done.size && usable.some((m) => done.has(m.id))) usable = await sinceRead();
     // A chat seen for the first time starts from its recent messages; the
     // whole history is read only when asked (Rebuild), as it can be long.
     if (!chat.processedIds.length && !chat.memory.trim() && usable.length > FIRST_RUN_MESSAGES) {
       usable = usable.slice(-FIRST_RUN_MESSAGES);
       toast('Story memory started from the latest messages. Tap 📖 → Rebuild to read the whole chat.');
+    }
+    // Catching up on many messages takes many requests: only when asked.
+    const todo = unprocessed(chat, usable);
+    const requests = chunk(todo, CHUNK_CHARS).length;
+    if (requests > AUTO_MAX_REQUESTS) {
+      const was = chat.backlog && chat.backlog.messages;
+      chat.backlog = { messages: todo.length, requests };
+      await saveChat(chat);
+      if (was !== todo.length) toast(todo.length + ' messages are not in the story memory yet. Tap 📖 → Update now to read them (about ' + requests + ' requests).');
+      if (id === currentId) renderPanel();
+      return;
     }
     await updateMemory(id, usable);
   }
@@ -1834,7 +1888,7 @@
             ' (Pinned facts and entries marked "Always send" are kept.)')) return;
           // Let an automatic update that started meanwhile finish first.
           for (let i = 0; busy[chat.id] && i < 600; i++) await sleep(500);
-          const old = { snap: snapshot(chat), log: chat.log.slice(), ids: chat.processedIds.slice(), count: chat.processedCount };
+          const old = { snap: snapshot(chat), log: chat.log.slice(), ids: chat.processedIds.slice(), count: chat.processedCount, read: chat.readCount };
           chat.history = [old.snap].concat(chat.history).slice(0, 5);
           chat.memory = '';
           chat.entries = chat.entries.filter((e) => e.always);
@@ -1843,8 +1897,9 @@
           chat.processedCount = 0;
           await saveChat(chat);
           renderPanel(true);
-          await updateMemory(chat.id, msgs, { force: true });
-          if (chat.lastError && !chat.processedIds.length) {
+          chat.readCount = 0;
+          const status = await updateMemory(chat.id, msgs, { force: true });
+          if ((status === 'failed' || status === 'stopped') && !chat.processedIds.length) {
             // Nothing was rebuilt: put the previous memory back.
             restore(chat, old.snap);
             chat.log = old.log;
@@ -1852,8 +1907,12 @@
             chat.processedCount = old.count;
             chat.history.shift();
             await saveChat(chat);
-            toast('Rebuild failed, so the previous memory was kept: ' + chat.lastError, true);
-          } else if (chat.lastError) {
+            chat.readCount = old.read;
+            await saveChat(chat);
+            toast(status === 'stopped' ? 'Rebuild stopped, so the previous memory was kept.' : 'Rebuild failed, so the previous memory was kept: ' + chat.lastError, status !== 'stopped');
+          } else if (status === 'stopped') {
+            toast('Rebuild stopped partway; what was finished is kept. Tap "Update now" to continue.');
+          } else if (status === 'failed') {
             toast('Rebuild stopped partway: ' + chat.lastError + ' Tap "Update now" to continue from where it stopped.', true);
           } else {
             toast('Memory rebuilt');
@@ -1864,8 +1923,8 @@
           toast('Memory is already up to date (' + msgs.length + ' messages checked)');
           return;
         }
-        await updateMemory(chat.id, msgs, { force: true });
-        if (!chat.lastError) toast('Memory updated');
+        const status = await updateMemory(chat.id, msgs, { force: true });
+        if (status === 'done') toast('Memory updated');
       } catch (e) {
         toast(String(e.message || e), true);
       }
@@ -1885,11 +1944,14 @@
     return el('div', {},
       el('div', { class: 'status' },
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
-        el('div', {}, 'Messages read: ', el('b', {}, String(chat.processedCount)), total ? ' of ' + total : '',
+        el('div', {}, 'Messages in memory: ', el('b', {}, String(chat.readCount || chat.processedCount)), total ? ' of ' + total : '',
           ' · Last update: ', el('b', {}, ago(chat.lastUpdate))),
         lastSentInfo[chat.id] ? el('div', {}, 'Last message carried: ' + lastSentInfo[chat.id]) : null,
         isBusy ? el('div', {}, '⏳ Updating memory…' + (progress[chat.id] && progress[chat.id].total > 1
-          ? ' (request ' + Math.min(progress[chat.id].done + 1, progress[chat.id].total) + ' of ' + progress[chat.id].total + ')' : '')) : null,
+          ? ' (request ' + Math.min(progress[chat.id].done + 1, progress[chat.id].total) + ' of ' + progress[chat.id].total + ')' : ''),
+          ' ', el('button', { class: 'btn', onclick: () => { stopRequested[chat.id] = true; toast('Stopping…'); } }, '■ Stop')) : null,
+        !isBusy && chat.backlog ? el('div', { class: 'error' }, '⚠ ' + chat.backlog.messages + ' messages are not in the memory yet (about ' +
+          chat.backlog.requests + ' requests). Tap "Update now" to read them.') : null,
         chat.lastError ? el('div', { class: 'error' }, '⚠ ' + chat.lastError) : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),
       el('label', {}, '📌 Pinned facts (never changed automatically, always sent)'),
@@ -1974,7 +2036,7 @@
       'Story Manager v' + version,
       'Page: ' + shortUrl(location.href),
       'Current chat: ' + (currentId ? currentId.slice(0, 8) : 'none') +
-        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · read into memory: ' + chat.processedCount : ''),
+        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · in memory: ' + (chat.readCount || chat.processedCount) : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider + (settings.provider === 'miniapps' ? ' (' + settings.miniappsSlug + ')' : ''),
       'Helper chat: ' + (helperChat ? helperChat.id.slice(0, 8) + ', ' + helperChat.uses + ' requests' : 'none yet') +

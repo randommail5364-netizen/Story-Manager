@@ -7,14 +7,21 @@ You don't need to do anything once it's set up.
 ## What it does
 
 1. **Watches your chats.** It reads the conversation the same way the miniapps.ai website does, using your normal login.
-2. **Writes the memory.** Every few AI replies (3 by default), a "memory keeper" AI reads the new messages and updates two things:
-   - **The main memory:** a detailed summary of the story, split into sections: Characters, Relationships, World & Places, Items & Status, Story So Far, Current Scene and Open Threads.
+2. **Writes the memory.** Every few AI replies (3 by default), a "memory keeper" AI reads the new messages and updates three things:
+   - **The story:** the big picture. It covers what has happened so far, the current scene (where, when, who's there), open plot threads, and world rules and timeline.
+   - **Entries:** one for **each character**, including yours. Each covers appearance, personality, how they talk, background, feelings, their relationship with every other character, current condition, secrets, nicknames and more. Important **places, items, groups and lore** get entries too. The memory keeper only rewrites entries that changed, so the rest can't be damaged by an update.
    - **The reply log:** a summary of *every* AI reply, covering what happened, key dialogue, decisions, feelings and changes. Entries are at least 300 characters, and longer replies get longer ones (about 15% of the reply, up to 1,500). Every entry is kept.
-3. **Gives the memory back to the AI.** Each time you send a message, the main memory and the 15 newest reply summaries are added in front of it, inside `[[STORY-MEMORY]] … [[/STORY-MEMORY]]` markers. The storyteller AI always gets the facts, and is told to use them silently.
+3. **Gives the AI what it needs.** Each time you send a message, the relevant parts are added in front of it, inside `[[STORY-MEMORY]] … [[/STORY-MEMORY]]` markers:
+   - **always:** your pinned facts and the story
+   - entries for everyone and everything **in the current scene** or the last few messages
+   - entries **your message mentions**, by name or any nickname
+   - the **newest reply summaries**, filling the space left (16,000 characters by default)
+
+   A character who isn't involved right now doesn't take up space, but comes back the moment they're mentioned. The storyteller AI is told to use the notes silently.
 
 Each chat has its own memory. A 📖 button floats over the site. Tap it to:
 
-- see and edit the memory
+- see and edit the story and every entry (tick **Always send** to attach an entry with every message), or add your own entries
 - add **📌 pinned facts** that are never changed automatically (e.g. "My character can't swim")
 - pause the add-on for one chat
 - **Update now**, **Rebuild from whole chat**, or **Undo last change**
@@ -83,4 +90,5 @@ Other settings:
 npm i -D playwright   # if not installed globally
 node test/e2e.test.js
 node test/recap.test.js
+node test/entries.test.js
 ```

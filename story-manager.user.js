@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      1.7.0
+// @version      2.0.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -137,6 +137,8 @@
     function injectInto(body) {
       const convId = body.conversationId || null;
       let injected = false;
+      let included = [];
+      let size = 0;
       let userText = '';
       const textEl = Array.isArray(body.elements)
         ? body.elements.find((e) => e && e.type === 'text' && typeof e.text === 'string')
@@ -147,14 +149,55 @@
         if (!injectMap) {
           try { map = JSON.parse(doc.documentElement.getAttribute('data-smx-inject') || '{}'); } catch (e) { /* ignore */ }
         }
-        const block = map[convId];
-        if (block) {
-          if (textEl) { textEl.text = block + '\n\n' + textEl.text; injected = true; }
-          else if (typeof body.text === 'string') { body.text = block + '\n\n' + body.text; injected = true; }
+        const plan = map[convId];
+        if (plan) {
+          const made = compose(plan, userText);
+          included = made.names;
+          size = made.text.length;
+          if (textEl) { textEl.text = made.text + '\n\n' + textEl.text; injected = true; }
+          else if (typeof body.text === 'string') { body.text = made.text + '\n\n' + body.text; injected = true; }
         }
       }
-      emit('sent', { conversationId: convId, injected, userText });
+      emit('sent', { conversationId: convId, injected, userText, included, size });
       return injected;
+    }
+
+    function mentionsKey(text, key) {
+      const k = String(key || '').trim();
+      if (k.length < 2) return false;
+      const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '($|[^\\p{L}\\p{N}])', 'iu').test(text);
+    }
+
+    // Build the attached notes: the story, entries in play, entries this
+    // message mentions (while they fit), then the newest reply summaries.
+    function compose(plan, userText) {
+      if (typeof plan === 'string') return { text: plan, names: [] };
+      const names = [];
+      const blocks = [];
+      let size = plan.head.length;
+      const add = (e, force) => {
+        const t = '### ' + e.name + (e.kind ? ' (' + e.kind + ')' : '') + '\n' + e.text;
+        if (!force && size + t.length > plan.budget) return;
+        blocks.push(t);
+        names.push(e.name);
+        size += t.length + 2;
+      };
+      plan.core.forEach((e) => add(e, true));
+      plan.extra.filter((e) => e.keys.some((k) => mentionsKey(userText, k))).forEach((e) => add(e, false));
+      const logs = [];
+      for (let i = plan.log.length - 1; i >= 0; i--) {
+        const t = '- ' + plan.log[i];
+        if (size + t.length > plan.budget) break;
+        logs.unshift(t);
+        size += t.length + 1;
+      }
+      const parts = [];
+      if (plan.head) parts.push(plan.head);
+      if (blocks.length) parts.push('## Characters and details in play\n' + blocks.join('\n\n'));
+      if (logs.length) parts.push('## Recent events in detail (oldest first)\n' + logs.join('\n'));
+      if (logs.length) names.push(logs.length + ' reply summaries');
+      return { text: plan.prefix + parts.join('\n\n') + plan.suffix, names };
     }
 
     function report(info, text, status) {
@@ -378,6 +421,7 @@
     injectEvery: 1,   // attach memory to every Nth message (0 = never)
     maxChars: 8000,   // target size of the main memory
     logAttach: 15,    // detailed reply summaries attached to each message
+    injectBudget: 16000, // most characters attached to one message
     autoEnable: true, // manage new chats automatically
     buttonSide: 'right',
   };
@@ -401,8 +445,9 @@
       id,
       title: '',
       enabled: settings.autoEnable,
-      memory: '',
-      log: [],          // [{ id, text }]: a 300–500 character summary of each AI reply
+      memory: '',       // the story entry: big picture, current scene, open threads
+      entries: [],      // [{ name, kind, aliases, text, always, updated }]: characters, places, …
+      log: [],          // [{ id, text }]: a detailed summary of each AI reply
       pinned: '',
       processedIds: [],
       processedCount: 0,
@@ -440,15 +485,51 @@
   // Memory injection
   // ---------------------------------------------------------------------------
 
-  function buildBlock(chat) {
-    const parts = [];
-    if (chat.pinned.trim()) parts.push('## Must remember\n' + chat.pinned.trim());
-    if (chat.memory.trim()) parts.push(chat.memory.trim());
-    const recent = chat.log.slice(-Math.max(0, Number(settings.logAttach) || 0));
-    if (recent.length) parts.push('## Recent events in detail (oldest first)\n' + recent.map((e) => '- ' + e.text).join('\n'));
-    if (!parts.length) return '';
-    return MEM_START + '\n(Background notes for story continuity. Use them silently; do not quote, mention or reply to them.)\n\n' +
-      parts.join('\n\n') + '\n' + MEM_END;
+  // Does `text` mention `key` as a whole word (any language, any case)?
+  function mentions(text, key) {
+    const k = String(key || '').trim();
+    if (k.length < 2) return false;
+    const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '($|[^\\p{L}\\p{N}])', 'iu').test(text);
+  }
+
+  function entryKeys(e) {
+    return [e.name].concat(e.aliases || []);
+  }
+
+  function sectionOf(text, title) {
+    const m = String(text || '').match(new RegExp('^##\\s*' + title + '[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|$(?![\\s\\S]))', 'im'));
+    return m ? m[1] : '';
+  }
+
+  // Entries that are part of what is happening now: marked "always", named in
+  // the current scene, or mentioned in the latest messages.
+  function entriesInPlay(chat) {
+    const recent = [sectionOf(chat.memory, 'Current Scene')];
+    if (seenMsgs[chat.id]) recent.push(...[...seenMsgs[chat.id].values()].slice(-3).map((m) => m.text));
+    recent.push(...chat.log.slice(-2).map((e) => e.text));
+    const text = recent.join('\n');
+    return chat.entries.filter((e) => e.always || entryKeys(e).some((k) => mentions(text, k)));
+  }
+
+  // What may be attached to the next message in a chat. The page hook picks
+  // from it when the message is sent, adding entries the message mentions.
+  function buildPlan(chat) {
+    const head = [];
+    if (chat.pinned.trim()) head.push('## Must remember\n' + chat.pinned.trim());
+    if (chat.memory.trim()) head.push('## The story\n' + chat.memory.trim());
+    const inPlay = new Set(entriesInPlay(chat));
+    const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: e.text });
+    const plan = {
+      prefix: MEM_START + '\n(Background notes for story continuity. Use them silently; do not quote, mention or reply to them.)\n\n',
+      suffix: '\n' + MEM_END,
+      head: head.join('\n\n'),
+      core: chat.entries.filter((e) => inPlay.has(e)).map(pack),
+      extra: chat.entries.filter((e) => !inPlay.has(e)).map(pack),
+      log: chat.log.slice(-Math.max(0, Number(settings.logAttach) || 0)).map((e) => e.text),
+      budget: Math.max(2000, Number(settings.injectBudget) || 16000),
+    };
+    return plan.head || plan.core.length || plan.extra.length || plan.log.length ? plan : null;
   }
 
   function publishInjectMap() {
@@ -459,8 +540,8 @@
         const c = chats[id];
         if (!c.enabled) continue;
         if (c.sentSinceInject > 0 && c.sentSinceInject < every) continue;
-        const block = buildBlock(c);
-        if (block) map[id] = block;
+        const plan = buildPlan(c);
+        if (plan) map[id] = plan;
       }
     }
     // Sent as an event (the site may rewrite <html> attributes), plus an
@@ -711,19 +792,24 @@
   function systemPrompt() {
     return [
       'You are the continuity editor for a long-running interactive story / roleplay chat.',
-      'You keep two things up to date so the storyteller AI never forgets anything: a detailed STORY MEMORY, and a LOG with one detailed entry per story reply.',
+      'You keep a knowledge base up to date so the storyteller AI never forgets anything. It has three parts:',
+      '1. The STORY: the big picture.',
+      '2. ENTRIES: one entry per character, and per important place, item, group or piece of lore.',
+      '3. The LOG: one detailed entry per story reply.',
+      'Only the parts that matter at the moment are shown to the storyteller, so every fact must sit in the right entry.',
       '',
-      'STORY MEMORY rules:',
-      '- Merge the NEW MESSAGES into the CURRENT MEMORY and output the complete, updated memory.',
-      '- Be detailed and specific. Record: names, nicknames and identities; appearance, clothing and distinguishing features; personality, mannerisms and how each character talks; abilities; likes, dislikes and boundaries; backstory; feelings and how relationships developed (with the moments that changed them); promises, secrets, lies, plans and goals; injuries, health and condition; key items, money and where things are; places with their look and feel; world rules; the timeline (day, time, how much time passed); recurring jokes, pet names and running themes.',
-      '- Keep facts from the current memory unless the story changed them. When something changes, update it; never leave contradictions.',
+      'STORY rules:',
+      '- Sections: ## Story So Far (the main events and turning points, in order), ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries), ## World & Timeline (world rules, the date and time, how much time has passed). Omit empty sections.',
+      '- Up to ' + settings.maxChars + ' characters. Details about a character, place or item belong in its entry, not here.',
+      '- Always output the complete STORY.',
+      '',
+      'ENTRY rules:',
+      '- Every named character gets an entry, including the user\'s character. Places, items, groups and lore get one when they matter more than once.',
+      '- A character entry covers: who they are; appearance, clothing and distinguishing features; personality, mannerisms and how they talk; abilities; likes, dislikes and boundaries; backstory; their relationship with each other character and the moments that shaped it; feelings; current condition, injuries and whereabouts; what they carry or own; goals, promises and secrets; nicknames and running jokes. Be detailed and specific, with bullet points.',
+      '- Header format: === ENTRY: Name | kind | aliases: other names, nicknames, titles === where kind is character, place, item, group or lore. Aliases are every other way the story refers to it (used to find the entry when it is mentioned).',
+      '- Output ONLY entries that are new or changed by the new messages, each one complete (all old facts plus the new ones). Do not output unchanged entries. Use the exact existing name for an existing entry.',
+      '- Never remove a fact unless the story changed it; then update it. When something changes, update every entry it affects (e.g. both sides of a relationship).',
       '- Never invent anything. Only record what actually happened or was stated.',
-      '- Use bullet points with full, specific details. No commentary, no warnings, no questions.',
-      '- Story So Far is an overview of the whole story in order. The LOG holds the reply-by-reply detail, so keep Story So Far to the main events and turning points.',
-      '- Use the space you have: up to ' + settings.maxChars + ' characters.',
-      '- Never remove a fact unless the story changed it. When space is tight, shorten the wording, merge related bullets and condense Story So Far (the LOG keeps every detail of past replies) — but keep every fact.',
-      '- Use these sections (omit empty ones):',
-      '## Characters', '## Relationships', '## World & Places', '## Items & Status', '## Story So Far', '## Current Scene', '## Open Threads',
       '',
       'LOG rules:',
       '- Story replies in the new messages are numbered [R1], [R2], … Write exactly one log entry for EACH of them.',
@@ -732,15 +818,18 @@
       '',
       'Recaps:',
       '- Some messages are RECAPS: summaries of earlier events, often written to continue the story in a new chat. They are marked [RECAP], but also recognise unmarked ones (e.g. "Previously…", "So far…", "Last time…", or a long summary of past events at the start of a chat).',
-      '- A recap describes the PAST, not something happening now. Put its events into Story So Far in the right order, before the events that come after the recap in the chat. Only change Current Scene if the recap clearly ends by describing where things stand now.',
-      '- A recap often repeats what the memory already has, and recaps can contain older recaps. Merge them: record each event once, and use the recap to fill gaps and correct details.',
-      '- If a recap written by the USER disagrees with the memory, trust the recap. If one written by the STORY AI disagrees, keep the memory unless the recap is clearly more detailed and accurate.',
+      '- A recap describes the PAST, not something happening now. Put its events into Story So Far in the right order, before the events that come after the recap in the chat, and its facts into the right entries. Only change Current Scene if the recap clearly ends by describing where things stand now.',
+      '- A recap often repeats what is already known, and recaps can contain older recaps. Merge them: record each event once, and use the recap to fill gaps and correct details.',
+      '- If a recap written by the USER disagrees with what is known, trust the recap. If one written by the STORY AI disagrees, keep what is known unless the recap is clearly more detailed and accurate.',
       '- Anything that happens in the chat after a recap always overrides the recap.',
       '- A story reply that is a recap gets a log entry starting with "Recap of earlier events:".',
       '',
-      'Answer in exactly this format and nothing else:',
-      '=== MEMORY ===',
-      '(the complete updated story memory)',
+      'If the CURRENT STORY still holds character, place or item details (from an older format), move them into entries.',
+      'No commentary, no warnings, no questions. Answer in exactly this format and nothing else:',
+      '=== STORY ===',
+      '(the complete story)',
+      '=== ENTRY: Name | kind | aliases: … ===',
+      '(complete entry; repeat for each new or changed entry)',
       '=== LOG ===',
       '[R1] (entry for R1)',
       '[R2] (entry for R2)',
@@ -807,44 +896,93 @@
     return String(t || '').replace(/^```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/i, '').replace(MEM_BLOCK_RE, '').trim();
   }
 
+  function formatEntries(entries) {
+    if (!entries.length) return '(none yet)';
+    return entries.map((e) => '=== ENTRY: ' + e.name + ' | ' + (e.kind || 'character') +
+      (e.aliases && e.aliases.length ? ' | aliases: ' + e.aliases.join(', ') : '') + ' ===\n' + e.text).join('\n\n');
+  }
+
+  function knowledgeSize(story, entries) {
+    return story.length + entries.reduce((n, e) => n + e.text.length, 0);
+  }
+
   async function mergeIntoMemory(chat, msgs) {
-    const user = 'CURRENT MEMORY:\n<<<\n' + (chat.memory.trim() || '(empty — this is the start)') + '\n>>>\n\n' +
-      (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true, do not repeat them in the memory):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
+    const user = 'CURRENT STORY:\n<<<\n' + (chat.memory.trim() || '(empty — this is the start)') + '\n>>>\n\n' +
+      'CURRENT ENTRIES:\n<<<\n' + formatEntries(chat.entries) + '\n>>>\n\n' +
+      (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true, do not repeat them):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
       'NEW MESSAGES (oldest first):\n<<<\n' + formatMessages(msgs, chat.title) + '\n>>>\n\n' +
-      'Write the complete updated STORY MEMORY and one LOG entry for each [R…] reply now.';
+      'Write the complete STORY, every new or changed ENTRY, and one LOG entry for each [R…] reply now.';
     const replies = msgs.filter((m) => m.role === 'assistant');
-    const old = chat.memory.trim();
+    const before = knowledgeSize(chat.memory.trim(), chat.entries);
     let parsed = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const extra = attempt === 1 ? '' : '\n\nIMPORTANT: your previous answer left out much of the existing memory. Keep EVERY fact from the current memory; only add and update.';
+      const extra = attempt === 1 ? '' : '\n\nIMPORTANT: your previous answer left out much of what is already known. Keep EVERY fact; only add and update.';
       const out = cleanOutput(await callLLM(systemPrompt(), user + extra));
       parsed = parseKeeperAnswer(out, replies);
-      if (parsed.memory.length < 40 || !/#|^\s*[-*•]/m.test(parsed.memory)) {
+      if (parsed.memory.length < 40 && !parsed.updates.length) {
         throw new Error('Memory keeper gave an unusable answer: "' + out.slice(0, 120) + '"');
       }
-      // A much shorter memory means facts were dropped (or the answer was cut off).
-      if (!(old.length > 1500 && parsed.memory.length < old.length * 0.6)) break;
+      // Much less knowledge than before means facts were dropped (or the answer was cut off).
+      const story = parsed.memory.trim() || chat.memory.trim(); // a missing story section keeps the old one
+      const after = knowledgeSize(story, applyUpdates(cloneEntries(chat.entries), parsed.updates).entries);
+      if (!(before > 1500 && after < before * 0.6)) break;
       if (attempt === 2) {
         parsed.memory = chat.memory;
-        toast('The memory keeper tried to drop facts, so the previous memory was kept and only the reply log was updated.', true);
+        parsed.updates = [];
+        toast('The memory keeper tried to drop facts, so the story and entries were kept as they were; only the reply log was updated.', true);
       }
     }
+    if (!parsed.memory.trim()) parsed.memory = chat.memory;
     // Replies whose log entry is missing (skipped, or the answer was cut off)
     // are asked for again, a few at a time.
     for (let round = 0; round < 3; round++) {
       const have = new Set(parsed.entries.map((e) => e.id));
       const missing = replies.filter((r) => !have.has(r.id));
       if (!missing.length) break;
-      const before = parsed.entries.length;
+      const count = parsed.entries.length;
       for (let i = 0; i < missing.length; i += 3) {
         parsed.entries = parsed.entries.concat(await logEntriesFor(chat, msgs, missing.slice(i, i + 3)));
       }
       // A keeper that won't write log entries at all is not asked forever.
-      if (parsed.entries.length === before) break;
+      if (parsed.entries.length === count) break;
     }
     const order = new Map(replies.map((r, i) => [r.id, i]));
     parsed.entries = dedupeEntries(parsed.entries).sort((a, b) => order.get(a.id) - order.get(b.id));
     return parsed;
+  }
+
+  function cloneEntries(entries) {
+    return entries.map((e) => Object.assign({}, e, { aliases: (e.aliases || []).slice() }));
+  }
+
+  function findEntry(entries, name) {
+    const n = String(name).trim().toLowerCase();
+    return entries.find((e) => e.name.toLowerCase() === n || (e.aliases || []).some((a) => a.toLowerCase() === n));
+  }
+
+  // Apply the keeper's new or changed entries. A rewrite that is much shorter
+  // than a long existing entry probably lost details, so it is not applied.
+  function applyUpdates(entries, updates) {
+    const refused = [];
+    for (const u of updates) {
+      const e = findEntry(entries, u.name) || u.aliases.map((a) => findEntry(entries, a)).find(Boolean);
+      if (!e) {
+        entries.push({ name: u.name, kind: u.kind || 'character', aliases: u.aliases, text: u.text, always: false, updated: Date.now() });
+        continue;
+      }
+      if (e.text.length > 800 && u.text.length < e.text.length * 0.5) {
+        refused.push(e.name);
+      } else {
+        e.text = u.text;
+        e.updated = Date.now();
+      }
+      if (u.kind) e.kind = u.kind;
+      const names = new Set([e.name.toLowerCase()].concat(e.aliases.map((a) => a.toLowerCase())));
+      for (const a of u.aliases.concat(u.name)) {
+        if (!names.has(a.toLowerCase())) { e.aliases.push(a); names.add(a.toLowerCase()); }
+      }
+    }
+    return { entries, refused };
   }
 
   // Ask only for log entries of some replies (with the user message before each).
@@ -864,24 +1002,44 @@
     return parseKeeperAnswer(logOnly, list.filter((m) => m.role === 'assistant')).entries;
   }
 
-  // Split "=== MEMORY === … === LOG === [R1] …" into the memory and log
-  // entries matched to the replies they describe.
+  // Split the keeper's answer into the story, new or changed entries, and
+  // log entries matched to the replies they describe:
+  //   === STORY === … === ENTRY: Name | kind | aliases: … === … === LOG === [R1] …
   function parseKeeperAnswer(out, replies) {
-    const logAt = out.search(/^\W*=+\s*LOG\s*=+\W*$/im);
-    let memory = logAt >= 0 ? out.slice(0, logAt) : out;
-    memory = cleanOutput(memory.replace(/^\W*=+\s*(STORY\s+)?MEMORY\s*=+\W*$/im, ''));
+    const HEADER = /^[^\S\n]*=+[^\S\n]*(STORY|(?:STORY[^\S\n]+)?MEMORY|LOG|ENTRY[^\S\n]*:[^\n=]*?)[^\S\n]*=+[^\S\n]*$/gim;
+    const marks = [];
+    let m;
+    while ((m = HEADER.exec(out))) marks.push({ at: m.index, end: m.index + m[0].length, head: m[1].trim() });
+    let memory = '';
+    const updates = [];
     const entries = [];
-    if (logAt >= 0) {
-      const logText = out.slice(logAt).replace(/^.*\n/, '');
-      const re = /\[R(\d+)[^\]\n]*\]\s*([\s\S]*?)(?=\n\s*\[R\d+[^\]\n]*\]|$)/g;
-      let m;
-      while ((m = re.exec(logText))) {
-        const reply = replies[Number(m[1]) - 1];
-        const text = m[2].replace(/\s+/g, ' ').trim();
-        if (reply && text) entries.push({ id: reply.id, text });
+    // Text before any header counts as the story (older answers had no headers).
+    if (!marks.length || marks[0].at > 0) memory = out.slice(0, marks.length ? marks[0].at : out.length);
+    marks.forEach((mk, i) => {
+      const body = out.slice(mk.end, i + 1 < marks.length ? marks[i + 1].at : out.length).trim();
+      if (/^(STORY|(STORY\s+)?MEMORY)$/i.test(mk.head)) {
+        memory = body;
+      } else if (/^LOG$/i.test(mk.head)) {
+        const re = /\[R(\d+)[^\]\n]*\]\s*([\s\S]*?)(?=\n\s*\[R\d+[^\]\n]*\]|$)/g;
+        let r;
+        while ((r = re.exec(body))) {
+          const reply = replies[Number(r[1]) - 1];
+          const text = r[2].replace(/\s+/g, ' ').trim();
+          if (reply && text) entries.push({ id: reply.id, text });
+        }
+      } else {
+        const fields = mk.head.replace(/^ENTRY\s*:\s*/i, '').split('|').map((x) => x.trim());
+        const name = fields[0];
+        let kind = '';
+        let aliases = [];
+        for (const f of fields.slice(1)) {
+          if (/^aliases?\s*:/i.test(f)) aliases = f.replace(/^aliases?\s*:/i, '').split(',').map((a) => a.trim()).filter((a) => a && a.toLowerCase() !== name.toLowerCase());
+          else if (f) kind = f.toLowerCase();
+        }
+        if (name && body) updates.push({ name, kind, aliases, text: body });
       }
-    }
-    return { memory, entries: dedupeEntries(entries) };
+    });
+    return { memory: cleanOutput(memory), updates, entries: dedupeEntries(entries) };
   }
 
   // One entry per reply; if the keeper wrote two, keep the longer one.
@@ -900,6 +1058,17 @@
     return older.concat(known);
   }
 
+  // For "Undo last change": the story and all entries as they were.
+  function snapshot(chat) {
+    return { memory: chat.memory, entries: cloneEntries(chat.entries) };
+  }
+
+  function restore(chat, snap) {
+    if (typeof snap === 'string') { chat.memory = snap; return; } // older versions kept only the text
+    chat.memory = snap.memory;
+    chat.entries = cloneEntries(snap.entries || []);
+  }
+
   // Fold every not-yet-processed message of a chat into its memory.
   async function updateMemory(id, msgs, { force = false } = {}) {
     const chat = await getChat(id, true);
@@ -908,11 +1077,13 @@
     if (!todo.length) return;
     busy[id] = true;
     setStatus();
-    const before = chat.memory;
+    const before = snapshot(chat);
     try {
       for (const part of chunk(todo, CHUNK_CHARS)) {
         const result = await mergeIntoMemory(chat, part);
         chat.memory = result.memory;
+        const applied = applyUpdates(chat.entries, result.updates);
+        if (applied.refused.length) toast('Kept the fuller version of: ' + applied.refused.join(', '));
         // One entry per reply; a regenerated or re-read reply replaces its old entry.
         const ids = new Set(result.entries.map((e) => e.id));
         chat.log = sortLog(chat.log.filter((e) => !ids.has(e.id)).concat(result.entries), msgs);
@@ -923,7 +1094,7 @@
         await saveChat(chat);
         renderPanel();
       }
-      if (before !== chat.memory) {
+      if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) {
         chat.history = [before].concat(chat.history).slice(0, 5);
       }
       await saveChat(chat);
@@ -1315,10 +1486,15 @@
   });
 
   const sentStats = { sent: 0, withMemory: 0 };
+  const lastSentInfo = {};      // chat id -> what the last message carried
 
   on('sent', async (d) => {
     sentStats.sent++;
     if (d.injected) sentStats.withMemory++;
+    if (d.conversationId && d.injected) {
+      lastSentInfo[d.conversationId] = 'story' + (d.included && d.included.length ? ', ' + d.included.join(', ') : '') +
+        ' (' + Number(d.size || 0).toLocaleString() + ' characters)';
+    }
     await ready;
     lastSent = d;
     if (!d.conversationId) return;
@@ -1397,6 +1573,9 @@
     textarea { min-height: 90px; resize: vertical; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.4; }
     textarea.mem { min-height: 260px; }
     textarea.log { min-height: 200px; }
+    textarea.entry { min-height: 180px; }
+    details.entrybox { background: #0e0e13; border: 1px solid #33334a; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+    details.entrybox summary { cursor: pointer; font-weight: 600; }
     input[type=checkbox] { width: 22px; height: 22px; flex: none; }
     .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .btn { background: #2c2c3c; color: #fff; border: none; border-radius: 8px; padding: 9px 12px; font-size: 14px; }
@@ -1506,21 +1685,31 @@
       toast(chat.enabled ? 'Auto-managing this chat' : 'Paused for this chat');
     });
 
-    const save = async () => {
+    const editors = chat.entries.map((e) => entryEditor(chat, e));
+
+    const save = async (quiet) => {
+      const snap = snapshot(chat);
       chat.pinned = pinned.value;
-      if (mem.value !== chat.memory) {
-        chat.history = [chat.memory].concat(chat.history).slice(0, 5);
-        chat.memory = mem.value;
-      }
+      chat.memory = mem.value;
+      for (const ed of editors) ed.apply();
+      chat.entries = chat.entries.filter((e) => !e.deleted && (e.name.trim() || e.text.trim()));
+      if (JSON.stringify(snap) !== JSON.stringify(snapshot(chat))) chat.history = [snap].concat(chat.history).slice(0, 5);
       await saveChat(chat);
-      toast('Saved');
+      if (quiet !== true) toast('Saved');
+      renderPanel(true);
+    };
+
+    const addEntry = async () => {
+      await save(true);
+      chat.entries.push({ name: 'New entry', kind: 'character', aliases: [], text: '', always: false, updated: Date.now(), open: true });
+      await saveChat(chat);
       renderPanel(true);
     };
 
     const runNow = async (rebuild) => {
       if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
       try {
-        await save();
+        await save(true);
         toast(rebuild ? 'Reading the whole chat…' : 'Checking for new messages…');
         const msgs = await fetchMessages(chat.id, { mode: rebuild ? 'full' : 'since' });
         chat.knownMessages = Math.max(chat.knownMessages || 0, msgs.length);
@@ -1534,11 +1723,13 @@
             ? ' Each one uses MiniApps credits and adds a small chat to your MiniApps history.'
             : '';
           if (!confirm('Rebuild the memory from all ' + msgs.length + ' messages? This takes about ' + parts +
-            ' memory-keeper request' + (parts === 1 ? '' : 's') + '.' + cost + ' (Pinned facts are kept.)')) return;
+            ' memory-keeper request' + (parts === 1 ? '' : 's') + '.' + cost +
+            ' (Pinned facts and entries marked "Always send" are kept.)')) return;
           // Let an automatic update that started meanwhile finish first.
           for (let i = 0; busy[chat.id] && i < 600; i++) await sleep(500);
-          chat.history = [chat.memory].concat(chat.history).slice(0, 5);
+          chat.history = [snapshot(chat)].concat(chat.history).slice(0, 5);
           chat.memory = '';
+          chat.entries = chat.entries.filter((e) => e.always);
           chat.log = [];
           chat.processedIds = [];
           chat.processedCount = 0;
@@ -1558,26 +1749,34 @@
 
     const undo = async () => {
       if (!chat.history.length) return;
-      chat.memory = chat.history.shift();
+      restore(chat, chat.history.shift());
       await saveChat(chat);
-      toast('Restored the previous memory');
+      toast('Restored the previous version');
       renderPanel(true);
     };
 
     const total = chat.knownMessages || 0;
+    const inPlay = entriesInPlay(chat).map((e) => e.name);
     return el('div', {},
       el('div', { class: 'status' },
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
         el('div', {}, 'Messages read: ', el('b', {}, String(chat.processedCount)), total ? ' of ' + total : '',
           ' · Last update: ', el('b', {}, ago(chat.lastUpdate))),
+        lastSentInfo[chat.id] ? el('div', {}, 'Last message carried: ' + lastSentInfo[chat.id]) : null,
         isBusy ? el('div', {}, '⏳ Updating memory…') : null,
         chat.lastError ? el('div', { class: 'error' }, '⚠ ' + chat.lastError) : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),
-      el('label', {}, '📌 Pinned facts (never changed automatically)'),
+      el('label', {}, '📌 Pinned facts (never changed automatically, always sent)'),
       pinned,
-      el('label', {}, '🧠 Story memory (updated automatically — you can edit it)'),
+      el('label', {}, '📖 The story (big picture, current scene, open threads; always sent)'),
       mem,
-      el('div', { class: 'hint' }, mem.value.length + ' characters. Attached to your messages so the AI keeps track of the story.'),
+      el('div', { class: 'hint' }, mem.value.length + ' characters.'),
+      el('label', {}, '👥 Entries (' + chat.entries.length + ')'),
+      el('div', { class: 'hint' }, inPlay.length
+        ? 'In play right now (sent with every message): ' + inPlay.join(', ') + '. Others are sent when your message mentions them.'
+        : 'Characters, places and items get their own entries as the story goes on. Each is sent when it is in the current scene or your message mentions it.'),
+      editors.map((ed) => ed.node),
+      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: addEntry }, '+ Add entry')),
       logView(chat),
       el('div', { class: 'btns' },
         el('button', { class: 'btn primary', onclick: save }, 'Save'),
@@ -1585,6 +1784,42 @@
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat'),
         el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')),
       diagnosticsBox());
+  }
+
+  // One collapsible entry in the panel. apply() copies the edits into it.
+  function entryEditor(chat, e) {
+    const name = el('input', { value: e.name });
+    const kind = el('select', {}, ...['character', 'place', 'item', 'group', 'lore'].map((k) => el('option', { value: k }, k)));
+    kind.value = e.kind || 'character';
+    const aliases = el('input', { value: (e.aliases || []).join(', '), placeholder: 'Other names, nicknames, titles' });
+    const text = el('textarea', { class: 'entry' });
+    text.value = e.text;
+    const always = el('input', { type: 'checkbox' });
+    always.checked = !!e.always;
+    const del = el('button', { class: 'btn', onclick: () => {
+      if (!confirm('Delete the entry "' + e.name + '"? (Save to confirm; Undo can bring it back.)')) return;
+      e.deleted = true;
+      node.style.opacity = '0.4';
+    } }, 'Delete');
+    const node = el('details', { class: 'entrybox', open: e.open || undefined },
+      el('summary', {}, (e.always ? '★ ' : '') + e.name + ' · ' + (e.kind || 'character') + ' · ' + e.text.length + ' chars'),
+      el('label', {}, 'Name'), name,
+      el('label', {}, 'Kind'), kind,
+      el('label', {}, 'Also known as (comma-separated)'), aliases,
+      el('label', {}, 'Details'), text,
+      el('div', { class: 'row' }, always, el('label', {}, 'Always send (and keep on Rebuild)')),
+      el('div', { class: 'btns' }, del));
+    return {
+      node,
+      apply() {
+        e.name = name.value.trim() || e.name;
+        e.kind = kind.value;
+        e.aliases = aliases.value.split(',').map((a) => a.trim()).filter(Boolean);
+        if (text.value !== e.text) { e.text = text.value; e.updated = Date.now(); }
+        e.always = always.checked;
+        delete e.open;
+      },
+    };
   }
 
   let hookStats = null;
@@ -1614,7 +1849,8 @@
         (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · read into memory: ' + chat.processedCount : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider,
-      'Messages sent on this page: ' + sentStats.sent + ' · with memory attached: ' + sentStats.withMemory,
+      'Messages sent on this page: ' + sentStats.sent + ' · with memory attached: ' + sentStats.withMemory +
+        (currentId && lastSentInfo[currentId] ? ' · last carried: ' + lastSentInfo[currentId] : ''),
       'Hook: ' + (hookStats ? JSON.stringify(hookStats) : 'not running'),
       '',
       'Site requests to MiniApps (newest first, no message text):',
@@ -1679,6 +1915,7 @@
     f.injectEvery = el('input', { type: 'number', min: '0', value: String(s.injectEvery) });
     f.maxChars = el('input', { type: 'number', min: '500', step: '250', value: String(s.maxChars) });
     f.logAttach = el('input', { type: 'number', min: '0', value: String(s.logAttach) });
+    f.injectBudget = el('input', { type: 'number', min: '2000', step: '1000', value: String(s.injectBudget) });
     f.autoEnable = el('input', { type: 'checkbox', id: 'smx-auto' });
     f.autoEnable.checked = s.autoEnable;
     f.buttonSide = el('select', {}, el('option', { value: 'right' }, 'Right'), el('option', { value: 'left' }, 'Left'));
@@ -1709,6 +1946,7 @@
       injectEvery: Math.max(0, parseInt(f.injectEvery.value, 10) || 0),
       maxChars: Math.max(500, parseInt(f.maxChars.value, 10) || DEFAULT_SETTINGS.maxChars),
       logAttach: Math.max(0, parseInt(f.logAttach.value, 10) || 0),
+      injectBudget: Math.max(2000, parseInt(f.injectBudget.value, 10) || DEFAULT_SETTINGS.injectBudget),
       autoEnable: f.autoEnable.checked,
       buttonSide: f.buttonSide.value,
     });
@@ -1763,7 +2001,9 @@
       keyBox, baseBox, slugBox,
       el('label', {}, 'Update the memory every … AI replies'), f.updateEvery,
       el('label', {}, 'Attach the memory to every … messages you send (0 = never)'), f.injectEvery,
-      el('label', {}, 'Main memory size (characters)'), f.maxChars,
+      el('label', {}, 'Story entry size (characters)'), f.maxChars,
+      el('label', {}, 'Most characters attached to one message'), f.injectBudget,
+      el('div', { class: 'hint' }, 'The story and entries in play are always attached; entries your message mentions and the newest reply summaries fill the rest of this space.'),
       el('label', {}, 'Detailed reply summaries attached to each message'), f.logAttach,
       el('div', { class: 'hint' }, 'Every AI reply gets a 300–500 character summary. The newest ones are attached to your messages in full; 15 is about 6,000 characters. More helps the AI remember detail, but makes every message longer.'),
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),

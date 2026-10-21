@@ -91,7 +91,11 @@ async function main() {
     if (/LOG ENTRIES ONLY/.test(input)) return log();
     // DROPLAST in the chat simulates a keeper that runs out of room.
     if (/DROPLAST/.test(input)) replies = replies.slice(0, -1);
-    return '=== MEMORY ===\n## Characters\n- Mira: a healer' + tag + '\n- Ash: a dragon\n## Story So Far\n- update ' + n + '\n=== LOG ===\n' + log();
+    return '=== STORY ===\n## Story So Far\n- update ' + n + tag + '\n## Current Scene\n- Mira and Ash rest by the river.\n' +
+      '=== ENTRY: Mira | character | aliases: Miri, the healer ===\n- Mira: a healer' + tag + ' (update ' + n + ')\n' +
+      '=== ENTRY: Ash | character | aliases: the dragon ===\n- Ash: a dragon\n' +
+      '=== ENTRY: Old Mill | place | aliases: the mill, old mill ===\n- An abandoned mill where they once hid from hunters.\n' +
+      '=== LOG ===\n' + log();
   }
 
   const browser = await chromium.launch();
@@ -208,9 +212,10 @@ async function main() {
   await waitFor(() => llmCalls.length >= 1, 30000, 'memory update');
   check(/I am Mira, a healer\./.test(llmCalls[0]) && /Story reply #2/.test(llmCalls[0]), 'memory keeper got both exchanges');
   const mem = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
-  check(mem && /Ash: a dragon/.test(mem.memory), 'memory saved for this chat');
+  check(mem && /update 1/.test(mem.memory), 'story saved for this chat');
+  check(mem.entries.map((e) => e.name).join() === 'Mira,Ash,Old Mill' && mem.entries[0].aliases.includes('Miri'), 'separate entries for characters and places, with aliases');
   check(mem.title === 'Dragon Tale', 'chat title picked up');
-  check(!/=== (MEMORY|LOG) ===/.test(mem.memory), 'answer split into memory and log');
+  check(!/===/.test(mem.memory) && !mem.entries.some((e) => /===/.test(e.text)), 'answer split into story, entries and log');
   check(mem.log.length === 2 && /reply 1 in update 1/.test(mem.log[0].text) && /reply 2 in update 1/.test(mem.log[1].text), 'one detailed log entry per AI reply');
 
   console.log('3) Next message has the memory attached');
@@ -218,6 +223,8 @@ async function main() {
   const sent = chatBodies[chatBodies.length - 1].elements[0].text;
   check(sent.startsWith('[[STORY-MEMORY]]') && /Ash: a dragon/.test(sent) && sent.endsWith('What do I do next?'), 'memory block prepended to user message');
   check(/## Recent events in detail[\s\S]*reply 1 in update 1[\s\S]*reply 2 in update 1/.test(sent), 'recent reply summaries attached, oldest first');
+  check(/### Mira \(character\)/.test(sent) && /### Ash \(character\)/.test(sent), 'characters in the current scene attached');
+  check(!/### Old Mill/.test(sent), 'entries not in play and not mentioned are left out');
 
   console.log('4) The memory block is stripped before the keeper sees history again');
   await waitFor(() => convs[convId].messages.length === 6, 5000, 'reply 3');
@@ -405,6 +412,29 @@ async function main() {
   check(shrinkChat.memory === bigMemory, 'memory kept when the keeper tried to drop facts');
   const lastReply = recapConv.messages[recapConv.messages.length - 1].id;
   check(shrinkChat.log.some((e) => e.id === lastReply), 'reply log still updated');
+
+  console.log('17) Entries are attached when a message mentions them');
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => window.sendMsg('Let us go back to the old mill tonight.'));
+  const mentionSent = chatBodies[chatBodies.length - 1].elements[0].text;
+  check(/### Old Mill \(place\)/.test(mentionSent), 'mentioned place attached (found by its alias)');
+  await waitFor(() => recapConv.messages[recapConv.messages.length - 1].origin === 'assistant', 5000, 'reply');
+  await page.evaluate(() => window.sendMsg('We keep walking.'));
+  check(!/### Old Mill/.test(chatBodies[chatBodies.length - 1].elements[0].text), 'not attached once it is no longer mentioned');
+  await page.locator('#story-manager-root >> .fab').click();
+  const panel17 = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/Entries \(3\)/.test(panel17) && /In play right now/.test(panel17) && /Last message carried: story, Mira, Ash/.test(panel17), 'panel lists entries, what is in play and what was sent');
+
+  console.log('18) Entries can be edited in the panel, and marked "Always send"');
+  const mill = page.locator('#story-manager-root >> details.entrybox', { hasText: 'Old Mill' });
+  await mill.locator('summary').click();
+  await mill.locator('textarea.entry').fill('- An abandoned mill. The roof leaks. Edited by hand.');
+  await mill.locator('input[type=checkbox]').check();
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => window.sendMsg('We keep walking again.'));
+  const alwaysSent = chatBodies[chatBodies.length - 1].elements[0].text;
+  check(/### Old Mill \(place\)\n- An abandoned mill\. The roof leaks\. Edited by hand\./.test(alwaysSent), 'edited entry marked "Always send" is attached without being mentioned');
 
   await browser.close();
   console.log('\nAll checks passed.');

@@ -52,7 +52,7 @@ This is a *userscript*: a small add-on that a userscript manager runs on one web
 
 | Option | Cost | Notes |
 | --- | --- | --- |
-| **MiniApps bot** (default) | Uses your MiniApps credits | No key needed. Sends the summary job to a MiniApps chatbot (`claude-37` by default; change the slug to any bot you like). All updates go to **one helper chat** in your MiniApps history (it is replaced automatically if you delete it; Settings can start a fresh one every N requests). |
+| **MiniApps bot** (default) | Uses your MiniApps credits | No key needed. Sends the summary job to a MiniApps chatbot (`claude-37` by default; change the slug to any bot you like). All updates go to **one helper chat** in your MiniApps history (it is replaced automatically if you delete it; a fresh one is started every 30 requests by default, adjustable in Settings, because a very long helper chat can make the bot stop answering). |
 | **Google Gemini** | Free tier available | Get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). Default model `gemini-2.5-flash`. |
 | **Anthropic Claude** | Paid API | Key from [console.anthropic.com](https://console.anthropic.com). Default model `claude-haiku-5-5`. |
 | **OpenAI-compatible** | Varies | OpenAI, OpenRouter (has free models), Groq, DeepSeek… Set the base URL and model. |

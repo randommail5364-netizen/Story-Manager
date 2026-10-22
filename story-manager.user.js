@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.6.2
+// @version      2.6.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -417,7 +417,7 @@
     model: '',
     baseUrl: 'https://openrouter.ai/api/v1',
     miniappsSlug: 'claude-37',
-    helperRotate: 0,  // start a new helper chat every N requests (0 = always the same one)
+    helperRotate: 30, // start a new helper chat every N requests (0 = always the same one)
     updateEvery: 3,   // AI replies between memory updates
     injectEvery: 1,   // attach memory to every Nth message (0 = never)
     detail: 'detailed', // how long summaries and entries are: standard | detailed | maximum
@@ -1661,6 +1661,8 @@
     // Memories used to be much shorter; move the old default up.
     if ([3000, 5000, 8000].includes(settings.maxChars)) settings.maxChars = DEFAULT_SETTINGS.maxChars;
     if (settings.injectBudget === 16000) settings.injectBudget = DEFAULT_SETTINGS.injectBudget;
+    // Helper chats used to be kept forever, until they got too long for the bot.
+    if (!settings.rotateSet) { settings.helperRotate = DEFAULT_SETTINGS.helperRotate; settings.rotateSet = true; }
     if (!DETAIL[settings.detail]) settings.detail = DEFAULT_SETTINGS.detail;
     chatIndex = await Store.get('chatIndex', []);
     learned = await Store.get('learned', null);
@@ -2358,6 +2360,7 @@
     const slugBox = el('div', {}, el('label', {}, 'MiniApps bot used as memory keeper (slug from its URL)'), f.miniappsSlug,
       el('div', { class: 'hint' }, 'Memory updates are sent to this bot in one helper chat in your MiniApps history (uses MiniApps credits).'),
       el('label', {}, 'Start a fresh helper chat every … requests (0 = always the same chat)'), f.helperRotate,
+      el('div', { class: 'hint' }, 'A helper chat that gets too long can make the bot stop answering. 30 is a safe default; lower it if the bot still errors, raise it for fewer chats in your history.'),
       el('div', { class: 'hint' }, 'The helper chat grows with every update. If updates get slow or start failing, set this to e.g. 20.'));
     const showProvider = () => {
       const p = providerSel.value;
@@ -2376,6 +2379,7 @@
       baseUrl: f.baseUrl.value.trim(),
       miniappsSlug: f.miniappsSlug.value.trim() || 'claude-37',
       helperRotate: Math.max(0, parseInt(f.helperRotate.value, 10) || 0),
+      rotateSet: true,
       updateEvery: Math.max(1, parseInt(f.updateEvery.value, 10) || 1),
       injectEvery: Math.max(0, parseInt(f.injectEvery.value, 10) || 0),
       detail: f.detail.value,

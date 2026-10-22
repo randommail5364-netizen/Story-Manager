@@ -31,6 +31,7 @@ Each chat has its own memory. A 📖 button floats over the site. Tap it to:
 - see and edit the story now, every entry and every chapter (tick **Always send** to attach an entry with every message), or add your own entries
 - add **📌 pinned facts** that are never changed automatically (e.g. "My character can't swim")
 - pause the add-on for one chat
+- **Check for missing facts**: compares every summary's Facts line with the entries and story, adds whatever is missing, and remembers which summaries were checked (the panel shows "Facts checked: 80 of 80")
 - **Update now**, **Undo last change**, **Redo story & characters from summaries** (rewrites the story, entries and chapters from the saved summaries without reading the chat again; much cheaper than a rebuild), or **Rebuild from whole chat**
 
 In the reply log, ⏳ marks a summary that isn't in the story & characters yet, and 📚 shows which chapter it belongs to.

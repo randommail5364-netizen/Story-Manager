@@ -125,6 +125,10 @@ async function main() {
     if (/JOB: CHAPTER/.test(input)) {
       return '=== CHAPTER: Chapter ' + n + ' by the river ===\nMira and Ash travelled on together' + tag + ', faced the hunters and grew closer; written in update ' + n + '.';
     }
+    if (/JOB: CHECK/.test(input)) {
+      const n2 = (input.match(/^\[F\d+\]/gm) || []).length;
+      return '=== CAST ===\nMira, Ash\n=== ENTRY: Mira | character | aliases: Miri, the healer ===\n- Mira: a healer (update ' + n + ')\n- Checked ' + n2 + ' facts; Mira fears deep water.';
+    }
     if (!/JOB: UPDATE/.test(input)) return 'OK';
     // WINTERTEST in the chat: the keeper names Winter in the cast but forgets her entry.
     const cast = 'Mira, Ash' + (/WINTERTEST/.test(input) ? ', Winter, Giselle' : '');
@@ -845,6 +849,29 @@ async function main() {
   check(!after33.lastError && after33.log.length === countOf('assistant') && after33.log.every((e) => e.folded),
     'every reply summarised in order and folded in' + (after33.lastError ? ' (got: ' + after33.lastError + ')' : ''));
   check(after33.log.map((e) => e.id).join() === recapConv.messages.filter((x) => x.origin === 'assistant').map((x) => x.id).join(), 'summaries in story order');
+
+  console.log('34) "Check for missing facts" adds what the entries are missing, and remembers what it checked');
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.provider = 'openai';
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const callsBefore34 = llmCalls.length;
+  const withFacts = (await keyNow()).log.filter((e) => e.facts).length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Check for missing facts').click({ timeout: 120000 });
+  await waitFor(async () => (await keyNow()).log.every((e) => !e.facts || e.checked), 60000, 'fact check');
+  await settle();
+  const checked = await keyNow();
+  const checks = llmCalls.slice(callsBefore34).filter((c) => /JOB: CHECK/.test(c));
+  check(checks.length >= 1 && checks.every((c) => /\[F1\] Mira is a healer \| Ash is a dragon/.test(c)), checks.length + ' check request(s) with every summary\'s facts');
+  check(/Mira fears deep water/.test(checked.entries.find((e) => e.name === 'Mira').text), 'missing fact added to the right entry');
+  check(checked.log.filter((e) => e.checked).length === withFacts && /Checked the facts of replies 1–/.test(checked.jobs.find((j) => j.kind === 'check').label + checked.jobs.map((j) => j.label).join()),
+    'all ' + withFacts + ' summaries marked as checked; recorded in Activity');
+  check(/Facts checked: \d+ of \d+/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel shows how many facts are checked');
 
   await browser.close();
   console.log('\nAll checks passed.');

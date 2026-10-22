@@ -101,33 +101,44 @@ async function main() {
     }, delay);
   }
 
-  // Answers like a real memory keeper: the memory, then one entry per [R#] reply.
+  // Answers like a real memory keeper, for each of its three jobs.
   function keeperAnswer(input, n, tag) {
-    let replies = [...input.matchAll(/\[R(\d+)[^\]\n]*\]/g)].map((r) => r[1]);
-    const log = () => replies.map((r) => '[R' + r + '] Detailed summary of reply ' + r + ' in update ' + n + '.').join('\n');
-    if (/LOG ENTRIES ONLY/.test(input)) return log();
+    // The messages it was given: each reply [R#] and the user message before it.
+    const replies = [];
+    let lastUser = '';
+    for (const block of input.split('\n\n')) {
+      const u = block.match(/^(?:\[RECAP\] )?USER: (.*)/m);
+      if (u) { lastUser = u[1]; continue; }
+      const r = block.match(/^\[R(\d+)[^\]\n]*\] (?:\[RECAP\] )?STORY AI[^:]*: (.*)/m);
+      if (r) replies.push({ n: r[1], user: lastUser, text: r[2] });
+    }
+    if (/JOB: SUMMARISE/.test(input)) {
+      // DROPLAST in the chat simulates a keeper that runs out of room.
+      const list = /DROPLAST/.test(input) && replies.length > 1 ? replies.slice(0, -1) : replies;
+      return list.map((r) => '[R' + r.n + '] Detailed summary of reply ' + r.n + ' in update ' + n + '. User: ' + r.user.slice(0, 60) +
+        ' Reply: ' + r.text.slice(0, 40) + '\nFACTS: Mira is a healer | Ash is a dragon').join('\n');
+    }
     const asked = input.match(/who have none yet: ([^.]+)\./);
     if (/ENTRIES ONLY/.test(input) && asked) {
       return asked[1].split(',').map((name) => '=== ENTRY: ' + name.trim() + ' | character ===\n- ' + name.trim() + ' is a member of the group.').join('\n');
     }
+    if (/JOB: CHAPTER/.test(input)) {
+      return '=== CHAPTER: Chapter ' + n + ' by the river ===\nMira and Ash travelled on together' + tag + ', faced the hunters and grew closer; written in update ' + n + '.';
+    }
+    if (!/JOB: UPDATE/.test(input)) return 'OK';
     // WINTERTEST in the chat: the keeper names Winter in the cast but forgets her entry.
     const cast = 'Mira, Ash' + (/WINTERTEST/.test(input) ? ', Winter, Giselle' : '');
-    // DROPLAST in the chat simulates a keeper that runs out of room.
-    if (/DROPLAST/.test(input)) replies = replies.slice(0, -1);
-    // Like the real keeper: only changed story sections (new events added),
-    // all of them for an empty story; a very long story (the shrink test)
-    // gets the older complete-STORY answer.
-    const storyLen = Number((input.match(/CURRENT STORY \((\d+) characters\)/) || [])[1] || 0);
+    // A very long story (the shrink test) gets an older-style complete STORY
+    // answer that drops most of it.
+    const storyLen = Number((input.match(/STORY \((\d+) characters\)/) || [])[1] || 0);
     const story = storyLen > 1500
-      ? '=== STORY ===\n## Story So Far\n- update ' + n + tag + '\n## Current Scene\n- Mira and Ash rest by the river.\n'
-      : '=== SECTION: Story So Far' + (storyLen ? ' | add' : '') + ' ===\n- update ' + n + tag + '\n' +
-        '=== SECTION: Current Scene ===\n- Mira and Ash rest by the river.\n';
+      ? '=== STORY ===\n## Current Scene\n- update ' + n + tag + '\n'
+      : '=== SECTION: Current Scene ===\n- Mira and Ash rest by the river (update ' + n + tag + ').\n';
     return story +
       '=== CAST ===\n' + cast + '\n' +
       '=== ENTRY: Mira | character | aliases: Miri, the healer ===\n- Mira: a healer' + tag + ' (update ' + n + ')\n' +
       '=== ENTRY: Ash | character | aliases: the dragon ===\n- Ash: a dragon\n' +
-      '=== ENTRY: Old Mill | place | aliases: the mill, old mill ===\n- An abandoned mill where they once hid from hunters.\n' +
-      '=== LOG ===\n' + log();
+      '=== ENTRY: Old Mill | place | aliases: the mill, old mill ===\n- An abandoned mill where they once hid from hunters.\n';
   }
 
   const browser = await chromium.launch();
@@ -253,7 +264,7 @@ async function main() {
     });
   });
 
-  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, injectEvery: 1 };
+  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1 };
   // A fake screen wake lock that records when it is taken and released.
   await ctx.addInitScript(() => {
     window.wakeLog = [];
@@ -289,14 +300,18 @@ async function main() {
   console.log('2) After 2 AI replies the memory keeper runs automatically');
   await waitFor(() => convs[convId].messages.length === 2, 5000, 'reply 1');
   await page.evaluate(() => window.sendMsg('I meet a dragon called Ash.'));
-  await waitFor(() => llmCalls.length >= 1, 30000, 'memory update');
-  check(/I am Mira, a healer\./.test(llmCalls[0]) && /Story reply #2/.test(llmCalls[0]), 'memory keeper got both exchanges');
+  await waitFor(async () => (await page.evaluate(() => (JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1]) || '{}').entries || []).length)) === 3, 30000, 'memory update');
+  check(/JOB: SUMMARISE/.test(llmCalls[0]) && /I am Mira, a healer\./.test(llmCalls[0]) && /Story reply #2/.test(llmCalls[0]), 'summary job got both exchanges');
+  check(/JOB: UPDATE/.test(llmCalls[1]) && /\[S1\] Detailed summary of reply 1[\s\S]*FACTS: Mira is a healer/.test(llmCalls[1]) && !/USER: I am Mira/.test(llmCalls[1]),
+    'story & characters updated from the summaries and facts, not the raw messages');
   const mem = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
-  check(mem && /update 1/.test(mem.memory), 'story saved for this chat');
+  check(mem && /## Current Scene\n- Mira and Ash rest by the river \(update 2\)/.test(mem.memory), 'story saved for this chat');
   check(mem.entries.map((e) => e.name).join() === 'Mira,Ash,Old Mill' && mem.entries[0].aliases.includes('Miri'), 'separate entries for characters and places, with aliases');
   check(mem.title === 'Dragon Tale', 'chat title picked up');
   check(!/===/.test(mem.memory) && !mem.entries.some((e) => /===/.test(e.text)), 'answer split into story, entries and log');
   check(mem.log.length === 2 && /reply 1 in update 1/.test(mem.log[0].text) && /reply 2 in update 1/.test(mem.log[1].text), 'one detailed log entry per AI reply');
+  check(mem.log.every((e) => e.facts === 'Mira is a healer | Ash is a dragon' && e.folded && !/FACTS/.test(e.text)), 'each summary keeps its facts, marked as folded in');
+  check(mem.jobs.length === 2 && mem.jobs.every((j) => j.ok) && /Summarised replies 1–2/.test(mem.jobs[1].label) && /Updated story & characters from replies 1–2/.test(mem.jobs[0].label), 'both jobs recorded in the activity list');
 
   await page.waitForTimeout(500);
   check((await page.evaluate(() => window.wakeLog.join())) === 'on,off', 'screen kept on during the update and released after');
@@ -312,19 +327,21 @@ async function main() {
   console.log('4) The memory block is stripped before the keeper sees history again');
   await waitFor(() => convs[convId].messages.length === 6, 5000, 'reply 3');
   await page.evaluate(() => window.sendMsg('I bandage Ash.'));
-  await waitFor(() => llmCalls.length >= 2, 30000, 'second memory update');
-  check(!llmCalls[1].includes('Background notes for story continuity') && /What do I do next\?/.test(llmCalls[1]), 'no memory echo, only new messages');
-  check(!/I am Mira, a healer\./.test(llmCalls[1]), 'already-processed messages are not resent');
+  await waitFor(() => llmCalls.length >= 4, 30000, 'second memory update');
+  check(!llmCalls[2].includes('Background notes for story continuity') && /What do I do next\?/.test(llmCalls[2]), 'no memory echo, only new messages');
+  check(!/I am Mira, a healer\./.test(llmCalls[2]), 'already-processed messages are not resent');
   await page.waitForTimeout(1000);
-  const mem2 = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])).memory);
-  check(/## Story So Far\n- update 1\n- update 2\n\n## Current Scene\n- Mira and Ash rest by the river\.$/.test(mem2), 'only changed story sections written: new events added, old ones kept');
+  const mem2 = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
+  check(mem2.memory === '## Current Scene\n- Mira and Ash rest by the river (update 4).' && mem2.log.length === 4 && mem2.log.every((e) => e.folded),
+    'the story holds the situation now; every summary folded in');
 
   console.log('5) Panel opens and shows the memory');
   await page.locator('#story-manager-root >> .fab').click();
   const panelText = await page.locator('#story-manager-root >> .panel').innerText();
   check(/Dragon Tale/.test(panelText), 'panel shows the current chat');
   const memBox = await page.locator('#story-manager-root >> textarea.mem').inputValue();
-  check(/update 2/.test(memBox), 'panel shows latest memory');
+  check(/update 4/.test(memBox), 'panel shows latest memory');
+  check(/Reply summaries: 4/.test(panelText) && /Chapters: 0/.test(panelText), 'panel shows where each stage stands');
 
   console.log('6) Pinned facts are always injected');
   await page.locator('#story-manager-root >> textarea').first().fill('Mira cannot swim.');
@@ -347,7 +364,7 @@ async function main() {
   await waitFor(async () => /via MiniApps bot/.test(await page.evaluate(() => localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1]))), 30000, 'miniapps rebuild');
   const helperBody = chatBodies.find((b) => b.toolId === 'tool-helper');
   check(helperBody && !helperBody.conversationId && llmCalls.length > before, 'helper bot was asked through POST /chat');
-  check(/We reach a river\./.test(llmCalls[llmCalls.length - 1]), 'rebuild read the whole chat');
+  check(llmCalls.slice(before).some((c) => /We reach a river\./.test(c)), 'rebuild read the whole chat');
 
   console.log('8) Same flow works when the site uses fetch() instead of XHR');
   await page.evaluate(() => localStorage.setItem('useFetch', '1'));
@@ -361,7 +378,16 @@ async function main() {
   const settle = async () => {
     let n;
     const stopShown = () => page.locator('#story-manager-root >> button', { hasText: 'Stop' }).count();
-    do { n = llmCalls.length; await page.waitForTimeout(3000); } while (llmCalls.length !== n || await stopShown());
+    let rounds = 0;
+    do {
+      n = llmCalls.length;
+      await page.waitForTimeout(3000);
+      if (process.env.DEBUG_SETTLE && ++rounds % 10 === 0) {
+        const last = llmCalls[llmCalls.length - 1] || '';
+        console.log('  [settle]', llmCalls.length, 'calls; last:', (last.match(/JOB: \w+|ENTRIES ONLY/) || ['?'])[0], (last.match(/\[R\d+[^\]]*\]/g) || []).length, 'replies',
+          await page.evaluate(() => { const b = document.querySelector('#story-manager-root').shadowRoot.querySelector('.status'); return b ? b.innerText.replace(/\s+/g, ' ').slice(0, 200) : ''; }));
+      }
+    } while (llmCalls.length !== n || await stopShown());
   };
 
   console.log('9) Site loads messages from another, paged endpoint (learned automatically)');
@@ -457,7 +483,7 @@ async function main() {
   await settle();
   const withRecap = llmCalls.slice(beforeRecap).join('\n');
   check(/\[RECAP\] USER: Recap: earlier, Mira and Ash escaped/.test(withRecap), 'recap message labelled [RECAP]');
-  check(/\[R1, entry about \d+ characters\] STORY AI/.test(withRecap), 'story replies numbered for the log');
+  check(/\[R1, summary about \d+ characters\] STORY AI/.test(withRecap), 'story replies numbered for the log');
   check(!/\[RECAP\] USER: I am Mira/.test(withRecap), 'ordinary messages not labelled');
   check(/A recap describes the PAST/.test(withRecap), 'memory keeper told how to handle recaps');
 
@@ -477,15 +503,15 @@ async function main() {
   await page.locator('#story-manager-root >> .fab').click();
   page.once('dialog', (d) => d.accept());
   await page.getByText('Rebuild from whole chat').click();
-  await waitFor(() => llmCalls.slice(beforeLong).some((c) => /LOG ENTRIES ONLY/.test(c)), 30000, 'follow-up for the missing entry');
-  await page.waitForTimeout(1500);
+  await waitFor(() => llmCalls.length > beforeLong, 30000, 'rebuild with a long message');
+  await settle();
   const longCalls = llmCalls.slice(beforeLong).join('\n');
   check(/LONGEND/.test(longCalls) && longText.length > 12000, 'a ' + longText.length + '-character message reached the memory keeper whole');
   const replyIds = recapConv.messages.filter((x) => x.origin === 'assistant').map((x) => x.id);
   const longChat = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
   check(replyIds.every((rid) => longChat.log.some((e) => e.id === rid)), 'every AI reply has a log entry (' + replyIds.length + '), including the one first left out');
   check(longChat.log.map((e) => e.id).join() === replyIds.join(), 'log entries are in story order');
-  check(/\[R1, entry about 700 characters\]/.test(longCalls), 'each reply labelled with its target entry length');
+  check(/\[R1, summary about 700 characters\]/.test(longCalls), 'each reply labelled with its target summary length');
 
   console.log('16) An update that would drop most of the memory is retried, then refused');
   const bigMemory = '## Characters\n' + Array.from({ length: 60 }, (_, i) => '- Fact number ' + i + ' about Mira and Ash that must survive.').join('\n');
@@ -502,7 +528,7 @@ async function main() {
   await page.waitForTimeout(500);
   const beforeShrink = llmCalls.length;
   await page.locator('#story-manager-root >> .fab').click();
-  await page.getByText('Update now').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
   await waitFor(() => llmCalls.slice(beforeShrink).some((c) => /IMPORTANT: your previous answer left out/.test(c)), 30000, 'retry after shrinking');
   await page.waitForTimeout(1500);
   const shrinkChat = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
@@ -551,6 +577,7 @@ async function main() {
   await waitFor(() => chatBodies.filter((b) => b.toolId === 'tool-helper').length >= helperPostsBefore + 3, 60000, 'several helper requests');
   const replyCount19 = recapConv.messages.filter((x) => x.origin === 'assistant').length;
   await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])).log.length)) === replyCount19, 120000, 'rebuild to finish');
+  await settle();
   const helperPosts = chatBodies.filter((b) => b.toolId === 'tool-helper').slice(helperPostsBefore);
   const helperIdsUsed = new Set(helperPosts.map((b) => b.conversationId).filter(Boolean));
   check(helperPosts.length >= 3 && helperIdsUsed.size === 1 && helperPosts.slice(1).every((b) => b.conversationId), helperPosts.length + ' memory-keeper requests all went to one helper chat');
@@ -568,7 +595,7 @@ async function main() {
   await waitFor(() => recapConv.messages[recapConv.messages.length - 1].origin === 'assistant', 5000, 'reply');
   await page.waitForTimeout(300);
   await page.locator('#story-manager-root >> .fab').click();
-  await page.getByText('Update now').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
   await waitFor(async () => {
     const h = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:helperChat')));
     return h && h.id !== helperChat19.id && convs[h.id];
@@ -582,7 +609,7 @@ async function main() {
   await waitFor(() => countOf('user') === countOf('assistant'), 8000, 'reply');
   await page.waitForTimeout(300);
   await page.locator('#story-manager-root >> .fab').click();
-  await page.getByText('Update now').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
   await waitFor(async () => {
     const c = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
     return c.entries.some((e) => e.name === 'Winter') && c.entries.some((e) => e.name === 'Giselle');
@@ -604,7 +631,7 @@ async function main() {
   await page.waitForTimeout(300);
   await page.locator('#story-manager-root >> .fab').click();
   const beforeDel = llmCalls.length;
-  await page.getByText('Update now').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
   await waitFor(() => llmCalls.length > beforeDel, 60000, 'update after delete');
   await page.waitForTimeout(8000);
   const afterDel = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])));
@@ -674,9 +701,8 @@ async function main() {
   helperDelay = 15000; // pieces arrive at once, the finished answer 15s later
   await page.evaluate(() => window.wsLoad()); // the live connection the real site always has
   const beforeStream = await keyNow();
-  page.once('dialog', (d) => d.accept());
   await page.locator('#story-manager-root >> .fab').click();
-  await page.locator('#story-manager-root >> button', { hasText: 'Update now' }).click();
+  await page.locator('#story-manager-root >> button', { hasText: 'Update now' }).click({ timeout: 120000 });
   await waitFor(async () => { const c = await keyNow(); return c.lastUpdate !== beforeStream.lastUpdate || c.lastError !== beforeStream.lastError; }, 120000, 'update with streamed answer');
   helperDelay = 500;
   const streamed = await keyNow();
@@ -737,12 +763,88 @@ async function main() {
   helperMaxChars = 25000;
   await page.evaluate(() => window.sendMsg('We search the tower.'));
   await page.evaluate(() => window.sendMsg('We find a map.'));
-  await waitFor(async () => { const c = await keyNow(); return c.lastUpdate !== beforeBig.lastUpdate || c.lastError !== beforeBig.lastError; }, 120000, 'update after a too-long request');
+  await waitFor(async () => { const c = await keyNow(); return c.lastError !== beforeBig.lastError ||
+    (llmCalls.slice(callsBeforeBig).some((x) => /JOB: UPDATE/.test(x)) && c.log.every((e) => e.folded)); }, 120000, 'update after a too-long request');
   helperMaxChars = 0;
   const afterBig = await keyNow();
   const smaller = llmCalls.slice(callsBeforeBig);
-  check(!afterBig.lastError && smaller.length && smaller.every((c) => /OTHER ENTRIES \(not involved[^\n]*Archive/.test(c) && !/Fact 599 about/.test(c)),
+  const folds = smaller.filter((c) => /JOB: UPDATE/.test(c));
+  check(!afterBig.lastError && folds.length && folds.every((c) => /OTHER ENTRIES \(not involved[^\n]*Archive/.test(c) && !/Fact 599 about/.test(c)),
     'request sent again with only the entries involved' + (afterBig.lastError ? ' (got: ' + afterBig.lastError + ')' : ''));
+
+  console.log('31) A memory from the old design moves its history into a first chapter');
+  await page.evaluate(() => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    c.version = 2;
+    c.chapters = [];
+    c.memory = '## Story So Far\n- Mira met Ash.\n- They hid in the old mill.\n\n## Current Scene\n- By the river.';
+    c.log.forEach((e) => { delete e.folded; delete e.chapter; });
+    localStorage.setItem(key, JSON.stringify(c));
+  });
+  await page.reload();
+  await page.waitForTimeout(1500);
+  const migrated = await keyNow();
+  check(migrated.version === 3 && migrated.chapters.length === 1 && migrated.chapters[0].title === 'The story until now' &&
+    /Mira met Ash/.test(migrated.chapters[0].text) && migrated.memory === '## Current Scene\n- By the river.' &&
+    migrated.log.every((e) => e.folded && e.chapter === 0), 'old "Story So Far" became chapter 1; existing summaries count as done');
+
+  console.log('32) Chapters are written, sent with messages, and the memory can be redone from the summaries');
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.provider = 'openai';
+    st.chapterSize = 4;
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const summaries32 = (await keyNow()).log.length;
+  const callsBefore32 = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Redo story & characters from summaries').click();
+  await waitFor(() => llmCalls.length > callsBefore32, 30000, 'redo from summaries');
+  await settle();
+  const redone = await keyNow();
+  const calls32 = llmCalls.slice(callsBefore32);
+  check(calls32.every((c) => !/JOB: SUMMARISE/.test(c)) && calls32.some((c) => /JOB: UPDATE/.test(c)), 'redo used the summaries, without reading the chat again');
+  check(redone.log.length === summaries32 && redone.log.every((e) => e.folded), 'all ' + summaries32 + ' summaries kept and folded in again');
+  check(redone.chapters.length === Math.floor(summaries32 / 4) && redone.chapters.every((c) => /by the river/.test(c.title) && c.ids.length === 4),
+    redone.chapters.length + ' chapters of 4 replies each');
+  check(redone.log.filter((e) => e.chapter != null).length === redone.chapters.length * 4, 'each summary knows its chapter');
+  const panel32 = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/Chapters \(\d+\)/.test(panel32) && /Activity/.test(panel32), 'panel shows chapters and the activity list');
+  await page.locator('#story-manager-root >> details.entrybox', { hasText: 'Activity' }).locator('summary').click();
+  check(/✓ Wrote chapter 1 \(replies 1–4\)/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'activity lists each job');
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => window.sendMsg('Where were we?'));
+  const sent32 = chatBodies[chatBodies.length - 1].elements[0].text;
+  check(/## The story so far, chapter by chapter\nChapter 1: Chapter \d+ by the river/.test(sent32) && /## The story now\n## Current Scene/.test(sent32),
+    'chapters and the story now are sent with the message');
+
+  console.log('33) Several summary requests can run at once, each in its own helper chat');
+  await waitFor(() => countOf('user') === countOf('assistant'), 8000, 'reply');
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.provider = 'miniapps';
+    st.parallel = 2;
+    st.chapterSize = 15;
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const postsBefore33 = chatBodies.filter((b) => b.toolId === 'tool-helper').length;
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Rebuild from whole chat').click();
+  await waitFor(() => chatBodies.filter((b) => b.toolId === 'tool-helper').length > postsBefore33 + 2, 60000, 'helper requests');
+  await settle();
+  const after33 = await keyNow();
+  const slots = await page.evaluate(() => [localStorage.getItem('smx:helperChat'), localStorage.getItem('smx:helperChat1')].map((x) => x && JSON.parse(x).id));
+  check(slots[0] && slots[1] && slots[0] !== slots[1], 'two helper chats used');
+  check(!after33.lastError && after33.log.length === countOf('assistant') && after33.log.every((e) => e.folded),
+    'every reply summarised in order and folded in' + (after33.lastError ? ' (got: ' + after33.lastError + ')' : ''));
+  check(after33.log.map((e) => e.id).join() === recapConv.messages.filter((x) => x.origin === 'assistant').map((x) => x.id).join(), 'summaries in story order');
 
   await browser.close();
   console.log('\nAll checks passed.');

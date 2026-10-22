@@ -19,9 +19,9 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0];
-const lib = new Function(consts + ['squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
-  .map(grab).join('\n') + '\nreturn { squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
+const consts = src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0];
+const lib = new Function(consts + ['entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
+  .map(grab).join('\n') + '\nreturn { organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -135,6 +135,40 @@ test('looping text is squashed, normal text is not', () => {
   const normal = Array.from({ length: 50 }, (_, i) => '- Fact ' + i + ': Karina wore a ' + ['red', 'blue', 'black'][i % 3] + ' dress on day ' + i + '.').join('\n') +
     '\nHe said "no, no, no" and then left. She waited. She waited. Then the door opened slowly and Giselle walked in with the keys.';
   assert.strictEqual(lib.squashRepeats(normal), normal);
+});
+
+test('summaries keep their FACTS line separately', () => {
+  const p = lib.parseKeeperAnswer('=== LOG ===\n[R1] Jacek kissed Karina on the balcony.\nFACTS: Karina calls him "Jace" | Winter knows their secret\n[R2] They slept.\nFACTS: none', replies);
+  assert.deepStrictEqual(p.entries, [
+    { id: 'a', text: 'Jacek kissed Karina on the balcony.', facts: 'Karina calls him "Jace" | Winter knows their secret' },
+    { id: 'b', text: 'They slept.' },
+  ]);
+  const bullets = lib.parseKeeperAnswer('=== LOG ===\n**R1:** Something happened.\n**Facts:**\n- Giselle hurt her ankle\n- The party is on Friday', replies);
+  assert.strictEqual(bullets.entries[0].facts, 'Giselle hurt her ankle | The party is on Friday');
+  assert.strictEqual(bullets.entries[0].text, 'Something happened.');
+});
+
+test('organize merges twins, cleans aliases, drops deleted entries and sorts by kind', () => {
+  const chat = {
+    ignored: ['scarf'],
+    chapters: [{ title: 'One', text: 'x', ids: ['a'] }],
+    entries: [
+      { name: 'Seoul Penthouse', kind: 'place', aliases: [], text: '- On the 40th floor.' },
+      { name: 'Karina', kind: 'character', aliases: ['Yu Jimin', 'babe', 'Karina'], text: '- Leader of aespa.\n- Loves Jacek.' },
+      { name: 'Winter', kind: 'character', aliases: ['babe'], text: '- Main vocalist.' },
+      { name: 'Scarf', kind: 'item', aliases: [], text: '- Red.' },
+      { name: 'Yu Jimin', kind: 'character', aliases: [], text: '- Leader of aespa.\n- Born in 2000.' },
+    ],
+    log: [{ id: 'a', text: 'short', folded: true, chapter: 0 }, { id: 'a', text: 'a longer summary', folded: true, chapter: 0 }, { id: 'b', text: 'b', chapter: 5 }],
+  };
+  const fixes = lib.organize(chat);
+  assert.deepStrictEqual(chat.entries.map((e) => e.name), ['Karina', 'Winter', 'Seoul Penthouse']);
+  assert.strictEqual(chat.entries[0].text, '- Leader of aespa.\n- Born in 2000.\n- Loves Jacek.', 'no fact lost');
+  assert.deepStrictEqual(chat.entries[0].aliases, ['Yu Jimin', 'babe']);
+  assert.deepStrictEqual(chat.entries[1].aliases, ['babe'], 'a shared nickname does not merge two characters');
+  assert.deepStrictEqual(chat.log, [{ id: 'a', text: 'a longer summary', folded: true, chapter: 0 }, { id: 'b', text: 'b', folded: false }]);
+  assert(fixes.some((f) => /merged Yu Jimin into Karina/.test(f)) && fixes.some((f) => /deleted entry Scarf/.test(f)));
+  assert.deepStrictEqual(lib.organize(chat), [], 'nothing left to fix the second time');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

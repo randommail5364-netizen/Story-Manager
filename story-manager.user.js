@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.7.1
+// @version      3.0.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -418,10 +418,12 @@
     baseUrl: 'https://openrouter.ai/api/v1',
     miniappsSlug: 'claude-37',
     helperRotate: 30, // start a new helper chat every N requests (0 = always the same one)
-    updateEvery: 3,   // AI replies between memory updates
+    updateEvery: 3,   // AI replies between summary requests
+    foldEvery: 9,     // AI replies between story & character updates
+    chapterSize: 15,  // AI replies per chapter
+    parallel: 1,      // summary requests that may run at the same time
     injectEvery: 1,   // attach memory to every Nth message (0 = never)
     detail: 'detailed', // how long summaries and entries are: standard | detailed | maximum
-    maxChars: 12000,  // target size of the main memory
     logAttach: 15,    // detailed reply summaries attached to each message
     injectBudget: 24000, // most characters attached to one message
     autoEnable: true, // manage new chats automatically
@@ -461,10 +463,16 @@
       id,
       title: '',
       enabled: settings.autoEnable,
-      memory: '',       // the story entry: big picture, current scene, open threads
+      version: 3,
+      memory: '',       // the story now: current scene, open threads, world & timeline
       entries: [],      // [{ name, kind, aliases, text, always, updated }]: characters, places, …
       ignored: [],      // lower-case names of entries the user deleted; never recreated
-      log: [],          // [{ id, text }]: a detailed summary of each AI reply
+      // [{ id, text, facts, folded, chapter }]: a detailed summary of each AI
+      // reply; folded = its facts are in the story and entries; chapter = the
+      // index of the chapter it belongs to
+      log: [],
+      chapters: [],     // [{ title, text, ids }]: the story's history, chapter by chapter
+      jobs: [],         // what the memory keeper did, newest first (Activity)
       pinned: '',
       processedIds: [],
       processedCount: 0,
@@ -480,7 +488,9 @@
     if (chats[id]) return chats[id];
     const saved = await Store.get('chat:' + id, null);
     if (saved) {
-      const chat = chats[id] = Object.assign(newChat(id), saved);
+      const chat = chats[id] = Object.assign(newChat(id), { version: 0 }, saved);
+      if (chat.version < 3) await migrate(chat);
+      if (tidy(chat).length) await saveChat(chat);
       // Older versions could save a looping answer; clean it up once.
       if ((chat.repaired || 0) < 1) {
         const before = JSON.stringify([chat.memory, chat.entries, chat.log]).length;
@@ -499,6 +509,24 @@
     }
     await saveChat(chats[id]);
     return chats[id];
+  }
+
+  // Version 3 keeps the history in chapters instead of a "Story So Far"
+  // section: the old section becomes the first chapter, and everything
+  // already in the memory counts as folded into it.
+  async function migrate(chat) {
+    const history = sectionOf(chat.memory, 'Story So Far').trim();
+    chat.chapters = chat.chapters || [];
+    if (history) {
+      chat.chapters.push({ title: 'The story until now', text: history, ids: chat.log.map((e) => e.id) });
+      chat.memory = removeSection(chat.memory, 'Story So Far');
+    }
+    for (const e of chat.log) {
+      e.folded = true;
+      if (history) e.chapter = 0;
+    }
+    chat.version = 3;
+    await saveChat(chat);
   }
 
   async function saveChat(chat) {
@@ -539,10 +567,28 @@
 
   // What may be attached to the next message in a chat. The page hook picks
   // from it when the message is sent, adding entries the message mentions.
+  // The history for the storyteller: the newest chapters in full, older ones
+  // by title only once they no longer fit.
+  function chaptersText(chat, budget) {
+    const lines = [];
+    let size = 0;
+    for (let i = chat.chapters.length - 1; i >= 0; i--) {
+      const c = chat.chapters[i];
+      const full = 'Chapter ' + (i + 1) + ': ' + c.title + '\n' + c.text;
+      const short = 'Chapter ' + (i + 1) + ': ' + c.title;
+      const t = size + full.length <= budget ? full : short;
+      lines.unshift(t);
+      size += t.length + 2;
+    }
+    return lines.join('\n\n');
+  }
+
   function buildPlan(chat) {
     const head = [];
+    const budget = Math.max(2000, Number(settings.injectBudget) || DEFAULT_SETTINGS.injectBudget);
     if (chat.pinned.trim()) head.push('## Must remember\n' + chat.pinned.trim());
-    if (chat.memory.trim()) head.push('## The story\n' + chat.memory.trim());
+    if (chat.chapters.length) head.push('## The story so far, chapter by chapter\n' + chaptersText(chat, Math.round(budget * 0.3)));
+    if (chat.memory.trim()) head.push('## The story now\n' + chat.memory.trim());
     const inPlay = new Set(entriesInPlay(chat));
     const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: e.text });
     const plan = {
@@ -551,8 +597,11 @@
       head: head.join('\n\n'),
       core: chat.entries.filter((e) => inPlay.has(e)).map(pack),
       extra: chat.entries.filter((e) => !inPlay.has(e)).map(pack),
-      log: chat.log.slice(-Math.max(0, Number(settings.logAttach) || 0)).map((e) => e.text),
-      budget: Math.max(2000, Number(settings.injectBudget) || DEFAULT_SETTINGS.injectBudget),
+      // Everything since the last chapter (or at least the newest logAttach),
+      // newest first as far as the space allows.
+      log: chat.log.slice(-Math.max(Math.max(0, Number(settings.logAttach) || 0), chat.log.filter((e) => e.chapter == null).length))
+        .map((e) => e.text),
+      budget,
     };
     return plan.head || plan.core.length || plan.extra.length || plan.log.length ? plan : null;
   }
@@ -740,7 +789,8 @@
     return json;
   }
 
-  async function callLLM(system, user) {
+  // slot: which helper chat to use when several requests run at once.
+  async function callLLM(system, user, slot = 0) {
     const s = settings;
     const model = s.model || DEFAULT_MODELS[s.provider] || '';
     if (s.provider !== 'miniapps' && !s.apiKey) throw new Error('No API key set (Story Manager → Settings)');
@@ -771,14 +821,16 @@
       const parts = (d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || [];
       return parts.map((p) => p.text || '').join('');
     }
-    return callMiniApps(system + '\n\n' + user);
+    return callMiniApps(system + '\n\n' + user, slot);
   }
 
   // Uses one of the site's own chatbots as the memory keeper (costs MiniApps credits).
   let toolCache = null;
-  // All requests go to one helper chat with the bot (remembered across visits),
-  // so they don't each add a chat to the user's MiniApps history.
-  let helperChat = null;  // { slug, id, uses }
+  // Requests go to a helper chat with the bot (remembered across visits), so
+  // they don't each add a chat to the user's MiniApps history. Requests that
+  // run at the same time each get their own helper chat (slot).
+  const helperChats = [];  // slot -> { slug, id, uses }
+  const helperKey = (slot) => (slot ? 'helperChat' + slot : 'helperChat');
   const lastActivity = {}; // chat id -> when the live connection last showed activity in it
   let helperWait = null;   // what the last wait for the bot saw, for Diagnostics
   const chatErrors = {};   // chat id -> { error, code, at }: the site's "ce" (chat error) events
@@ -788,15 +840,15 @@
 
   // If the bot fails (reports an error, never answers, or rambles on), try
   // again in a fresh helper chat, up to 3 tries in all.
-  async function callMiniApps(prompt) {
+  async function callMiniApps(prompt, slot = 0) {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await callMiniAppsOnce(prompt);
+        return await callMiniAppsOnce(prompt, slot);
       } catch (e) {
         if (!e.botError || attempt >= 3) throw e;
         toast(e.message + ' Trying again in a fresh helper chat…', true);
-        helperChat = null;
-        await Store.set('helperChat', null);
+        helperChats[slot] = null;
+        await Store.set(helperKey(slot), null);
         for (let i = 0; i < 15; i++) { await sleep(1000); checkStop(); }
       }
     }
@@ -817,7 +869,8 @@
     return at;
   }
 
-  async function callMiniAppsOnce(prompt) {
+  async function callMiniAppsOnce(prompt, slot) {
+    const helperChat = helperChats[slot];
     const slug = (settings.miniappsSlug || 'claude-37').trim();
     if (!toolCache || toolCache.slug !== slug) {
       const tool = await rpc('GET', '/tools/s/' + encodeURIComponent(slug) + '?lang=en');
@@ -863,8 +916,8 @@
     const cid = res && res.conversationId;
     if (!cid) throw new Error('MiniApps did not start a conversation');
     helperIds.add(cid);
-    helperChat = reuse && cid === helperChat.id ? Object.assign({}, helperChat, { uses: helperChat.uses + 1 }) : { slug, id: cid, uses: 1 };
-    await Store.set('helperChat', helperChat);
+    helperChats[slot] = reuse && cid === helperChat.id ? Object.assign({}, helperChat, { uses: helperChat.uses + 1 }) : { slug, id: cid, uses: 1 };
+    await Store.set(helperKey(slot), helperChats[slot]);
     // The send reply lists the messages it added (our request, maybe a
     // greeting); the answer comes after our request's position.
     let requestIndex = -1;
@@ -880,7 +933,7 @@
     const started = Date.now();
     let prev = null;
     for (;;) {
-      await sleep(4000);
+      await sleep(2000);
       if (activeChatId && stopRequested[activeChatId]) {
         // Ask MiniApps to stop writing the answer (endpoint from MiniappsAI-API).
         rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
@@ -894,7 +947,7 @@
       if (loopAt >= 0 || tooLong) {
         rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
         const part = loopAt >= 0 ? streamed.slice(0, loopAt) : streamed;
-        if (/===\s*STORY\s*===|===\s*LOG\s*===|===\s*ENTRY/i.test(part)) return part;
+        if (/===\s*(STORY|LOG|ENTRY|SECTION|CAST|CHAPTER)|^\W*\[?R\d+\b/im.test(part)) return part;
         const err = new Error(loopAt >= 0 ? 'The MiniApps bot got stuck repeating itself.' : 'The MiniApps bot was still writing after 30 minutes.');
         err.botError = true;
         throw err;
@@ -923,7 +976,10 @@
           (requestIndex < 0 || typeof m.index !== 'number' || m.index > requestIndex));
       }
       // Keep only the newest answer if several new ones turned up.
-      const reply = answers.length ? answers[answers.length - 1].text : '';
+      const newest = answers.length ? answers[answers.length - 1] : null;
+      const reply = newest ? newest.text : '';
+      // MiniApps pushes a reply over the live connection only once it is finished.
+      const pushed = !!(newest && seenMsgs[cid] && seenMsgs[cid].has(newest.id));
       helperWait = {
         started,
         roles: msgs.map((m) => (m.role === 'user' ? 'u' : 'a')).join(''),
@@ -935,7 +991,7 @@
       };
       // Done when the answer stopped changing and the bot stopped typing.
       const quiet = Date.now() - (lastActivity[cid] || 0) > 6000;
-      if (reply && reply === prev && quiet) { helperWait.done = true; return reply; }
+      if (reply && (pushed || (reply === prev && quiet))) { helperWait.done = true; return reply; }
       prev = reply || null;
       const idle = Date.now() - Math.max(started, lastActivity[cid] || 0);
       if (!reply && idle > 3 * 60000) break;
@@ -946,60 +1002,85 @@
     throw err;
   }
 
-  function systemPrompt() {
+  // The memory keeper has three jobs, each with its own instructions:
+  //   SUMMARISE: one detailed summary (plus lasting facts) per AI reply
+  //   UPDATE:    fold new summaries into the story sections and the entries
+  //   CHAPTER:   roll a run of summaries into a short chapter summary
+  const RECAP_RULES = [
+    'Recaps:',
+    '- Some messages are RECAPS: summaries of earlier events, often written to continue the story in a new chat. They are marked [RECAP], but also recognise unmarked ones (e.g. "Previously…", "So far…", "Last time…", or a long summary of past events at the start of a chat).',
+    '- A recap describes the PAST, not something happening now. A recap often repeats what is already known, and recaps can contain older recaps: record each event once and use the recap to fill gaps and correct details.',
+    '- If a recap written by the USER disagrees with what is known, trust the recap. If one written by the STORY AI disagrees, keep what is known unless the recap is clearly more detailed and accurate. Anything that happens after a recap overrides it.',
+  ];
+
+  function summarySystem() {
     return [
       'You are the continuity editor for a long-running interactive story / roleplay chat.',
-      'You keep a knowledge base up to date so the storyteller AI never forgets anything. It has three parts:',
-      '1. The STORY: the big picture.',
-      '2. ENTRIES: one entry per character, and per important place, item, group or piece of lore.',
-      '3. The LOG: one detailed entry per story reply.',
-      'Only the parts that matter at the moment are shown to the storyteller, so every fact must sit in the right entry.',
+      'Your job now: write a detailed summary of EACH story reply in the messages, so the storyteller AI can remember exactly what happened.',
+      '',
+      'Rules:',
+      '- Story replies are numbered [R1], [R2], … Write exactly one summary for EACH of them, starting a new line with its label.',
+      '- Each summary is past-tense prose describing what happened in that reply and what the user did just before it, step by step in order: actions, important dialogue (short quotes are fine), decisions, revelations, emotions and reactions, changes in relationships, injuries, clothing and items, where and when it happened. Use names, be concrete; no vague phrases like "they talked" or "things got intense".',
+      '- Each [R…] label says how long its summary should be (longer replies get longer summaries). Reach that length with real details from the reply, never padding. Cover the whole reply, including its end.',
+      '- After each summary, on its own line, write FACTS: followed by the lasting facts this reply revealed or changed, separated by " | ": names and nicknames, relationships and feelings, confessions, promises, secrets (and who knows them), injuries and condition, possessions, appearance changes, places, rules of the world, dates and times. Write FACTS: none if there are none.',
+      '- A reply that is a recap gets a summary starting with "Recap of earlier events:".',
+      '- Never invent anything. Use the names in KNOWN NAMES for people and places that already have them.',
+      '',
+    ].concat(RECAP_RULES, [
+      '',
+      'No commentary, no warnings, no questions. Answer in exactly this format and nothing else:',
+      '[R1] (summary)',
+      'FACTS: (facts)',
+      '[R2] (summary)',
+      'FACTS: (facts)',
+    ]).join('\n');
+  }
+
+  function updateSystem() {
+    return [
+      'You are the continuity editor for a long-running interactive story / roleplay chat.',
+      'You keep a knowledge base up to date so the storyteller AI never forgets anything. Your job now: fold NEW EVENTS (summaries of the latest story replies, with their lasting FACTS) into it.',
+      'The knowledge base has STORY sections (the situation now) and ENTRIES (one per character, and per important place, item, group or piece of lore). The history of events is kept separately, in chapters; do not write it here.',
       '',
       'STORY rules:',
-      '- Sections: ## Story So Far (every important event and turning point, in order, with who was involved and what changed), ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries), ## World & Timeline (world rules, the date and time, how much time has passed). Omit empty sections.',
+      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries, things that must be followed up), ## World & Timeline (world rules, the date and time, how much time has passed, important background).',
+      '- Output only the sections that change, each as === SECTION: Name === followed by its complete new text, keeping every fact that is still true. Leave out sections that did not change. If a section is empty, write it in full.',
       '- Details about a character, place or item belong in its entry, not here.',
-      '- Do NOT rewrite the whole story. Output only the sections that change, each under its own header:',
-      '  === SECTION: Story So Far | add === followed by ONLY the new lines to add at the end of that section (the new events). Never repeat lines that are already there.',
-      '  === SECTION: Name === followed by the complete new text of that section, which replaces it. Use this for Current Scene, Open Threads and World & Timeline when they change, keeping every fact that is still true.',
-      '- Leave out sections that did not change. If the CURRENT STORY is empty, write every section in full.',
-      '- Rewrite Story So Far in full (=== SECTION: Story So Far ===, keeping every event) only when earlier events must be corrected or put in order (e.g. a recap fills in the past), or when the whole story is over ' + settings.maxChars + ' characters and needs to be made more compact.',
       '',
       'ENTRY rules:',
       '- EVERY named character gets an entry, including the user\'s character and side characters, even if they only appear briefly. List them all in CAST.',
       '- Places, groups and lore get an entry when the story keeps coming back to them. Items get an entry only when they are important to the plot over several scenes (e.g. a weapon, a gift, an heirloom, a key); never for props, clothing or objects used within a scene.',
-      '- A character entry covers: who they are; appearance, clothing and distinguishing features; personality, mannerisms and how they talk; abilities; likes, dislikes and boundaries; backstory; their relationship with each other character and the moments that shaped it; feelings; current condition, injuries and whereabouts; what they carry or own; goals, promises and secrets; nicknames and running jokes. Be detailed and specific, with bullet points.',
-      '- Length: main characters ' + detail().mainChar + ' characters each, growing as the story reveals more; side characters and places as long as their facts need. Record specifics (exact words said, what was worn, where things are, how someone reacted), not general impressions.',
-      '- Header format: === ENTRY: Name | kind | aliases: other names, nicknames, titles === where kind is character, place, item, group or lore. Aliases are every other way the story refers to it (used to find the entry when it is mentioned).',
-      '- Output ONLY entries that are new or changed by the new messages, each one complete (all old facts plus the new ones). Do not output unchanged entries. Use the exact existing name for an existing entry.',
+      '- A character entry covers: who they are; appearance, clothing and distinguishing features; personality, mannerisms and how they talk; abilities; likes, dislikes and boundaries; backstory; their relationship with each other character and the moments that shaped it; feelings; current condition, injuries and whereabouts; what they carry or own; goals, promises and secrets (and who knows them); nicknames and running jokes. Be detailed and specific, with bullet points.',
+      '- Length: main characters ' + detail().mainChar + ' characters each, growing as the story reveals more; side characters and places as long as their facts need. Record specifics, not general impressions.',
+      '- Every FACT in the new events must end up in the right entry or story section.',
+      '- Header format: === ENTRY: Name | kind | aliases: other names, nicknames, titles === where kind is character, place, item, group or lore. Aliases are every other way the story refers to it.',
+      '- Output ONLY entries that are new or changed by the new events, each one complete (all old facts plus the new ones). Do not output unchanged entries, or entries listed by name only. Use the exact existing name for an existing entry.',
       '- Never remove a fact unless the story changed it; then update it. When something changes, update every entry it affects (e.g. both sides of a relationship).',
       '- Never invent anything. Only record what actually happened or was stated.',
       '',
-      'LOG rules:',
-      '- Story replies in the new messages are numbered [R1], [R2], … Write exactly one log entry for EACH of them.',
-      '- Each entry is past-tense prose describing what happened in that reply and what the user did just before it, step by step in order: actions, important dialogue (short quotes are fine), decisions, revelations, emotions and reactions, changes in relationships, injuries, clothing and items, where and when it happened, and any new facts about the world. Use names, be concrete; no vague phrases like "they talked" or "things got intense".',
-      '- Each [R…] label says how long its entry should be (longer replies get longer entries). Reach that length with real details from the reply, never padding. Cover the whole reply, including its end.',
+    ].concat(RECAP_RULES, [
       '',
-      'Recaps:',
-      '- Some messages are RECAPS: summaries of earlier events, often written to continue the story in a new chat. They are marked [RECAP], but also recognise unmarked ones (e.g. "Previously…", "So far…", "Last time…", or a long summary of past events at the start of a chat).',
-      '- A recap describes the PAST, not something happening now. Put its events into Story So Far in the right order, before the events that come after the recap in the chat (rewrite the section in full if it adds earlier events), and its facts into the right entries. Only change Current Scene if the recap clearly ends by describing where things stand now.',
-      '- A recap often repeats what is already known, and recaps can contain older recaps. Merge them: record each event once, and use the recap to fill gaps and correct details.',
-      '- If a recap written by the USER disagrees with what is known, trust the recap. If one written by the STORY AI disagrees, keep what is known unless the recap is clearly more detailed and accurate.',
-      '- Anything that happens in the chat after a recap always overrides the recap.',
-      '- A story reply that is a recap gets a log entry starting with "Recap of earlier events:".',
-      '',
-      'If the CURRENT STORY still holds character, place or item details (from an older format), move them into entries.',
+      'If the STORY still holds character, place or item details (from an older format), move them into entries.',
       'No commentary, no warnings, no questions. Answer in exactly this format and nothing else:',
-      '=== SECTION: Story So Far | add ===',
-      '(new events only)',
       '=== SECTION: Current Scene ===',
       '(complete section; repeat for each changed section)',
       '=== CAST ===',
-      '(every named character in the CURRENT STORY, CURRENT ENTRIES and NEW MESSAGES, comma-separated)',
+      '(every named character in the STORY, ENTRIES and NEW EVENTS, comma-separated)',
       '=== ENTRY: Name | kind | aliases: … ===',
       '(complete entry; repeat for each new or changed entry)',
-      '=== LOG ===',
-      '[R1] (entry for R1)',
-      '[R2] (entry for R2)',
+    ]).join('\n');
+  }
+
+  function chapterSystem() {
+    return [
+      'You are the continuity editor for a long-running interactive story / roleplay chat.',
+      'Your job now: turn the EVENTS (summaries of consecutive story replies) into one chapter of the story\'s history.',
+      '- Give the chapter a short title (3 to 8 words) naming what it is about.',
+      '- Then write 600 to 1,500 characters of past-tense prose covering, in order, every important event and turning point, who was involved, what changed between the characters, and how the chapter ends. Use names. Skip small talk; keep anything that will matter later.',
+      '- Never invent anything.',
+      'No commentary. Answer in exactly this format and nothing else:',
+      '=== CHAPTER: Title ===',
+      '(chapter summary)',
     ].join('\n');
   }
 
@@ -1031,26 +1112,25 @@
       const who = m.role === 'user' ? 'USER' : (botName ? 'STORY AI (' + botName + ')' : 'STORY AI');
       let t = m.text;
       if (t.length > textLimit(m)) t = t.slice(0, textLimit(m)) + ' […]';
-      const num = m.role === 'assistant' ? '[R' + (++n) + ', entry about ' + entryTarget(m) + ' characters] ' : '';
+      const num = m.role === 'assistant' ? '[R' + (++n) + ', summary about ' + entryTarget(m) + ' characters] ' : '';
       return num + (isRecap(m.text) ? '[RECAP] ' : '') + who + ': ' + t;
     }).join('\n\n');
   }
 
   // Longer summaries mean longer answers, so fewer replies fit in one request.
   const DETAIL = {
-    standard: { label: 'Standard', logMin: 300, logShare: 0.15, logMax: 1500, perChunk: 6, mainChar: '800–1,500' },
-    detailed: { label: 'Detailed', logMin: 700, logShare: 0.3, logMax: 3000, perChunk: 4, mainChar: '1,500–3,000' },
+    standard: { label: 'Standard', logMin: 300, logShare: 0.15, logMax: 1500, perChunk: 8, mainChar: '800–1,500' },
+    detailed: { label: 'Detailed', logMin: 700, logShare: 0.3, logMax: 3000, perChunk: 5, mainChar: '1,500–3,000' },
     maximum: { label: 'Maximum', logMin: 1200, logShare: 0.5, logMax: 5000, perChunk: 3, mainChar: '3,000–5,000' },
   };
   function detail() {
     return DETAIL[settings.detail] || DETAIL.detailed;
   }
 
-  // How much chat text goes to the memory keeper in one request.
-  const CHUNK_CHARS = 20000;
-
-  // At most detail().perChunk story replies per request, so the answer
-  // (memory plus one log entry per reply) stays a manageable length.
+  // How much chat text goes to the memory keeper in one summary request. At
+  // most detail().perChunk story replies go in one, so the answer (one
+  // summary per reply) stays a manageable length.
+  const CHUNK_CHARS = 40000;
 
   function chunk(msgs, maxChars) {
     const out = [];
@@ -1119,89 +1199,158 @@
   const TOO_LONG_RE = /context (length|window)|maximum context|too many tokens|reduce the length|prompt is too long|input is too long/i;
 
   // When the entries are very long (or the bot said the request is too
-  // long), only the entries the new messages involve are sent in full.
-  function entriesForRequest(chat, msgs, compact) {
+  // long), only the entries the new events involve are sent in full.
+  function entriesForRequest(chat, text, compact) {
     const all = formatEntries(chat.entries);
     if (!compact && all.length <= 40000) return all;
-    const text = sectionOf(chat.memory, 'Current Scene') + '\n' + msgs.map((m) => m.text).join('\n');
-    const shown = chat.entries.filter((e) => e.always || entryKeys(e).some((k) => mentions(text, k)));
+    const about = sectionOf(chat.memory, 'Current Scene') + '\n' + text;
+    const shown = chat.entries.filter((e) => e.always || entryKeys(e).some((k) => mentions(about, k)));
     const others = chat.entries.filter((e) => !shown.includes(e)).map((e) => e.name);
     return formatEntries(shown) + (others.length
-      ? '\n\nOTHER ENTRIES (not involved in the new messages; listed by name only; do not output them): ' + others.join(', ')
+      ? '\n\nOTHER ENTRIES (not involved in the new events; listed by name only; do not output them): ' + others.join(', ')
       : '');
   }
 
-  async function mergeIntoMemory(chat, msgs, compact) {
+  // Each story reply with the user message just before it, for asking about
+  // only some replies.
+  function withPrompts(msgs, replies) {
+    const parts = [];
+    for (const r of replies) {
+      const i = msgs.indexOf(r);
+      const prevUser = msgs.slice(0, i).reverse().find((m) => m.role === 'user');
+      if (prevUser && !parts.includes(prevUser)) parts.push(prevUser);
+      parts.push(r);
+    }
+    return parts;
+  }
+
+  // Job 1: a detailed summary and the lasting facts of each AI reply.
+  // Summaries the keeper skipped (or that were cut off) are asked for again.
+  async function summarise(chat, msgs, slot = 0) {
+    const replies = msgs.filter((m) => m.role === 'assistant');
+    // Only user messages (e.g. the newest one, still waiting for its reply): nothing to summarise.
+    if (!replies.length) return [];
+    const names = chat.entries.map((e) => e.name + (e.aliases && e.aliases.length ? ' (' + e.aliases.join(', ') + ')' : ''));
+    const scene = sectionOf(chat.memory, 'Current Scene').trim();
+    const ask = async (list) => {
+      const user = (names.length ? 'KNOWN NAMES: ' + names.join('; ') + '\n\n' : '') +
+        (scene ? 'WHERE THE STORY STOOD BEFORE THESE MESSAGES:\n<<<\n' + scene + '\n>>>\n\n' : '') +
+        'MESSAGES (oldest first):\n<<<\n' + formatMessages(list, chat.title) + '\n>>>\n\n' +
+        'JOB: SUMMARISE. Write one summary and one FACTS line for each [R…] reply now.';
+      const out = cleanOutput(await callLLM(summarySystem(), user, slot));
+      checkStop();
+      const log = /^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out;
+      return { out, entries: parseKeeperAnswer(log, list.filter((m) => m.role === 'assistant')).entries };
+    };
+    const first = await ask(msgs);
+    let got = first.entries;
+    if (!got.length && replies.length) throw new Error('Memory keeper gave an unusable answer: "' + first.out.slice(0, 120) + '"');
+    for (let round = 0; round < 3; round++) {
+      const have = new Set(got.map((e) => e.id));
+      const missing = replies.filter((r) => !have.has(r.id));
+      if (!missing.length) break;
+      const count = got.length;
+      for (let i = 0; i < missing.length; i += 3) {
+        checkStop();
+        got = got.concat((await ask(withPrompts(msgs, missing.slice(i, i + 3)))).entries);
+      }
+      // A keeper that won't write them at all is not asked forever.
+      if (got.length === count) break;
+    }
+    const order = new Map(replies.map((r, i) => [r.id, i]));
+    return dedupeEntries(got).sort((a, b) => order.get(a.id) - order.get(b.id));
+  }
+
+  // Summaries as the keeper sees them in UPDATE and CHAPTER jobs.
+  function formatEvents(items) {
+    return items.map((e, i) => '[S' + (i + 1) + '] ' + e.text + (e.facts ? '\nFACTS: ' + e.facts : '')).join('\n\n');
+  }
+
+  // Job 2: fold new summaries into the story sections and the entries.
+  async function fold(chat, items, compact) {
     try {
-      return await mergeIntoMemoryOnce(chat, msgs, compact);
+      return await foldOnce(chat, items, compact);
     } catch (e) {
       if (compact || !TOO_LONG_RE.test(String(e.message || e))) throw e;
-      toast('The request was too long for the bot; sending only the entries these messages involve.', true);
-      return mergeIntoMemoryOnce(chat, msgs, true);
+      toast('The request was too long for the bot; sending only the entries these events involve.', true);
+      return foldOnce(chat, items, true);
     }
   }
 
-  async function mergeIntoMemoryOnce(chat, msgs, compact) {
-    const user = 'CURRENT STORY (' + chat.memory.trim().length + ' characters):\n<<<\n' + (chat.memory.trim() || '(empty — this is the start)') + '\n>>>\n\n' +
-      'CURRENT ENTRIES:\n<<<\n' + entriesForRequest(chat, msgs, compact) + '\n>>>\n\n' +
+  async function foldOnce(chat, items, compact) {
+    const events = formatEvents(items);
+    const user = 'STORY (' + chat.memory.trim().length + ' characters):\n<<<\n' + (chat.memory.trim() || '(empty — this is the start)') + '\n>>>\n\n' +
+      (chat.chapters.length ? 'CHAPTERS SO FAR (history, kept separately): ' + chat.chapters.map((c, i) => (i + 1) + '. ' + c.title).join('; ') + '\n\n' : '') +
+      'CURRENT ENTRIES:\n<<<\n' + entriesForRequest(chat, events, compact) + '\n>>>\n\n' +
       (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true, do not repeat them):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
       (chat.ignored.length ? 'NEVER write entries for (the user removed them): ' + chat.ignored.join(', ') + '\n\n' : '') +
-      'NEW MESSAGES (oldest first):\n<<<\n' + formatMessages(msgs, chat.title) + '\n>>>\n\n' +
-      'Write the changed STORY sections, the CAST, every new or changed ENTRY, and one LOG entry for each [R…] reply now.';
-    const replies = msgs.filter((m) => m.role === 'assistant');
+      'NEW EVENTS (oldest first):\n<<<\n' + events + '\n>>>\n\n' +
+      'JOB: UPDATE. Write the changed STORY sections, the CAST, and every new or changed ENTRY now.';
     const before = knowledgeSize(chat.memory.trim(), chat.entries);
-    let parsed = null;
+    let result = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
       const extra = attempt === 1 ? '' : '\n\nIMPORTANT: your previous answer left out much of what is already known. Keep EVERY fact; only add and update.';
-      const out = cleanOutput(await callLLM(systemPrompt(), user + extra));
+      const out = cleanOutput(await callLLM(updateSystem(), user + extra));
       checkStop();
-      parsed = parseKeeperAnswer(out, replies);
-      // Only the changed sections are written; a full STORY (older style) replaces it all.
-      if (!parsed.memory.trim() && parsed.sections.length) parsed.memory = applySections(chat.memory, parsed.sections);
-      if (parsed.memory.length < 40 && !parsed.updates.length && !parsed.sections.length && !parsed.entries.length) {
+      const parsed = parseKeeperAnswer(out, []);
+      // The history lives in chapters, not in the story sections.
+      const sections = parsed.sections.filter((x) => !/^story so far$/i.test(x.title));
+      if (!parsed.memory.trim() && !sections.length && !parsed.updates.length && !parsed.cast.length) {
         throw new Error('Memory keeper gave an unusable answer: "' + out.slice(0, 120) + '"');
       }
+      let memory = sections.length ? applySections(chat.memory, sections) : chat.memory;
+      // An older-style complete STORY replaces it all, without its history part.
+      if (parsed.memory.trim() && !sections.length) memory = removeSection(parsed.memory, 'Story So Far');
+      result = { memory, updates: parsed.updates, cast: parsed.cast };
       // Much less knowledge than before means facts were dropped (or the answer was cut off).
-      const story = parsed.memory.trim() || chat.memory.trim(); // a missing story section keeps the old one
-      const after = knowledgeSize(story, applyUpdates(cloneEntries(chat.entries), parsed.updates, chat.ignored).entries);
+      const after = knowledgeSize(memory.trim(), applyUpdates(cloneEntries(chat.entries), parsed.updates, chat.ignored).entries);
       if (!(before > 1500 && after < before * 0.6)) break;
       if (attempt === 2) {
-        parsed.memory = chat.memory;
-        parsed.updates = [];
-        toast('The memory keeper tried to drop facts, so the story and entries were kept as they were; only the reply log was updated.', true);
+        result = { memory: chat.memory, updates: [], cast: [] };
+        toast('The memory keeper tried to drop facts, so the story and entries were kept as they were.', true);
       }
     }
-    if (!parsed.memory.trim()) parsed.memory = chat.memory;
     // Characters in the cast without an entry are asked for explicitly.
     for (let round = 0; round < 2; round++) {
-      const known = applyUpdates(cloneEntries(chat.entries), parsed.updates, chat.ignored).entries;
+      const known = applyUpdates(cloneEntries(chat.entries), result.updates, chat.ignored).entries;
       const skip = new Set(chat.ignored.map((n) => n.toLowerCase()));
-      const missing = [...new Set(parsed.cast)].filter((n) => !findEntry(known, n) && !skip.has(n.toLowerCase()));
+      const missing = [...new Set(result.cast)].filter((n) => !findEntry(known, n) && !skip.has(n.toLowerCase()));
       if (!missing.length) break;
-      const count = parsed.updates.length;
+      const count = result.updates.length;
       for (let i = 0; i < missing.length; i += 4) {
         checkStop();
-        parsed.updates = parsed.updates.concat(await entriesFor(chat, msgs, parsed.memory, missing.slice(i, i + 4)));
+        result.updates = result.updates.concat(await entriesFor(chat, events, result.memory, missing.slice(i, i + 4)));
       }
-      if (parsed.updates.length === count) break;
+      if (result.updates.length === count) break;
     }
-    // Replies whose log entry is missing (skipped, or the answer was cut off)
-    // are asked for again, a few at a time.
-    for (let round = 0; round < 3; round++) {
-      const have = new Set(parsed.entries.map((e) => e.id));
-      const missing = replies.filter((r) => !have.has(r.id));
-      if (!missing.length) break;
-      const count = parsed.entries.length;
-      for (let i = 0; i < missing.length; i += 3) {
-        checkStop();
-        parsed.entries = parsed.entries.concat(await logEntriesFor(chat, msgs, missing.slice(i, i + 3)));
-      }
-      // A keeper that won't write log entries at all is not asked forever.
-      if (parsed.entries.length === count) break;
-    }
-    const order = new Map(replies.map((r, i) => [r.id, i]));
-    parsed.entries = dedupeEntries(parsed.entries).sort((a, b) => order.get(a.id) - order.get(b.id));
-    return parsed;
+    return result;
+  }
+
+  // Ask only for entries about some characters the keeper left out.
+  async function entriesFor(chat, events, story, names) {
+    const user = 'STORY:\n<<<\n' + (story.trim() || chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
+      'EXISTING ENTRIES (for context):\n<<<\n' + entriesForRequest(chat, events, false) + '\n>>>\n\n' +
+      'NEW EVENTS:\n<<<\n' + events + '\n>>>\n\n' +
+      'ENTRIES ONLY: write a complete character entry for each of these characters, who have none yet: ' + names.join(', ') +
+      '. Use everything the story, entries and events say about them. Use the "=== ENTRY: Name | character | aliases: … ===" format. Nothing else.';
+    const out = cleanOutput(await callLLM(updateSystem(), user));
+    return parseKeeperAnswer(out, []).updates;
+  }
+
+  // Job 3: a run of summaries becomes a chapter of the story's history.
+  async function makeChapter(chat, items) {
+    const prev = chat.chapters[chat.chapters.length - 1];
+    const n = chat.chapters.length + 1;
+    const user = (prev ? 'PREVIOUS CHAPTER (' + prev.title + '):\n<<<\n' + prev.text + '\n>>>\n\n' : '') +
+      'EVENTS (oldest first):\n<<<\n' + formatEvents(items) + '\n>>>\n\n' +
+      'JOB: CHAPTER. Write chapter ' + n + ' now.';
+    const out = cleanOutput(await callLLM(chapterSystem(), user));
+    checkStop();
+    const m = out.match(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*CHAPTER\b[^\S\n]*:?([^\n=]*?)[^\S\n]*=+[^\n]*$/im);
+    const title = (m ? m[1] : '').replace(/^\s*\d+\s*[:.–—-]\s*/, '').replace(/[*_#]/g, '').trim();
+    const text = squashRepeats((m ? out.slice(m.index + m[0].length) : out).trim());
+    if (text.length < 80) throw new Error('Memory keeper gave an unusable chapter: "' + out.slice(0, 120) + '"');
+    return { title: title || 'Chapter ' + n, text, ids: items.map((e) => e.id) };
   }
 
   function cloneEntries(entries) {
@@ -1241,32 +1390,67 @@
     return { entries, refused };
   }
 
-  // Ask only for entries about some characters the keeper left out.
-  async function entriesFor(chat, msgs, story, names) {
-    const user = 'STORY:\n<<<\n' + (story.trim() || chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
-      'EXISTING ENTRIES (for context):\n<<<\n' + formatEntries(chat.entries) + '\n>>>\n\n' +
-      'MESSAGES:\n<<<\n' + formatMessages(msgs, chat.title) + '\n>>>\n\n' +
-      'ENTRIES ONLY: write a complete character entry for each of these characters, who have none yet: ' + names.join(', ') +
-      '. Use everything the story, entries and messages say about them. Use the "=== ENTRY: Name | character | aliases: … ===" format. Nothing else.';
-    const out = cleanOutput(await callLLM(systemPrompt(), user));
-    return parseKeeperAnswer(out, []).updates;
+  // Keeps a chat's memory tidy and consistent; returns what it fixed.
+  //  - entries for the same thing (one's name is the other's alias) are merged
+  //  - aliases that repeat the entry's own name or another entry's name go
+  //  - entries the user deleted that came back are removed
+  //  - entries are sorted: characters, places, items, groups, lore
+  //  - a reply has one summary (the longer one), with a valid chapter link
+  const KIND_ORDER = ['character', 'place', 'item', 'group', 'lore'];
+  function organize(chat) {
+    const fixes = [];
+    // Entries
+    const skip = new Set((chat.ignored || []).map((n) => n.toLowerCase()));
+    const kept = [];
+    for (const e of chat.entries) {
+      e.aliases = e.aliases || [];
+      if (!e.always && entryKeys(e).some((k) => skip.has(k.toLowerCase()))) { fixes.push('removed deleted entry ' + e.name); continue; }
+      // Only a name counts: two characters may share a nickname like "babe".
+      const keys = entryKeys(e).map((k) => k.toLowerCase());
+      const twin = kept.find((x) => (x.kind || 'character') === (e.kind || 'character') &&
+        (keys.includes(x.name.toLowerCase()) || entryKeys(x).some((k) => k.toLowerCase() === e.name.toLowerCase())));
+      if (!twin) { kept.push(e); continue; }
+      // Merge: keep the longer text, add lines only the other one has.
+      const [main, other] = twin.text.length >= e.text.length ? [twin.text, e.text] : [e.text, twin.text];
+      const have = new Set(main.split('\n').map((l) => l.trim()).filter(Boolean));
+      const extra = other.split('\n').filter((l) => l.trim() && !have.has(l.trim()));
+      twin.text = main + (extra.length ? '\n' + extra.join('\n') : '');
+      twin.aliases = twin.aliases.concat(entryKeys(e));
+      twin.always = twin.always || e.always;
+      twin.updated = Math.max(twin.updated || 0, e.updated || 0);
+      fixes.push('merged ' + e.name + ' into ' + twin.name);
+    }
+    const names = new Set(kept.map((e) => e.name.toLowerCase()));
+    for (const e of kept) {
+      const seen = new Set([e.name.toLowerCase()]);
+      const before = e.aliases.length;
+      e.aliases = e.aliases.map((a) => String(a).trim()).filter((a) => {
+        const k = a.toLowerCase();
+        if (!a || seen.has(k) || names.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+      if (e.aliases.length < before && fixes.length < 50) fixes.push('cleaned aliases of ' + e.name);
+    }
+    const rank = (e) => { const r = KIND_ORDER.indexOf(e.kind || 'character'); return r < 0 ? KIND_ORDER.length : r; };
+    const sorted = kept.map((e, i) => [e, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map((x) => x[0]);
+    if (sorted.length !== chat.entries.length || sorted.some((e, i) => e !== chat.entries[i])) chat.entries = sorted;
+    // Summaries
+    const best = new Map();
+    for (const e of chat.log) if (!best.has(e.id) || e.text.length > best.get(e.id).text.length) best.set(e.id, e);
+    if (best.size < chat.log.length) {
+      fixes.push('removed ' + (chat.log.length - best.size) + ' duplicate summaries');
+      chat.log = chat.log.filter((e) => best.get(e.id) === e);
+    }
+    for (const e of chat.log) {
+      if (typeof e.folded !== 'boolean') e.folded = !!e.folded;
+      if (e.chapter != null && !(e.chapter >= 0 && e.chapter < chat.chapters.length)) { delete e.chapter; fixes.push('fixed a chapter link'); }
+    }
+    return fixes;
   }
 
-  // Ask only for log entries of some replies (with the user message before each).
-  async function logEntriesFor(chat, msgs, replies) {
-    const parts = [];
-    for (const r of replies) {
-      const i = msgs.indexOf(r);
-      const prevUser = msgs.slice(0, i).reverse().find((m) => m.role === 'user');
-      parts.push(prevUser && !parts.includes(prevUser) ? prevUser : null, r);
-    }
-    const list = parts.filter(Boolean);
-    const user = 'STORY MEMORY (for context only, do not rewrite it):\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
-      'MESSAGES:\n<<<\n' + formatMessages(list, chat.title) + '\n>>>\n\n' +
-      'LOG ENTRIES ONLY: write one log entry for each [R…] reply, in the format "[R1] entry". Nothing else.';
-    const out = cleanOutput(await callLLM(systemPrompt(), user));
-    const logOnly = /^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out;
-    return parseKeeperAnswer(logOnly, list.filter((m) => m.role === 'assistant')).entries;
+  function removeSection(memory, title) {
+    return String(memory || '').replace(new RegExp('^##[^\\S\\n]*' + title + '[^\\n]*\\n[\\s\\S]*?(?=^##\\s|$(?![\\s\\S]))', 'im'), '').trim();
   }
 
   // Split the keeper's answer into the story, new or changed entries, and
@@ -1306,8 +1490,13 @@
         while ((r = LABEL.exec(body))) labels.push({ n: Number(r[1] || r[2]), at: r.index, end: r.index + r[0].length });
         labels.forEach((l, k) => {
           const reply = replies[l.n - 1];
-          const text = body.slice(l.end, k + 1 < labels.length ? labels[k + 1].at : body.length).replace(/\s+/g, ' ').trim();
-          if (reply && text) entries.push({ id: reply.id, text });
+          const raw = body.slice(l.end, k + 1 < labels.length ? labels[k + 1].at : body.length);
+          // "FACTS: …" after the summary: the reply's lasting facts.
+          const f = raw.match(/^[^\S\n]*[*_]*\s*(?:lasting\s+)?facts?(?:\s+to\s+remember)?[*_]*\s*:[*_]*/im);
+          const text = (f ? raw.slice(0, f.index) : raw).replace(/\s+/g, ' ').trim();
+          let facts = f ? raw.slice(f.index + f[0].length).replace(/\s*\n\s*[-*•]?\s*/g, ' | ').replace(/\s+/g, ' ').replace(/^[\s|]+|[\s|]+$/g, '').trim() : '';
+          if (/^(none|n\/?a|nothing( new)?|-+|—)\.?$/i.test(facts)) facts = '';
+          if (reply && text) entries.push(facts ? { id: reply.id, text, facts } : { id: reply.id, text });
         });
       } else {
         const fields = mk.head.replace(/^ENTRY\s*:\s*/i, '').split('|').map((x) => x.trim());
@@ -1326,7 +1515,7 @@
     });
     sections.forEach((x) => { x.text = squashRepeats(x.text); });
     updates.forEach((u) => { u.text = squashRepeats(u.text); });
-    entries.forEach((e) => { e.text = squashRepeats(e.text); });
+    entries.forEach((e) => { e.text = squashRepeats(e.text); if (e.facts) e.facts = squashRepeats(e.facts); });
     return { memory: squashRepeats(cleanOutput(memory)), sections, updates, entries: dedupeEntries(entries), cast };
   }
 
@@ -1379,15 +1568,16 @@
     return older.concat(known);
   }
 
-  // For "Undo last change": the story and all entries as they were.
+  // For "Undo last change": the story, all entries and chapters as they were.
   function snapshot(chat) {
-    return { memory: chat.memory, entries: cloneEntries(chat.entries) };
+    return { memory: chat.memory, entries: cloneEntries(chat.entries), chapters: chat.chapters.map((c) => Object.assign({}, c)) };
   }
 
   function restore(chat, snap) {
     if (typeof snap === 'string') { chat.memory = snap; return; } // older versions kept only the text
     chat.memory = snap.memory;
     chat.entries = cloneEntries(snap.entries || []);
+    if (snap.chapters) chat.chapters = snap.chapters.map((c) => Object.assign({}, c));
   }
 
   // Keeps the phone screen on while an update runs, so it isn't interrupted
@@ -1418,13 +1608,94 @@
     return Object.values(busy).some(Boolean);
   }
 
-  // Fold every not-yet-processed message of a chat into its memory.
-  // Returns 'done', 'stopped', 'failed' or 'skipped'.
+  // ---------------------------------------------------------------------------
+  // The memory pipeline. Every AI reply goes through three stages, and each
+  // log entry records how far it got:
+  //   1. summarised: it has a log entry (summary + facts)
+  //   2. folded:     its facts are in the story sections and entries
+  //   3. chaptered:  it is part of a chapter of the story's history
+  // Each request is a job; finished jobs are saved at once, so stopping or a
+  // failure never loses work, and "Update now" carries on where it stopped.
+  // ---------------------------------------------------------------------------
+
+  const FOLD_MAX = 20;          // summaries folded in one request at most
+  const FOLD_CHARS = 40000;     // …and at most this many characters of them
+
+  function foldEvery() { return Math.max(1, Number(settings.foldEvery) || DEFAULT_SETTINGS.foldEvery); }
+  function chapterSize() { return Math.max(4, Number(settings.chapterSize) || DEFAULT_SETTINGS.chapterSize); }
+  function parallel() { return Math.min(3, Math.max(1, Number(settings.parallel) || 1)); }
+
+  // Where each stage stands.
+  function stages(chat) {
+    return {
+      summaries: chat.log.length,
+      unfolded: chat.log.filter((e) => !e.folded).length,
+      unchaptered: chat.log.filter((e) => e.folded && e.chapter == null).length,
+      chapters: chat.chapters.length,
+    };
+  }
+
+  // The next run of summaries to fold: in story order, within the limits.
+  function nextFold(chat) {
+    const out = [];
+    let size = 0;
+    for (const e of chat.log) {
+      if (e.folded) continue;
+      const len = e.text.length + (e.facts || '').length;
+      if (out.length && (out.length >= FOLD_MAX || size + len > FOLD_CHARS)) break;
+      out.push(e);
+      size += len;
+    }
+    return out;
+  }
+
+  // Roughly how many requests a run will take, for the progress display and
+  // the "catch up?" question.
+  function estimate(chat, todo) {
+    const summaries = chunk(todo, CHUNK_CHARS).length;
+    const replies = todo.filter((m) => m.role === 'assistant').length;
+    const unfolded = stages(chat).unfolded + replies;
+    const folds = Math.ceil(unfolded / FOLD_MAX);
+    const chapters = Math.floor((stages(chat).unchaptered + unfolded) / chapterSize());
+    return { summaries, folds, chapters, total: summaries + folds + chapters };
+  }
+
+  // Runs organize() and records what it fixed in the Activity list.
+  function tidy(chat) {
+    const fixes = organize(chat);
+    chat.checked = Date.now();
+    if (fixes.length) logJob(chat, { kind: 'check', label: 'Tidied the memory: ' + fixes.slice(0, 8).join('; ') + (fixes.length > 8 ? '; …' : ''), ok: true, ms: 0 });
+    return fixes;
+  }
+
+  // A record of each job, newest first, for the Activity list.
+  function logJob(chat, job) {
+    chat.jobs = [Object.assign({ at: Date.now() }, job)].concat(chat.jobs || []).slice(0, 40);
+  }
+
+  function setStep(id, text) {
+    if (progress[id]) progress[id].step = text;
+    renderPanel();
+  }
+
+  // Positions of log entries as numbers people can read (#1 = first reply).
+  function replyRange(chat, items) {
+    const at = (e) => chat.log.indexOf(e) + 1;
+    const a = at(items[0]);
+    const b = at(items[items.length - 1]);
+    return a === b ? 'reply ' + a : 'replies ' + a + '–' + b;
+  }
+
+  // Runs the whole pipeline for a chat: summarise new replies, fold them in,
+  // write chapters. all = fold everything waiting now (not only every
+  // foldEvery replies). Returns 'done', 'stopped', 'failed' or 'skipped'.
   async function updateMemory(id, msgs, { force = false } = {}) {
     const chat = await getChat(id, true);
     if (busy[id] || (!chat.enabled && !force)) return 'skipped';
     const todo = unprocessed(chat, msgs);
-    if (!todo.length) return 'skipped';
+    const st = stages(chat);
+    const foldDue = st.unfolded && (force || st.unfolded >= foldEvery() || !chat.memory.trim());
+    if (!todo.length && !foldDue && st.unchaptered < chapterSize()) return 'skipped';
     busy[id] = true;
     keepAwake(true);
     stopRequested[id] = false;
@@ -1432,28 +1703,61 @@
     chat.backlog = null;
     setStatus();
     const before = snapshot(chat);
-    const parts = chunk(todo, CHUNK_CHARS);
-    progress[id] = { done: 0, total: parts.length };
+    progress[id] = { done: 0, total: estimate(chat, todo).total, step: 'Starting…' };
     renderPanel();
-    try {
-      for (const part of parts) {
-        checkStop();
-        const result = await mergeIntoMemory(chat, part);
-        chat.memory = result.memory;
-        const applied = applyUpdates(chat.entries, result.updates, chat.ignored);
-        if (applied.refused.length) toast('Kept the fuller version of: ' + applied.refused.join(', '));
-        // One entry per reply; a regenerated or re-read reply replaces its old entry.
-        const ids = new Set(result.entries.map((e) => e.id));
-        chat.log = sortLog(chat.log.filter((e) => !ids.has(e.id)).concat(result.entries), msgs);
-        chat.processedIds = chat.processedIds.concat(part.map((m) => m.id)).slice(-300);
-        chat.processedCount = msgs.indexOf(part[part.length - 1]) + 1;
-        chat.readCount = (chat.readCount || 0) + part.length;
-        chat.lastUpdate = Date.now();
-        chat.lastError = '';
+    const job = async (kind, label, fn) => {
+      const t0 = Date.now();
+      setStep(id, label + '…');
+      try {
+        const r = await fn();
+        logJob(chat, { kind, label, ok: true, ms: Date.now() - t0 });
         progress[id].done++;
+        return r;
+      } catch (e) {
+        if (!e.stopped) logJob(chat, { kind, label, ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) });
+        throw e;
+      }
+    };
+    try {
+      // 1. Summaries, a few requests at a time when allowed.
+      const parts = chunk(todo, CHUNK_CHARS);
+      const P = parallel();
+      let next = chat.log.length;
+      for (let i = 0; i < parts.length; i += P) {
+        checkStop();
+        const wave = parts.slice(i, i + P);
+        const labels = wave.map((part) => {
+          const n = part.filter((m) => m.role === 'assistant').length;
+          const label = 'Summarised ' + (n ? (n === 1 ? 'reply ' + (next + 1) : 'replies ' + (next + 1) + '–' + (next + n)) : 'messages');
+          next += n;
+          return label;
+        });
+        const results = await Promise.allSettled(wave.map((part, k) => (part.some((m) => m.role === 'assistant')
+          ? job('summarise', labels[k], () => summarise(chat, part, k)) : Promise.resolve([]))));
+        // Kept in order up to the first failure, so nothing is skipped.
+        let failure = null;
+        for (let k = 0; k < wave.length; k++) {
+          if (results[k].status === 'rejected') { failure = results[k].reason; break; }
+          const got = results[k].value.map((e) => Object.assign(e, { folded: false }));
+          const ids = new Set(got.map((e) => e.id));
+          // A regenerated or re-read reply replaces its old summary.
+          chat.log = sortLog(chat.log.filter((e) => !ids.has(e.id)).concat(got), msgs);
+          chat.processedIds = chat.processedIds.concat(wave[k].map((m) => m.id)).slice(-300);
+          chat.processedCount = msgs.indexOf(wave[k][wave[k].length - 1]) + 1;
+          chat.readCount = (chat.readCount || 0) + wave[k].length;
+          chat.lastUpdate = Date.now();
+          chat.lastError = '';
+        }
         await saveChat(chat);
         renderPanel();
+        if (failure) throw failure;
+        // During a long catch-up, keep the story and entries up to date as it goes.
+        await foldAndChapter(chat, FOLD_MAX, job);
       }
+      // 2 + 3. Fold what is due (all of it when asked, or for a new story),
+      // then write the chapters that are complete.
+      await foldAndChapter(chat, force || !chat.memory.trim() ? 1 : foldEvery(), job);
+      tidy(chat);
       if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) {
         chat.history = [before].concat(chat.history).slice(0, 5);
       }
@@ -1479,6 +1783,40 @@
       if (activeChatId === id) activeChatId = null;
       delete progress[id];
       setStatus();
+      renderPanel();
+    }
+  }
+
+  // Folds waiting summaries into the story and entries once at least
+  // `threshold` are waiting, then writes the chapters that are complete.
+  async function foldAndChapter(chat, threshold, job) {
+    while (stages(chat).unfolded && stages(chat).unfolded >= threshold) {
+      const items = nextFold(chat);
+      checkStop();
+      const r = await job('update', 'Updated story & characters from ' + replyRange(chat, items), () => fold(chat, items));
+      chat.memory = r.memory;
+      const applied = applyUpdates(chat.entries, r.updates, chat.ignored);
+      if (applied.refused.length) toast('Kept the fuller version of: ' + applied.refused.join(', '));
+      for (const e of items) e.folded = true;
+      chat.lastUpdate = Date.now();
+      chat.lastError = '';
+      await saveChat(chat);
+      renderPanel();
+      await writeChapters(chat, job);
+    }
+    await writeChapters(chat, job);
+  }
+
+  async function writeChapters(chat, job) {
+    for (;;) {
+      const ready = chat.log.filter((e) => e.folded && e.chapter == null);
+      if (ready.length < chapterSize()) return;
+      const items = ready.slice(0, chapterSize());
+      checkStop();
+      const ch = await job('chapter', 'Wrote chapter ' + (chat.chapters.length + 1) + ' (' + replyRange(chat, items) + ')', () => makeChapter(chat, items));
+      chat.chapters.push(ch);
+      for (const e of items) e.chapter = chat.chapters.length - 1;
+      await saveChat(chat);
       renderPanel();
     }
   }
@@ -1756,8 +2094,9 @@
     }
     // Catching up on many messages takes many requests: only when asked.
     const todo = unprocessed(chat, usable);
-    const requests = chunk(todo, CHUNK_CHARS).length;
-    if (requests > AUTO_MAX_REQUESTS) {
+    const plan = estimate(chat, todo);
+    const requests = plan.total;
+    if (plan.summaries > AUTO_MAX_REQUESTS) {
       const was = chat.backlog && chat.backlog.messages;
       chat.backlog = { messages: todo.length, requests };
       await saveChat(chat);
@@ -1810,16 +2149,16 @@
 
   const ready = (async () => {
     settings = Object.assign({}, DEFAULT_SETTINGS, await Store.get('settings', {}));
-    // Memories used to be much shorter; move the old default up.
-    if ([3000, 5000, 8000].includes(settings.maxChars)) settings.maxChars = DEFAULT_SETTINGS.maxChars;
     if (settings.injectBudget === 16000) settings.injectBudget = DEFAULT_SETTINGS.injectBudget;
     // Helper chats used to be kept forever, until they got too long for the bot.
     if (!settings.rotateSet) { settings.helperRotate = DEFAULT_SETTINGS.helperRotate; settings.rotateSet = true; }
     if (!DETAIL[settings.detail]) settings.detail = DEFAULT_SETTINGS.detail;
     chatIndex = await Store.get('chatIndex', []);
     learned = await Store.get('learned', null);
-    helperChat = await Store.get('helperChat', null);
-    if (helperChat) helperIds.add(helperChat.id);
+    for (let slot = 0; slot < 3; slot++) {
+      helperChats[slot] = await Store.get(helperKey(slot), null);
+      if (helperChats[slot]) helperIds.add(helperChats[slot].id);
+    }
     for (const id of chatIndex) await getChat(id, false);
     publishInjectMap();
   })();
@@ -2151,16 +2490,19 @@
     });
 
     const editors = chat.entries.map((e) => entryEditor(chat, e));
+    const chapterEds = chat.chapters.map((c, i) => chapterEditor(c, i));
 
     const save = async (quiet) => {
       const snap = snapshot(chat);
       chat.pinned = pinned.value;
       chat.memory = mem.value;
       for (const ed of editors) ed.apply();
+      for (const ed of chapterEds) ed.apply();
       for (const e of chat.entries.filter((x) => x.deleted)) {
         for (const n of entryKeys(e)) if (!chat.ignored.includes(n.toLowerCase())) chat.ignored.push(n.toLowerCase());
       }
       chat.entries = chat.entries.filter((e) => !e.deleted && (e.name.trim() || e.text.trim()));
+      tidy(chat);
       if (JSON.stringify(snap) !== JSON.stringify(snapshot(chat))) chat.history = [snap].concat(chat.history).slice(0, 5);
       await saveChat(chat);
       if (quiet !== true) toast('Saved');
@@ -2186,7 +2528,7 @@
           return;
         }
         if (rebuild) {
-          const parts = chunk(msgs, CHUNK_CHARS).length;
+          const parts = estimate(newChat(chat.id), msgs).total;
           const cost = settings.provider === 'miniapps'
             ? ' Each one uses MiniApps credits.'
             : '';
@@ -2199,6 +2541,7 @@
           chat.history = [old.snap].concat(chat.history).slice(0, 5);
           chat.memory = '';
           chat.entries = chat.entries.filter((e) => e.always);
+          chat.chapters = [];
           chat.log = [];
           chat.processedIds = [];
           chat.processedCount = 0;
@@ -2226,7 +2569,7 @@
           }
           renderPanel(true);
           return;
-        } else if (!unprocessed(chat, msgs).length) {
+        } else if (!unprocessed(chat, msgs).length && !stages(chat).unfolded) {
           toast('Memory is already up to date (' + msgs.length + ' messages checked)');
           return;
         }
@@ -2234,6 +2577,35 @@
         if (status === 'done') toast('Memory updated');
       } catch (e) {
         toast(String(e.message || e), true);
+      }
+      renderPanel(true);
+    };
+
+    // Redo the story, entries and chapters from the summaries already in the
+    // log, without reading the chat again (much cheaper than a rebuild).
+    const redoFromSummaries = async () => {
+      if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+      if (!chat.log.length) { toast('There are no reply summaries yet.'); return; }
+      const n = Math.ceil(chat.log.length / FOLD_MAX) + Math.floor(chat.log.length / chapterSize());
+      if (!confirm('Rewrite the story, the entries and the chapters from the ' + chat.log.length + ' reply summaries? This takes about ' + n +
+        ' memory-keeper requests. The summaries themselves, pinned facts and entries marked "Always send" are kept.')) return;
+      await save(true);
+      const old = { snap: snapshot(chat), log: chat.log.map((e) => Object.assign({}, e)) };
+      chat.history = [old.snap].concat(chat.history).slice(0, 5);
+      chat.memory = '';
+      chat.entries = chat.entries.filter((e) => e.always);
+      chat.chapters = [];
+      for (const e of chat.log) { e.folded = false; delete e.chapter; }
+      await saveChat(chat);
+      const status = await updateMemory(chat.id, [], { force: true });
+      if ((status === 'failed' || status === 'stopped') && stages(chat).unfolded === chat.log.length) {
+        restore(chat, old.snap);
+        chat.log = old.log;
+        chat.history.shift();
+        await saveChat(chat);
+        toast(status === 'stopped' ? 'Stopped, so the previous memory was kept.' : 'Failed, so the previous memory was kept: ' + chat.lastError, status !== 'stopped');
+      } else if (status === 'done') {
+        toast('Story, entries and chapters rewritten from the summaries');
       }
       renderPanel(true);
     };
@@ -2247,6 +2619,7 @@
     };
 
     const total = chat.knownMessages || 0;
+    const st = stages(chat);
     const inPlay = entriesInPlay(chat).map((e) => e.name);
     return el('div', {},
       el('div', { class: 'status' },
@@ -2254,18 +2627,28 @@
         el('div', {}, 'Messages in memory: ', el('b', {}, String(chat.readCount || chat.processedCount)), total ? ' of ' + total : '',
           ' · Last update: ', el('b', {}, ago(chat.lastUpdate))),
         lastSentInfo[chat.id] ? el('div', {}, 'Last message carried: ' + lastSentInfo[chat.id]) : null,
-        isBusy ? el('div', {}, '⏳ Updating memory…' + (progress[chat.id] && progress[chat.id].total > 1
-          ? ' (request ' + Math.min(progress[chat.id].done + 1, progress[chat.id].total) + ' of ' + progress[chat.id].total + ')' : ''),
-          ' ', el('button', { class: 'btn', onclick: () => { stopRequested[chat.id] = true; toast('Stopping…'); } }, '■ Stop')) : null,
+        el('div', {}, 'Reply summaries: ', el('b', {}, String(st.summaries)),
+          st.unfolded ? ' (' + st.unfolded + ' waiting to go into the story & characters)' : '',
+          ' · Chapters: ', el('b', {}, String(st.chapters)),
+          st.summaries ? ' (next after ' + Math.max(0, chapterSize() - st.unchaptered - st.unfolded) + ' more replies)' : ''),
+        isBusy ? el('div', {}, '⏳ ' + ((progress[chat.id] && progress[chat.id].step) || 'Updating memory…') +
+          (progress[chat.id] && progress[chat.id].total > 1
+            ? ' (step ' + Math.min(progress[chat.id].done + 1, progress[chat.id].total) + ' of about ' + Math.max(progress[chat.id].total, progress[chat.id].done + 1) + ')' : ''),
+          ' ', el('button', { class: 'btn', onclick: () => { stopRequested[chat.id] = true; toast('Stopping after the current request…'); } }, '■ Stop')) : null,
         !isBusy && chat.backlog ? el('div', { class: 'error' }, '⚠ ' + chat.backlog.messages + ' messages are not in the memory yet (about ' +
           chat.backlog.requests + ' requests). Tap "Update now" to read them.') : null,
         chat.lastError ? el('div', { class: 'error' }, '⚠ ' + chat.lastError) : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),
       el('label', {}, '📌 Pinned facts (never changed automatically, always sent)'),
       pinned,
-      el('label', {}, '📖 The story (big picture, current scene, open threads; always sent)'),
+      el('label', {}, '📖 The story now (current scene, open threads, world & timeline; always sent)'),
       mem,
       el('div', { class: 'hint' }, mem.value.length + ' characters.'),
+      el('label', {}, '📚 Chapters (' + chat.chapters.length + ')'),
+      el('div', { class: 'hint' }, chat.chapters.length
+        ? 'The story\'s history. The newest chapters are sent in full, older ones by title once they no longer fit.'
+        : 'Every ' + chapterSize() + ' AI replies become a chapter of the story\'s history.'),
+      chapterEds.map((ed) => ed.node),
       el('label', {}, '👥 Entries (' + chat.entries.length + ')'),
       el('div', { class: 'hint' }, inPlay.length
         ? 'In play right now (sent with every message): ' + inPlay.join(', ') + '. Others are sent when your message mentions them.'
@@ -2278,8 +2661,11 @@
       el('div', { class: 'btns' },
         el('button', { class: 'btn primary', onclick: save }, 'Save'),
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(false) }, 'Update now'),
-        el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat'),
         el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')),
+      el('div', { class: 'btns' },
+        el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: redoFromSummaries }, 'Redo story & characters from summaries'),
+        el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat')),
+      activityView(chat),
       diagnosticsBox());
   }
 
@@ -2319,20 +2705,54 @@
     };
   }
 
+  // One collapsible chapter in the panel. apply() copies the edits into it.
+  function chapterEditor(c, i) {
+    const title = el('input', { value: c.title });
+    const text = el('textarea', { class: 'entry' });
+    text.value = c.text;
+    const node = el('details', { class: 'entrybox' },
+      el('summary', {}, 'Chapter ' + (i + 1) + ': ' + c.title + ' · ' + (c.ids ? c.ids.length + ' replies · ' : '') + c.text.length + ' chars'),
+      el('label', {}, 'Title'), title,
+      el('label', {}, 'Summary'), text);
+    return {
+      node,
+      apply() {
+        c.title = title.value.trim() || c.title;
+        c.text = text.value;
+      },
+    };
+  }
+
+  // What the memory keeper did, newest first.
+  function activityView(chat) {
+    const jobs = chat.jobs || [];
+    const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const dur = (ms) => (ms >= 60000 ? Math.round(ms / 60000) + ' min' : Math.round(ms / 1000) + ' s');
+    return el('details', { class: 'entrybox' },
+      el('summary', {}, '🗒 Activity (' + jobs.length + ' recent jobs' + (jobs.some((j) => !j.ok) ? ', some failed' : '') + ')'),
+      jobs.length
+        ? el('div', { class: 'hint' }, ...jobs.map((j) => el('div', {}, time(j.at) + ' ' + (j.ok ? '✓ ' : '✗ ') + j.label +
+          ' (' + dur(j.ms || 0) + ')' + (j.error ? ': ' + j.error : ''))))
+        : el('div', { class: 'hint' }, 'Nothing yet.'));
+  }
+
   let hookStats = null;
   on('stats', (d) => { hookStats = d; });
 
   // The reply-by-reply log, newest first; read-only (Rebuild redoes it).
   function logView(chat) {
     const box = el('textarea', { readonly: true, class: 'log' });
+    // ⏳ = not yet in the story & characters; 📚n = part of chapter n.
     box.value = chat.log.length
-      ? chat.log.slice().reverse().map((e, i) => '#' + (chat.log.length - i) + '  ' + e.text).join('\n\n')
+      ? chat.log.slice().reverse().map((e, i) => '#' + (chat.log.length - i) +
+        (!e.folded ? ' ⏳' : e.chapter != null ? ' 📚' + (e.chapter + 1) : '') + '  ' + e.text +
+        (e.facts ? '\n   Facts: ' + e.facts : '')).join('\n\n')
       : 'Each AI reply gets a detailed summary here as the story goes on.';
     const attached = Math.min(chat.log.length, Math.max(0, Number(settings.logAttach) || 0));
     return el('div', {},
       el('label', {}, '📜 Reply-by-reply log (' + chat.log.length + ' entries, newest first)'),
       box,
-      el('div', { class: 'hint' }, 'The latest ' + attached + ' of these are attached to your messages in full.'));
+      el('div', { class: 'hint' }, 'Everything since the last chapter (at least the latest ' + attached + ') is attached to your messages, newest first, as far as the space allows. ⏳ = not yet in the story & characters; 📚 = in that chapter.'));
   }
 
   function diagnosticsText() {
@@ -2347,13 +2767,21 @@
         (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · in memory: ' + (chat.readCount || chat.processedCount) : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider + (settings.provider === 'miniapps' ? ' (' + settings.miniappsSlug + ')' : ''),
-      'Helper chat: ' + (helperChat ? helperChat.id.slice(0, 8) + ', ' + helperChat.uses + ' requests' : 'none yet') +
+      'Helper chat: ' + (helperChats.some(Boolean) ? helperChats.map((h, i) => (h ? (i ? 'slot ' + i + ' ' : '') + h.id.slice(0, 8) + ', ' + h.uses + ' requests' : '')).filter(Boolean).join(' · ') : 'none yet') +
         (helperWait ? ' · last wait: ' + Math.round((Date.now() - helperWait.started) / 1000) + 's ago started, messages ' + (helperWait.roles || '-') +
           ', request ' + (helperWait.requestFound ? 'found' : 'not found') + ', new answers ' + helperWait.newAnswers +
           (helperWait.readOk ? '' : ', last read failed') + ', answer ' + helperWait.answerChars + ' chars' +
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
-      'Memory size: ' + (chat ? 'story ' + chat.memory.length + ' characters · ' + chat.entries.length + ' entries, ' +
+      'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + chat.log.filter((e) => e.facts).length + ' with facts), ' +
+        st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +
+        ' · settings: summaries every ' + settings.updateEvery + ', story & characters every ' + foldEvery() + ', chapter every ' + chapterSize() +
+        ', ' + parallel() + ' at once, detail ' + settings.detail; })() : 'no chat'),
+      'Last tidy-up: ' + (chat && chat.checked ? ago(chat.checked) : 'never') +
+        (chat && chat.jobs ? ' · ' + ((chat.jobs.find((j) => j.kind === 'check') || {}).label || 'nothing needed fixing') : ''),
+      'Recent jobs: ' + (chat && chat.jobs && chat.jobs.length ? chat.jobs.slice(0, 6).map((j) => (j.ok ? '✓ ' : '✗ ') + j.label +
+        ' ' + Math.round((j.ms || 0) / 1000) + 's' + (j.error ? ' (' + j.error.slice(0, 80) + ')' : '')).join(' · ') : 'none'),
+      'Memory size: ' + (chat ? 'story ' + chat.memory.length + ' characters · chapters ' + chat.chapters.reduce((n, c) => n + c.text.length, 0) + ' characters · ' + chat.entries.length + ' entries, ' +
         chat.entries.reduce((n, e) => n + e.text.length, 0) + ' characters' +
         (chat.entries.length ? ' (longest: ' + chat.entries.reduce((a, b) => (b.text.length > a.text.length ? b : a)).name + ', ' +
           Math.max(...chat.entries.map((e) => e.text.length)) + ')' : '') +
@@ -2509,9 +2937,11 @@
     f.miniappsSlug = el('input', { value: s.miniappsSlug, placeholder: 'claude-37' });
     f.helperRotate = el('input', { type: 'number', min: '0', value: String(s.helperRotate) });
     f.updateEvery = el('input', { type: 'number', min: '1', value: String(s.updateEvery) });
+    f.foldEvery = el('input', { type: 'number', min: '1', value: String(s.foldEvery) });
+    f.chapterSize = el('input', { type: 'number', min: '4', value: String(s.chapterSize) });
+    f.parallel = el('select', {}, ...[1, 2, 3].map((n) => el('option', { value: String(n), selected: Number(s.parallel) === n ? '' : null }, String(n))));
     f.injectEvery = el('input', { type: 'number', min: '0', value: String(s.injectEvery) });
     f.detail = el('select', {}, ...Object.entries(DETAIL).map(([k, d]) => el('option', { value: k, selected: s.detail === k ? '' : null }, d.label)));
-    f.maxChars = el('input', { type: 'number', min: '500', step: '250', value: String(s.maxChars) });
     f.logAttach = el('input', { type: 'number', min: '0', value: String(s.logAttach) });
     f.injectBudget = el('input', { type: 'number', min: '2000', step: '1000', value: String(s.injectBudget) });
     f.autoEnable = el('input', { type: 'checkbox', id: 'smx-auto' });
@@ -2548,9 +2978,11 @@
       helperRotate: Math.max(0, parseInt(f.helperRotate.value, 10) || 0),
       rotateSet: true,
       updateEvery: Math.max(1, parseInt(f.updateEvery.value, 10) || 1),
+      foldEvery: Math.max(1, parseInt(f.foldEvery.value, 10) || DEFAULT_SETTINGS.foldEvery),
+      chapterSize: Math.max(4, parseInt(f.chapterSize.value, 10) || DEFAULT_SETTINGS.chapterSize),
+      parallel: Math.min(3, Math.max(1, parseInt(f.parallel.value, 10) || 1)),
       injectEvery: Math.max(0, parseInt(f.injectEvery.value, 10) || 0),
       detail: f.detail.value,
-      maxChars: Math.max(500, parseInt(f.maxChars.value, 10) || DEFAULT_SETTINGS.maxChars),
       logAttach: Math.max(0, parseInt(f.logAttach.value, 10) || 0),
       injectBudget: Math.max(2000, parseInt(f.injectBudget.value, 10) || DEFAULT_SETTINGS.injectBudget),
       autoEnable: f.autoEnable.checked,
@@ -2604,11 +3036,15 @@
     return el('div', {},
       el('label', {}, 'Memory keeper AI'), providerSel,
       keyBox, baseBox, slugBox,
-      el('label', {}, 'Update the memory every … AI replies'), f.updateEvery,
+      el('label', {}, 'Summarise new AI replies every … replies'), f.updateEvery,
+      el('label', {}, 'Update the story & characters every … AI replies'), f.foldEvery,
+      el('div', { class: 'hint' }, 'The newest reply summaries are always sent with your messages, so the story & characters can be updated less often. Update now does it straight away.'),
+      el('label', {}, 'Chapter length (AI replies)'), f.chapterSize,
+      el('label', {}, 'Summary requests that may run at the same time'), f.parallel,
+      el('div', { class: 'hint' }, 'More than 1 makes catching up faster, each in its own helper chat. If the bot starts failing, set it back to 1.'),
       el('label', {}, 'Attach the memory to every … messages you send (0 = never)'), f.injectEvery,
       el('label', {}, 'Summary detail'), f.detail,
       el('div', { class: 'hint' }, 'How long reply summaries and character entries are. Standard: 300–1,500 characters per reply summary. Detailed: 700–3,000. Maximum: 1,200–5,000. More detail needs more memory-keeper requests (each one covers fewer replies). Summaries already written stay as they are; Rebuild from whole chat rewrites them.'),
-      el('label', {}, 'Story entry size (characters)'), f.maxChars,
       el('label', {}, 'Most characters attached to one message'), f.injectBudget,
       el('div', { class: 'hint' }, 'The story and entries in play are always attached; entries your message mentions and the newest reply summaries fill the rest of this space.'),
       el('label', {}, 'Detailed reply summaries attached to each message'), f.logAttach,

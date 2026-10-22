@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.7.0
+// @version      2.7.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -480,7 +480,15 @@
     if (chats[id]) return chats[id];
     const saved = await Store.get('chat:' + id, null);
     if (saved) {
-      chats[id] = Object.assign(newChat(id), saved);
+      const chat = chats[id] = Object.assign(newChat(id), saved);
+      // Older versions could save a looping answer; clean it up once.
+      if ((chat.repaired || 0) < 1) {
+        const before = JSON.stringify([chat.memory, chat.entries, chat.log]).length;
+        const changed = repairChat(chat);
+        chat.repaired = 1;
+        await saveChat(chat);
+        if (changed) toast('Removed ' + Math.round((before - JSON.stringify([chat.memory, chat.entries, chat.log]).length) / 1000) + 'k characters of repeated text from this chat\'s memory.');
+      }
       return chats[id];
     }
     if (!create) return null;
@@ -894,8 +902,8 @@
       const ce = chatErrors[cid];
       if (ce && ce.at >= started) {
         const err = new Error('The MiniApps bot reported an error' + (ce.error ? ': ' + ce.error : '') + (ce.code ? ' (' + ce.code + ')' : '') + '.');
-        err.botError = true;
-        err.reused = reuse;
+        // A fresh chat doesn't help when the request itself is too long.
+        err.botError = !TOO_LONG_RE.test(ce.error || '');
         throw err;
       }
       let msgs = [];
@@ -1061,6 +1069,38 @@
     return out;
   }
 
+  // Removes text the keeper repeated over and over (a bot stuck in a loop):
+  // a passage repeated back to back, and lines or sentences that already
+  // appeared earlier in the same text. Normal text is left as it is.
+  function squashRepeats(t) {
+    t = String(t || '');
+    if (t.length < 300) return t;
+    if (t.length < 300000) t = t.replace(/([^\n]{8,300}?)(?:\s*\1){2,}/g, '$1');
+    const lines = new Set();
+    const sentences = new Set();
+    const keep = (set, x, min) => {
+      const k = x.trim().toLowerCase();
+      if (k.length < min) return true;
+      if (set.has(k)) return false;
+      set.add(k);
+      return true;
+    };
+    return t.split('\n')
+      .filter((line) => keep(lines, line, 15))
+      .map((line) => (line.length < 200 ? line : line.split(/(?<=[.!?…])\s+/).filter((x) => keep(sentences, x, 25)).join(' ')))
+      .join('\n').replace(/\n{3,}/g, '\n\n');
+  }
+
+  // Cleans repeated text out of a chat's saved memory. Returns true if anything changed.
+  function repairChat(chat) {
+    let changed = false;
+    const fix = (t) => { const c = squashRepeats(t); if (c !== t) changed = true; return c; };
+    chat.memory = fix(chat.memory);
+    for (const e of chat.entries) e.text = fix(e.text);
+    for (const e of chat.log) e.text = fix(e.text);
+    return changed;
+  }
+
   function cleanOutput(t) {
     return String(t || '').replace(/^```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/i, '').replace(MEM_BLOCK_RE, '').trim();
   }
@@ -1075,9 +1115,35 @@
     return story.length + entries.reduce((n, e) => n + e.text.length, 0);
   }
 
-  async function mergeIntoMemory(chat, msgs) {
+  // Errors that mean the request was too long for the bot.
+  const TOO_LONG_RE = /context (length|window)|maximum context|too many tokens|reduce the length|prompt is too long|input is too long/i;
+
+  // When the entries are very long (or the bot said the request is too
+  // long), only the entries the new messages involve are sent in full.
+  function entriesForRequest(chat, msgs, compact) {
+    const all = formatEntries(chat.entries);
+    if (!compact && all.length <= 40000) return all;
+    const text = sectionOf(chat.memory, 'Current Scene') + '\n' + msgs.map((m) => m.text).join('\n');
+    const shown = chat.entries.filter((e) => e.always || entryKeys(e).some((k) => mentions(text, k)));
+    const others = chat.entries.filter((e) => !shown.includes(e)).map((e) => e.name);
+    return formatEntries(shown) + (others.length
+      ? '\n\nOTHER ENTRIES (not involved in the new messages; listed by name only; do not output them): ' + others.join(', ')
+      : '');
+  }
+
+  async function mergeIntoMemory(chat, msgs, compact) {
+    try {
+      return await mergeIntoMemoryOnce(chat, msgs, compact);
+    } catch (e) {
+      if (compact || !TOO_LONG_RE.test(String(e.message || e))) throw e;
+      toast('The request was too long for the bot; sending only the entries these messages involve.', true);
+      return mergeIntoMemoryOnce(chat, msgs, true);
+    }
+  }
+
+  async function mergeIntoMemoryOnce(chat, msgs, compact) {
     const user = 'CURRENT STORY (' + chat.memory.trim().length + ' characters):\n<<<\n' + (chat.memory.trim() || '(empty — this is the start)') + '\n>>>\n\n' +
-      'CURRENT ENTRIES:\n<<<\n' + formatEntries(chat.entries) + '\n>>>\n\n' +
+      'CURRENT ENTRIES:\n<<<\n' + entriesForRequest(chat, msgs, compact) + '\n>>>\n\n' +
       (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true, do not repeat them):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
       (chat.ignored.length ? 'NEVER write entries for (the user removed them): ' + chat.ignored.join(', ') + '\n\n' : '') +
       'NEW MESSAGES (oldest first):\n<<<\n' + formatMessages(msgs, chat.title) + '\n>>>\n\n' +
@@ -1258,7 +1324,10 @@
         if (name && body) updates.push({ name, kind, aliases, text: body });
       }
     });
-    return { memory: cleanOutput(memory), sections, updates, entries: dedupeEntries(entries), cast };
+    sections.forEach((x) => { x.text = squashRepeats(x.text); });
+    updates.forEach((u) => { u.text = squashRepeats(u.text); });
+    entries.forEach((e) => { e.text = squashRepeats(e.text); });
+    return { memory: squashRepeats(cleanOutput(memory)), sections, updates, entries: dedupeEntries(entries), cast };
   }
 
   // The story is "## Title" sections. Applies the keeper's changed sections:
@@ -2284,6 +2353,11 @@
           (helperWait.readOk ? '' : ', last read failed') + ', answer ' + helperWait.answerChars + ' chars' +
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
+      'Memory size: ' + (chat ? 'story ' + chat.memory.length + ' characters · ' + chat.entries.length + ' entries, ' +
+        chat.entries.reduce((n, e) => n + e.text.length, 0) + ' characters' +
+        (chat.entries.length ? ' (longest: ' + chat.entries.reduce((a, b) => (b.text.length > a.text.length ? b : a)).name + ', ' +
+          Math.max(...chat.entries.map((e) => e.text.length)) + ')' : '') +
+        ' · log ' + chat.log.length + ' entries, ' + chat.log.reduce((n, e) => n + e.text.length, 0) + ' characters' : 'no chat'),
       'Last chat error from MiniApps: ' + (lastChatError ? (lastChatError.helper ? 'helper chat, ' : 'story chat, ') +
         Math.round((Date.now() - lastChatError.at) / 1000) + 's ago: ' + (lastChatError.error || '(no message)') + (lastChatError.code ? ' · code ' + lastChatError.code : '') : 'none'),
       'Messages sent on this page: ' + sentStats.sent + ' · with memory attached: ' + sentStats.withMemory +

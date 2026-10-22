@@ -77,6 +77,7 @@ async function main() {
   let liveWs = null;
   let helperBroken = false;  // makes the MiniApps-bot memory keeper fail
   let helperDelay = 500;
+  let helperMaxChars = 0;      // longer requests get a "context length" chat error (0 = no limit)
   let helperRunaway = false;   // the bot writes a good start, then repeats itself forever
   let helperChatError = false; // the existing helper chat answers with a "ce" error event     // how long the MiniApps-bot memory keeper takes to answer
   const aborts = [];         // POST /chat/abort bodies         // the page's fake Socket.IO connection, once open
@@ -196,7 +197,9 @@ async function main() {
         : { id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
       conv.messages.push(userMsg);
       added.push(userMsg);
-      if (body.toolId === 'tool-helper' && helperRunaway) {
+      if (body.toolId === 'tool-helper' && helperMaxChars && text.length > helperMaxChars) {
+        setTimeout(() => liveWs && liveWs.send('42["ce",' + JSON.stringify({ conversationId: id, requestId: body.requestId, messageId: userMsg.id, replyToMessageId: null, error: "This endpoint's maximum context length is 163840 tokens. However, you requested about 170117 tokens. Please reduce the length of either one", code: 'error' }) + ']'), 300);
+      } else if (body.toolId === 'tool-helper' && helperRunaway) {
         llmCalls.push(text);
         const full = keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)');
         const pieces = full.match(/[\s\S]{1,40}/g);
@@ -708,6 +711,38 @@ async function main() {
   const afterLoop = await keyNow();
   check(aborts.length > abortsBefore, 'MiniApps asked to stop the looping answer');
   check(!afterLoop.lastError && /via MiniApps bot/.test(afterLoop.memory) && !/over and over/.test(JSON.stringify(afterLoop)), 'the good part of the answer was used, without the repetition' + (afterLoop.lastError ? ' (got: ' + afterLoop.lastError + ')' : ''));
+
+  console.log('30) Repeated text in a saved memory is cleaned up; a too-long request is sent again smaller');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+  await page.evaluate(() => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    c.memory = '## Story So Far\n- update 1 (via MiniApps bot)\n- She moaned his name again and again. ' + 'She moaned his name again and again. '.repeat(3000) + '\n## Current Scene\n- Mira and Ash rest by the river.';
+    c.entries.push({ name: 'Archive', kind: 'place', aliases: [], always: false, updated: 1,
+      text: Array.from({ length: 600 }, (_, i) => '- Fact ' + i + ' about shelf ' + (i * 7919 % 1000) + ' of the archive.').join('\n') });
+    delete c.repaired;
+    localStorage.setItem(key, JSON.stringify(c));
+  });
+  await page.reload();
+  await page.waitForTimeout(1500);
+  const repaired = await keyNow();
+  check(repaired.memory.length < 400 && /update 1/.test(repaired.memory) && /Current Scene/.test(repaired.memory), 'looping text removed from the saved story (now ' + repaired.memory.length + ' characters), real content kept');
+  check(repaired.entries.find((e) => e.name === 'Archive').text.split('\n').length === 600, 'normal long entries left alone');
+  await page.evaluate(() => window.wsLoad());
+  // Let an update that started on load finish first.
+  for (let n = -1; n !== llmCalls.length;) { n = llmCalls.length; await page.waitForTimeout(15000); }
+  const callsBeforeBig = llmCalls.length;
+  const bodiesBeforeBig = chatBodies.length;
+  const beforeBig = await keyNow();
+  helperMaxChars = 25000;
+  await page.evaluate(() => window.sendMsg('We search the tower.'));
+  await page.evaluate(() => window.sendMsg('We find a map.'));
+  await waitFor(async () => { const c = await keyNow(); return c.lastUpdate !== beforeBig.lastUpdate || c.lastError !== beforeBig.lastError; }, 120000, 'update after a too-long request');
+  helperMaxChars = 0;
+  const afterBig = await keyNow();
+  const smaller = llmCalls.slice(callsBeforeBig);
+  check(!afterBig.lastError && smaller.length && smaller.every((c) => /OTHER ENTRIES \(not involved[^\n]*Archive/.test(c) && !/Fact 599 about/.test(c)),
+    'request sent again with only the entries involved' + (afterBig.lastError ? ' (got: ' + afterBig.lastError + ')' : ''));
 
   await browser.close();
   console.log('\nAll checks passed.');

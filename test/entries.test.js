@@ -20,8 +20,8 @@ function grab(name) {
   throw new Error('unbalanced ' + name);
 }
 const consts = src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0];
-const lib = new Function(consts + ['cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
-  .map(grab).join('\n') + '\nreturn { parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
+const lib = new Function(consts + ['squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
+  .map(grab).join('\n') + '\nreturn { squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -127,6 +127,14 @@ test('only changed story sections are applied; added lines are not doubled', () 
   assert.strictEqual(p.memory, '');
   assert.strictEqual(lib.applySections(mem, p.sections),
     '## Story So Far\n- A happened.\n- B happened.\n- C happened.\n\n## Current Scene\n- In the car.\n\n## Open Threads\n- The secret.\n\n## World & Timeline\n- Seoul.');
+});
+
+test('looping text is squashed, normal text is not', () => {
+  const loop = '- Jacek kissed her.\n' + 'She moaned his name again and again. '.repeat(500) + '\n- Winter laughed at the joke he made earlier.\n- Winter laughed at the joke he made earlier.';
+  assert.strictEqual(lib.squashRepeats(loop), '- Jacek kissed her.\nShe moaned his name again and again. \n- Winter laughed at the joke he made earlier.');
+  const normal = Array.from({ length: 50 }, (_, i) => '- Fact ' + i + ': Karina wore a ' + ['red', 'blue', 'black'][i % 3] + ' dress on day ' + i + '.').join('\n') +
+    '\nHe said "no, no, no" and then left. She waited. She waited. Then the door opened slowly and Giselle walked in with the keys.';
+  assert.strictEqual(lib.squashRepeats(normal), normal);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

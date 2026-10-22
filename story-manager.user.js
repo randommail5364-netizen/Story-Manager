@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.6.1
+// @version      2.6.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -773,8 +773,23 @@
   let helperChat = null;  // { slug, id, uses }
   const lastActivity = {}; // chat id -> when the live connection last showed activity in it
   let helperWait = null;   // what the last wait for the bot saw, for Diagnostics
+  const chatErrors = {};   // chat id -> { error, code, at }: the site's "ce" (chat error) events
+  let lastChatError = null;
 
+  // If the bot reports an error in the shared helper chat (e.g. the chat got
+  // too long for it), try once more in a fresh helper chat.
   async function callMiniApps(prompt) {
+    try {
+      return await callMiniAppsOnce(prompt);
+    } catch (e) {
+      if (!e.botError || !e.reused) throw e;
+      helperChat = null;
+      await Store.set('helperChat', null);
+      return callMiniAppsOnce(prompt);
+    }
+  }
+
+  async function callMiniAppsOnce(prompt) {
     const slug = (settings.miniappsSlug || 'claude-37').trim();
     if (!toolCache || toolCache.slug !== slug) {
       const tool = await rpc('GET', '/tools/s/' + encodeURIComponent(slug) + '?lang=en');
@@ -842,6 +857,13 @@
         // Ask MiniApps to stop writing the answer (endpoint from MiniappsAI-API).
         rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
         throw stopError();
+      }
+      const ce = chatErrors[cid];
+      if (ce && ce.at >= started) {
+        const err = new Error('The MiniApps bot reported an error' + (ce.error ? ': ' + ce.error : '') + (ce.code ? ' (' + ce.code + ')' : '') + '.');
+        err.botError = true;
+        err.reused = reuse;
+        throw err;
       }
       let msgs = [];
       let readOk = true;
@@ -1695,6 +1717,16 @@
     const first = args[0] && typeof args[0] === 'object' ? args[0] : null;
     const chatOf = first && (first.cId || first.conversationId);
     if (chatOf) lastActivity[String(chatOf).toLowerCase()] = Date.now();
+    // "ce" = an error writing a reply, e.g. { conversationId, requestId, error, code }.
+    if (d.dir === 'in' && chatOf && (d.event === 'ce' || (first.error && first.requestId && !first.payload))) {
+      const raw = first.error;
+      const text = typeof raw === 'string' ? raw : raw && typeof raw === 'object' ? (raw.message || raw.error || JSON.stringify(raw)) : '';
+      lastChatError = chatErrors[String(chatOf).toLowerCase()] = {
+        error: String(text || '').slice(0, 200), code: first.code == null ? '' : String(first.code), at: Date.now(),
+        helper: helperIds.has(String(chatOf).toLowerCase()),
+      };
+      return;
+    }
     // "pcm" events are pieces of a reply still being written (a few words
     // each), not messages; the finished reply arrives later as "cm".
     if (d.event === 'pcm' || (first && first.tmpO !== undefined)) return;
@@ -2157,6 +2189,8 @@
           (helperWait.readOk ? '' : ', last read failed') + ', answer ' + helperWait.answerChars + ' chars' +
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
+      'Last chat error from MiniApps: ' + (lastChatError ? (lastChatError.helper ? 'helper chat, ' : 'story chat, ') +
+        Math.round((Date.now() - lastChatError.at) / 1000) + 's ago: ' + (lastChatError.error || '(no message)') + (lastChatError.code ? ' · code ' + lastChatError.code : '') : 'none'),
       'Messages sent on this page: ' + sentStats.sent + ' · with memory attached: ' + sentStats.withMemory +
         (currentId && lastSentInfo[currentId] ? ' · last carried: ' + lastSentInfo[currentId] : ''),
       'Hook: ' + (hookStats ? JSON.stringify(hookStats) : 'not running'),

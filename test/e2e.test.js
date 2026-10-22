@@ -76,7 +76,8 @@ async function main() {
 
   let liveWs = null;
   let helperBroken = false;  // makes the MiniApps-bot memory keeper fail
-  let helperDelay = 500;     // how long the MiniApps-bot memory keeper takes to answer
+  let helperDelay = 500;
+  let helperChatError = false; // the existing helper chat answers with a "ce" error event     // how long the MiniApps-bot memory keeper takes to answer
   const aborts = [];         // POST /chat/abort bodies         // the page's fake Socket.IO connection, once open
   function reply(conv, text, delay, convId) {
     const msg = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text: '- **' }] };
@@ -186,7 +187,9 @@ async function main() {
         : { id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
       conv.messages.push(userMsg);
       added.push(userMsg);
-      if (body.toolId === 'tool-helper') {
+      if (body.toolId === 'tool-helper' && helperChatError && !isNew) {
+        setTimeout(() => liveWs && liveWs.send('42["ce",' + JSON.stringify({ conversationId: id, requestId: body.requestId, messageId: userMsg.id, replyToMessageId: null, error: 'Context too long', code: 'CONTEXT_LIMIT' }) + ']'), 300);
+      } else if (body.toolId === 'tool-helper') {
         llmCalls.push(text);
         reply(conv, keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)'), helperDelay, id);
       } else {
@@ -651,6 +654,23 @@ async function main() {
   helperDelay = 500;
   const streamed = await keyNow();
   check(!streamed.lastError && /via MiniApps bot/.test(streamed.memory), 'finished answer used, not the streamed piece "- **"' + (streamed.lastError ? ' (got: ' + streamed.lastError + ')' : ''));
+
+  console.log('28) A chat error in the helper chat moves to a fresh helper chat');
+  await page.locator('#story-manager-root >> .x').click();
+  const oldHelper = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:helperChat')).id);
+  helperChatError = true;
+  const beforeCe = await keyNow();
+  await page.evaluate(() => window.sendMsg('We cross the bridge.'));
+  await page.evaluate(() => window.sendMsg('We reach the tower.'));
+  await waitFor(async () => { const c = await keyNow(); return c.lastUpdate !== beforeCe.lastUpdate || c.lastError !== beforeCe.lastError; }, 120000, 'update after chat error');
+  helperChatError = false;
+  const afterCe = await keyNow();
+  const newHelper = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:helperChat')).id);
+  check(!afterCe.lastError && newHelper !== oldHelper, 'update finished in a new helper chat' + (afterCe.lastError ? ' (got: ' + afterCe.lastError + ')' : ''));
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Diagnostics', { exact: true }).click();
+  const diagCe = await page.locator('#story-manager-root >> textarea.diag').inputValue();
+  check(/Last chat error from MiniApps: helper chat, \d+s ago: Context too long · code CONTEXT_LIMIT/.test(diagCe), 'chat error shown in Diagnostics');
 
   await browser.close();
   console.log('\nAll checks passed.');

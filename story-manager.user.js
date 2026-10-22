@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.6.4
+// @version      2.7.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -949,8 +949,12 @@
       '',
       'STORY rules:',
       '- Sections: ## Story So Far (every important event and turning point, in order, with who was involved and what changed), ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries), ## World & Timeline (world rules, the date and time, how much time has passed). Omit empty sections.',
-      '- Up to ' + settings.maxChars + ' characters. Details about a character, place or item belong in its entry, not here.',
-      '- Always output the complete STORY.',
+      '- Details about a character, place or item belong in its entry, not here.',
+      '- Do NOT rewrite the whole story. Output only the sections that change, each under its own header:',
+      '  === SECTION: Story So Far | add === followed by ONLY the new lines to add at the end of that section (the new events). Never repeat lines that are already there.',
+      '  === SECTION: Name === followed by the complete new text of that section, which replaces it. Use this for Current Scene, Open Threads and World & Timeline when they change, keeping every fact that is still true.',
+      '- Leave out sections that did not change. If the CURRENT STORY is empty, write every section in full.',
+      '- Rewrite Story So Far in full (=== SECTION: Story So Far ===, keeping every event) only when earlier events must be corrected or put in order (e.g. a recap fills in the past), or when the whole story is over ' + settings.maxChars + ' characters and needs to be made more compact.',
       '',
       'ENTRY rules:',
       '- EVERY named character gets an entry, including the user\'s character and side characters, even if they only appear briefly. List them all in CAST.',
@@ -969,7 +973,7 @@
       '',
       'Recaps:',
       '- Some messages are RECAPS: summaries of earlier events, often written to continue the story in a new chat. They are marked [RECAP], but also recognise unmarked ones (e.g. "Previously…", "So far…", "Last time…", or a long summary of past events at the start of a chat).',
-      '- A recap describes the PAST, not something happening now. Put its events into Story So Far in the right order, before the events that come after the recap in the chat, and its facts into the right entries. Only change Current Scene if the recap clearly ends by describing where things stand now.',
+      '- A recap describes the PAST, not something happening now. Put its events into Story So Far in the right order, before the events that come after the recap in the chat (rewrite the section in full if it adds earlier events), and its facts into the right entries. Only change Current Scene if the recap clearly ends by describing where things stand now.',
       '- A recap often repeats what is already known, and recaps can contain older recaps. Merge them: record each event once, and use the recap to fill gaps and correct details.',
       '- If a recap written by the USER disagrees with what is known, trust the recap. If one written by the STORY AI disagrees, keep what is known unless the recap is clearly more detailed and accurate.',
       '- Anything that happens in the chat after a recap always overrides the recap.',
@@ -977,8 +981,10 @@
       '',
       'If the CURRENT STORY still holds character, place or item details (from an older format), move them into entries.',
       'No commentary, no warnings, no questions. Answer in exactly this format and nothing else:',
-      '=== STORY ===',
-      '(the complete story)',
+      '=== SECTION: Story So Far | add ===',
+      '(new events only)',
+      '=== SECTION: Current Scene ===',
+      '(complete section; repeat for each changed section)',
       '=== CAST ===',
       '(every named character in the CURRENT STORY, CURRENT ENTRIES and NEW MESSAGES, comma-separated)',
       '=== ENTRY: Name | kind | aliases: … ===',
@@ -1070,12 +1076,12 @@
   }
 
   async function mergeIntoMemory(chat, msgs) {
-    const user = 'CURRENT STORY:\n<<<\n' + (chat.memory.trim() || '(empty — this is the start)') + '\n>>>\n\n' +
+    const user = 'CURRENT STORY (' + chat.memory.trim().length + ' characters):\n<<<\n' + (chat.memory.trim() || '(empty — this is the start)') + '\n>>>\n\n' +
       'CURRENT ENTRIES:\n<<<\n' + formatEntries(chat.entries) + '\n>>>\n\n' +
       (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true, do not repeat them):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
       (chat.ignored.length ? 'NEVER write entries for (the user removed them): ' + chat.ignored.join(', ') + '\n\n' : '') +
       'NEW MESSAGES (oldest first):\n<<<\n' + formatMessages(msgs, chat.title) + '\n>>>\n\n' +
-      'Write the complete STORY, the CAST, every new or changed ENTRY, and one LOG entry for each [R…] reply now.';
+      'Write the changed STORY sections, the CAST, every new or changed ENTRY, and one LOG entry for each [R…] reply now.';
     const replies = msgs.filter((m) => m.role === 'assistant');
     const before = knowledgeSize(chat.memory.trim(), chat.entries);
     let parsed = null;
@@ -1084,7 +1090,9 @@
       const out = cleanOutput(await callLLM(systemPrompt(), user + extra));
       checkStop();
       parsed = parseKeeperAnswer(out, replies);
-      if (parsed.memory.length < 40 && !parsed.updates.length) {
+      // Only the changed sections are written; a full STORY (older style) replaces it all.
+      if (!parsed.memory.trim() && parsed.sections.length) parsed.memory = applySections(chat.memory, parsed.sections);
+      if (parsed.memory.length < 40 && !parsed.updates.length && !parsed.sections.length && !parsed.entries.length) {
         throw new Error('Memory keeper gave an unusable answer: "' + out.slice(0, 120) + '"');
       }
       // Much less knowledge than before means facts were dropped (or the answer was cut off).
@@ -1200,7 +1208,7 @@
   //   === STORY === … === ENTRY: Name | kind | aliases: … === … === LOG === [R1] …
   function parseKeeperAnswer(out, replies) {
     // Headers may come wrapped in markdown (**=== LOG ===**, ### === LOG ===).
-    const HEADER = /^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*(STORY|(?:STORY[^\S\n]+)?MEMORY|LOG|CAST|ENTRY[^\S\n]*:[^\n=]*?)[^\S\n]*=+[^\S\n]*[*_]*[^\S\n]*$/gim;
+    const HEADER = /^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*(STORY|(?:STORY[^\S\n]+)?MEMORY|LOG|CAST|ENTRY[^\S\n]*:[^\n=]*?|SECTION[^\S\n]*:[^\n=]*?)[^\S\n]*=+[^\S\n]*[*_]*[^\S\n]*$/gim;
     const marks = [];
     let m;
     while ((m = HEADER.exec(out))) marks.push({ at: m.index, end: m.index + m[0].length, head: m[1].trim() });
@@ -1208,12 +1216,19 @@
     const updates = [];
     const entries = [];
     let cast = [];
+    const sections = [];
     // Text before any header counts as the story (older answers had no headers).
     if (!marks.length || marks[0].at > 0) memory = out.slice(0, marks.length ? marks[0].at : out.length);
     marks.forEach((mk, i) => {
       const body = out.slice(mk.end, i + 1 < marks.length ? marks[i + 1].at : out.length).trim();
       if (/^(STORY|(STORY\s+)?MEMORY)$/i.test(mk.head)) {
         memory = body;
+      } else if (/^SECTION\s*:/i.test(mk.head)) {
+        const fields = mk.head.replace(/^SECTION\s*:\s*/i, '').split('|').map((x) => x.trim());
+        const title = fields[0].replace(/^#+\s*/, '');
+        // The keeper may repeat the "## Title" line inside the section.
+        const text = body.replace(new RegExp('^#+\\s*' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\n', 'i'), '').trim();
+        if (title && text) sections.push({ title, add: fields.slice(1).some((f) => /^add/i.test(f)), text });
       } else if (/^CAST$/i.test(mk.head)) {
         cast = body.split(/[,\n;]/).map((n) => n.replace(/^[\s*•-]+|[\s.]+$/g, '').replace(/\s*\(.*\)$/, '').trim())
           .filter((n) => n && n.length < 60 && !/^(you|user|the user|narrator|\{\{user\}\}|none)$/i.test(n));
@@ -1243,7 +1258,40 @@
         if (name && body) updates.push({ name, kind, aliases, text: body });
       }
     });
-    return { memory: cleanOutput(memory), updates, entries: dedupeEntries(entries), cast };
+    return { memory: cleanOutput(memory), sections, updates, entries: dedupeEntries(entries), cast };
+  }
+
+  // The story is "## Title" sections. Applies the keeper's changed sections:
+  // an "add" section gets new lines at its end, any other replaces it.
+  const SECTION_ORDER = ['story so far', 'current scene', 'open threads', 'world & timeline'];
+  function applySections(memory, edits) {
+    const text = String(memory || '').trim();
+    const parts = [];
+    const re = /^##[^\S\n]*(.+?)[^\S\n]*$/gm;
+    const heads = [];
+    let m;
+    while ((m = re.exec(text))) heads.push({ at: m.index, end: m.index + m[0].length, title: m[1] });
+    const intro = text.slice(0, heads.length ? heads[0].at : text.length).trim();
+    heads.forEach((h, i) => parts.push({ title: h.title, text: text.slice(h.end, i + 1 < heads.length ? heads[i + 1].at : text.length).trim() }));
+    for (const e of edits) {
+      const key = e.title.toLowerCase();
+      let sec = parts.find((p) => p.title.toLowerCase() === key);
+      if (!sec) {
+        sec = { title: e.title, text: '' };
+        const rank = (t) => { const r = SECTION_ORDER.indexOf(t.toLowerCase()); return r < 0 ? SECTION_ORDER.length : r; };
+        const at = parts.findIndex((p) => rank(p.title) > rank(e.title));
+        parts.splice(at < 0 ? parts.length : at, 0, sec);
+      }
+      if (e.add && sec.text) {
+        // Lines the keeper repeated instead of only adding new ones are dropped.
+        const have = new Set(sec.text.split('\n').map((l) => l.trim()).filter(Boolean));
+        const added = e.text.split('\n').filter((l) => !l.trim() || !have.has(l.trim())).join('\n').trim();
+        if (added) sec.text += '\n' + added;
+      } else {
+        sec.text = e.text;
+      }
+    }
+    return [intro].concat(parts.map((p) => '## ' + p.title + '\n' + p.text)).filter(Boolean).join('\n\n');
   }
 
   // One entry per reply; if the keeper wrote two, keep the longer one.

@@ -75,6 +75,7 @@ Other settings:
 
 - **Messages are read whole.** Long messages aren't trimmed before the memory keeper reads them.
 - **Missing summaries are re-requested.** If the memory keeper skips a reply's summary, or its answer gets cut off, that reply is sent again (up to 3 times) until it has one.
+- **The story is only added to.** The memory keeper writes only the story sections that changed: new events are added to the end of *Story So Far*, and the other sections are replaced only when they change. That saves a lot of writing time, and earlier events are never rewritten (except when a recap fills in the past).
 - **Facts aren't dropped.** The memory keeper is told never to remove a fact unless the story changed it. If an update would make the memory much shorter, it's retried, and if it's still too short the previous memory is kept (the reply log is still updated).
 - **Each request is kept small.** It covers at most 6 AI replies (4 on Detailed, 3 on Maximum), so the memory keeper's answer doesn't run out of room.
 

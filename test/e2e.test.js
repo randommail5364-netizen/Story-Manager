@@ -113,7 +113,15 @@ async function main() {
     const cast = 'Mira, Ash' + (/WINTERTEST/.test(input) ? ', Winter, Giselle' : '');
     // DROPLAST in the chat simulates a keeper that runs out of room.
     if (/DROPLAST/.test(input)) replies = replies.slice(0, -1);
-    return '=== STORY ===\n## Story So Far\n- update ' + n + tag + '\n## Current Scene\n- Mira and Ash rest by the river.\n' +
+    // Like the real keeper: only changed story sections (new events added),
+    // all of them for an empty story; a very long story (the shrink test)
+    // gets the older complete-STORY answer.
+    const storyLen = Number((input.match(/CURRENT STORY \((\d+) characters\)/) || [])[1] || 0);
+    const story = storyLen > 1500
+      ? '=== STORY ===\n## Story So Far\n- update ' + n + tag + '\n## Current Scene\n- Mira and Ash rest by the river.\n'
+      : '=== SECTION: Story So Far' + (storyLen ? ' | add' : '') + ' ===\n- update ' + n + tag + '\n' +
+        '=== SECTION: Current Scene ===\n- Mira and Ash rest by the river.\n';
+    return story +
       '=== CAST ===\n' + cast + '\n' +
       '=== ENTRY: Mira | character | aliases: Miri, the healer ===\n- Mira: a healer' + tag + ' (update ' + n + ')\n' +
       '=== ENTRY: Ash | character | aliases: the dragon ===\n- Ash: a dragon\n' +
@@ -304,6 +312,9 @@ async function main() {
   await waitFor(() => llmCalls.length >= 2, 30000, 'second memory update');
   check(!llmCalls[1].includes('Background notes for story continuity') && /What do I do next\?/.test(llmCalls[1]), 'no memory echo, only new messages');
   check(!/I am Mira, a healer\./.test(llmCalls[1]), 'already-processed messages are not resent');
+  await page.waitForTimeout(1000);
+  const mem2 = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:chat:' + location.pathname.split('/c/')[1])).memory);
+  check(/## Story So Far\n- update 1\n- update 2\n\n## Current Scene\n- Mira and Ash rest by the river\.$/.test(mem2), 'only changed story sections written: new events added, old ones kept');
 
   console.log('5) Panel opens and shows the memory');
   await page.locator('#story-manager-root >> .fab').click();

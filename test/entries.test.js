@@ -19,9 +19,9 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0];
-const lib = new Function(consts + ['cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'cloneEntries', 'findEntry', 'applyUpdates']
-  .map(grab).join('\n') + '\nreturn { parseKeeperAnswer, applyUpdates, cloneEntries };')();
+const consts = src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0];
+const lib = new Function(consts + ['cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
+  .map(grab).join('\n') + '\nreturn { parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -119,6 +119,14 @@ test('log labels without brackets or in markdown are understood', () => {
 test('"aliases: none" adds no alias', () => {
   const p = lib.parseKeeperAnswer('=== ENTRY: Romantic Date Setting | place | aliases: none ===\n- Private.', replies);
   assert.deepStrictEqual(p.updates[0].aliases, []);
+});
+
+test('only changed story sections are applied; added lines are not doubled', () => {
+  const mem = '## Story So Far\n- A happened.\n- B happened.\n\n## Current Scene\n- At the hotel.\n\n## World & Timeline\n- Seoul.';
+  const p = lib.parseKeeperAnswer('=== SECTION: Story So Far | add ===\n- B happened.\n- C happened.\n**=== SECTION: Current Scene ===**\n## Current Scene\n- In the car.\n=== SECTION: Open Threads ===\n- The secret.\n=== LOG ===\n[R1] x', replies);
+  assert.strictEqual(p.memory, '');
+  assert.strictEqual(lib.applySections(mem, p.sections),
+    '## Story So Far\n- A happened.\n- B happened.\n- C happened.\n\n## Current Scene\n- In the car.\n\n## Open Threads\n- The secret.\n\n## World & Timeline\n- Seoul.');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

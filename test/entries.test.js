@@ -171,4 +171,18 @@ test('organize merges twins, cleans aliases, drops deleted entries and sorts by 
   assert.deepStrictEqual(lib.organize(chat), [], 'nothing left to fix the second time');
 });
 
+test('"add" entry updates append only the new facts', () => {
+  const entries = [{ name: 'Jacek', kind: 'character', aliases: ['Jace'], text: '- Stylist for aespa.\n- Dating Karina.', always: false }];
+  const p = lib.parseKeeperAnswer('=== ENTRY: Jacek | add | aliases: Mr. Shadow ===\n- Dating Karina.\n- Owns a villa in Costa Rica.\n=== ENTRY: Sloth Sanctuary | add ===\n- Near Puerto Viejo.', replies);
+  assert.deepStrictEqual(p.updates.map((u) => [u.name, !!u.add]), [['Jacek', true], ['Sloth Sanctuary', true]]);
+  lib.applyUpdates(entries, p.updates, []);
+  assert.strictEqual(entries[0].text, '- Stylist for aespa.\n- Dating Karina.\n- Owns a villa in Costa Rica.');
+  assert.strictEqual(entries[0].kind, 'character');
+  assert.deepStrictEqual(entries[0].aliases, ['Jace', 'Mr. Shadow']);
+  assert.strictEqual(entries[1].name, 'Sloth Sanctuary');
+  const big = [{ name: 'Karina', kind: 'character', aliases: [], text: '- fact\n'.repeat(200) }];
+  const r = lib.applyUpdates(big, [{ name: 'Karina', kind: '', aliases: [], text: '- one new fact', add: true }], []);
+  assert(r.refused.length === 0 && big[0].text.endsWith('- one new fact'), 'a short "add" is never refused as a shrink');
+});
+
 console.log('All ' + passed + ' entry checks passed.');

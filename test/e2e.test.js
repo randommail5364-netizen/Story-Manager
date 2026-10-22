@@ -127,7 +127,7 @@ async function main() {
     }
     if (/JOB: CHECK/.test(input)) {
       const n2 = (input.match(/^\[F\d+\]/gm) || []).length;
-      return '=== CAST ===\nMira, Ash\n=== ENTRY: Mira | character | aliases: Miri, the healer ===\n- Mira: a healer (update ' + n + ')\n- Checked ' + n2 + ' facts; Mira fears deep water.';
+      return '=== CAST ===\nMira, Ash\n=== ENTRY: Mira | add ===\n- Checked ' + n2 + ' facts; Mira fears deep water.';
     }
     if (!/JOB: UPDATE/.test(input)) return 'OK';
     // WINTERTEST in the chat: the keeper names Winter in the cast but forgets her entry.
@@ -868,7 +868,8 @@ async function main() {
   const checked = await keyNow();
   const checks = llmCalls.slice(callsBefore34).filter((c) => /JOB: CHECK/.test(c));
   check(checks.length >= 1 && checks.every((c) => /\[F1\] Mira is a healer \| Ash is a dragon/.test(c)), checks.length + ' check request(s) with every summary\'s facts');
-  check(/Mira fears deep water/.test(checked.entries.find((e) => e.name === 'Mira').text), 'missing fact added to the right entry');
+  const mira34 = checked.entries.find((e) => e.name === 'Mira').text;
+  check(/^- Mira: a healer[^\n]*\n- Checked \d+ facts; Mira fears deep water\.$/.test(mira34), 'missing fact added to the end of the right entry, the rest kept');
   check(checked.log.filter((e) => e.checked).length === withFacts && /Checked the facts of replies 1–/.test(checked.jobs.find((j) => j.kind === 'check').label + checked.jobs.map((j) => j.label).join()),
     'all ' + withFacts + ' summaries marked as checked; recorded in Activity');
   check(/Facts checked: \d+ of \d+/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel shows how many facts are checked');

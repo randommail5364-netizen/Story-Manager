@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.1.0
+// @version      3.2.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -943,10 +943,18 @@
       const st = helperStream[cid];
       const streamed = st && st.at >= started ? st.text : '';
       const loopAt = loopStart(streamed);
+      if (activeChatId && progress[activeChatId]) {
+        const w = progress[activeChatId].writing = progress[activeChatId].writing || [];
+        w[slot] = streamed.length;
+        renderPanel();
+      }
       const tooLong = Date.now() - started > 30 * 60000;
       if (loopAt >= 0 || tooLong) {
         rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
-        const part = loopAt >= 0 ? streamed.slice(0, loopAt) : streamed;
+        let part = loopAt >= 0 ? streamed.slice(0, loopAt) : streamed;
+        // The last section was cut off mid-way: leave it out rather than save half of it.
+        const heads = [...part.matchAll(/^[^\S\n]*[*#_]*[^\S\n]*(?:=+[^\S\n]*(?:STORY|LOG|ENTRY|SECTION|CAST|CHAPTER)|\[?R\d+\b)/gim)];
+        if (heads.length > 1) part = part.slice(0, heads[heads.length - 1].index);
         if (/===\s*(STORY|LOG|ENTRY|SECTION|CAST|CHAPTER)|^\W*\[?R\d+\b/im.test(part)) return part;
         const err = new Error(loopAt >= 0 ? 'The MiniApps bot got stuck repeating itself.' : 'The MiniApps bot was still writing after 30 minutes.');
         err.botError = true;
@@ -1054,7 +1062,10 @@
       '- Length: main characters ' + detail().mainChar + ' characters each, growing as the story reveals more; side characters and places as long as their facts need. Record specifics, not general impressions.',
       '- Every FACT in the new events must end up in the right entry or story section.',
       '- Header format: === ENTRY: Name | kind | aliases: other names, nicknames, titles === where kind is character, place, item, group or lore. Aliases are every other way the story refers to it.',
-      '- Output ONLY entries that are new or changed by the new events, each one complete (all old facts plus the new ones). Do not output unchanged entries, or entries listed by name only. Use the exact existing name for an existing entry.',
+      '- Output ONLY entries that are new or changed by the new events. Do not output unchanged entries, or entries listed by name only. Use the exact existing name for an existing entry.',
+      '- For an EXISTING entry, do NOT rewrite it: write === ENTRY: Name | add === followed by ONLY the new bullet points (new facts, new developments). Never repeat what the entry already says. New nicknames go in the header: === ENTRY: Name | add | aliases: new nickname ===.',
+      '- Only when something the entry says is no longer true (e.g. a relationship, condition or whereabouts changed), write the entry complete instead, with the normal header and every fact that is still true.',
+      '- A NEW entry is written complete with the normal header.',
       '- Never remove a fact unless the story changed it; then update it. When something changes, update every entry it affects (e.g. both sides of a relationship).',
       '- Never invent anything. Only record what actually happened or was stated.',
       '',
@@ -1066,8 +1077,10 @@
       '(complete section; repeat for each changed section)',
       '=== CAST ===',
       '(every named character in the STORY, ENTRIES and NEW EVENTS, comma-separated)',
+      '=== ENTRY: Name | add ===',
+      '(only the new bullet points for an existing entry)',
       '=== ENTRY: Name | kind | aliases: … ===',
-      '(complete entry; repeat for each new or changed entry)',
+      '(a new entry, or one whose old facts changed, complete; repeat for each)',
     ]).join('\n');
   }
 
@@ -1347,7 +1360,7 @@
       (chat.ignored.length ? 'NEVER write entries for (the user removed them): ' + chat.ignored.join(', ') + '\n\n' : '') +
       'FACTS FROM THE STORY (oldest first; later facts override earlier ones):\n<<<\n' + facts + '\n>>>\n\n' +
       'JOB: CHECK. Every fact above is true in the story (unless a later one changed it). Find the facts that are NOT yet recorded in the CURRENT ENTRIES or the STORY, ' +
-      'and add each to the entry (or story section) it belongs to. Output only the entries and sections you changed, each complete (all old facts plus the added ones). ' +
+      'and add each to the entry (or story section) it belongs to, using === ENTRY: Name | add === with only the missing facts. Output only the entries and sections you changed. ' +
       'If nothing is missing, output only the CAST.';
     const out = cleanOutput(await callLLM(updateSystem(), user));
     checkStop();
@@ -1384,8 +1397,9 @@
     return entries.find((e) => e.name.toLowerCase() === n || (e.aliases || []).some((a) => a.toLowerCase() === n));
   }
 
-  // Apply the keeper's new or changed entries. A rewrite that is much shorter
-  // than a long existing entry probably lost details, so it is not applied.
+  // Apply the keeper's new or changed entries. An "add" update appends its new
+  // lines (ones the entry already has are skipped). A rewrite that is much
+  // shorter than a long existing entry probably lost details, so it is not applied.
   function applyUpdates(entries, updates, ignored) {
     const refused = [];
     const skip = new Set((ignored || []).map((n) => n.toLowerCase()));
@@ -1394,16 +1408,23 @@
       if ([u.name].concat(u.aliases).some((n) => skip.has(n.toLowerCase()))) continue;
       const e = findEntry(entries, u.name) || u.aliases.map((a) => findEntry(entries, a)).find(Boolean);
       if (!e) {
-        entries.push({ name: u.name, kind: u.kind || 'character', aliases: u.aliases, text: u.text, always: false, updated: Date.now() });
+        entries.push({ name: u.name, kind: (u.add ? '' : u.kind) || 'character', aliases: u.aliases, text: u.text, always: false, updated: Date.now() });
         continue;
       }
-      if (e.text.length > 800 && u.text.length < e.text.length * 0.5) {
+      if (u.add) {
+        const have = new Set(e.text.split('\n').map((l) => l.trim().toLowerCase()).filter(Boolean));
+        const lines = u.text.split('\n').filter((l) => l.trim() && !have.has(l.trim().toLowerCase()));
+        if (lines.length) {
+          e.text = (e.text.trim() ? e.text.replace(/\s+$/, '') + '\n' : '') + lines.join('\n');
+          e.updated = Date.now();
+        }
+      } else if (e.text.length > 800 && u.text.length < e.text.length * 0.5) {
         refused.push(e.name);
       } else {
         e.text = u.text;
         e.updated = Date.now();
       }
-      if (u.kind) e.kind = u.kind;
+      if (u.kind && !u.add) e.kind = u.kind;
       const names = new Set([e.name.toLowerCase()].concat(e.aliases.map((a) => a.toLowerCase())));
       for (const a of u.aliases.concat(u.name)) {
         if (!names.has(a.toLowerCase())) { e.aliases.push(a); names.add(a.toLowerCase()); }
@@ -1525,14 +1546,16 @@
         const name = fields[0];
         let kind = '';
         let aliases = [];
+        let add = false;
         for (const f of fields.slice(1)) {
-          if (/^aliases?\s*:/i.test(f)) {
+          if (/^(add|additions?|new facts?)$/i.test(f)) add = true;
+          else if (/^aliases?\s*:/i.test(f)) {
             aliases = f.replace(/^aliases?\s*:/i, '').split(',').map((a) => a.trim())
               .filter((a) => a && a.toLowerCase() !== name.toLowerCase() && !/^(none|n\/?a|null|nil|-+|—|no aliases?|unknown)$/i.test(a));
           }
           else if (f) kind = f.toLowerCase();
         }
-        if (name && body) updates.push({ name, kind, aliases, text: body });
+        if (name && body) updates.push(add ? { name, kind, aliases, text: body, add } : { name, kind, aliases, text: body });
       }
     });
     sections.forEach((x) => { x.text = squashRepeats(x.text); });
@@ -1696,7 +1719,7 @@
   }
 
   function setStep(id, text) {
-    if (progress[id]) progress[id].step = text;
+    if (progress[id]) { progress[id].step = text; progress[id].writing = []; }
     renderPanel();
   }
 
@@ -2748,6 +2771,8 @@
           st.summaries ? ' (next after ' + Math.max(0, chapterSize() - st.unchaptered - st.unfolded) + ' more replies)' : '',
           chat.log.some((e) => e.checked) ? ' · Facts checked: ' + chat.log.filter((e) => e.checked).length + ' of ' + chat.log.filter((e) => e.facts).length : ''),
         isBusy ? el('div', {}, '⏳ ' + ((progress[chat.id] && progress[chat.id].step) || 'Updating memory…') +
+          (progress[chat.id] && progress[chat.id].writing && progress[chat.id].writing.some(Boolean)
+            ? ' The bot has written ' + progress[chat.id].writing.reduce((n, x) => n + (x || 0), 0).toLocaleString() + ' characters so far.' : '') +
           (progress[chat.id] && progress[chat.id].total > 1
             ? ' (step ' + Math.min(progress[chat.id].done + 1, progress[chat.id].total) + ' of about ' + Math.max(progress[chat.id].total, progress[chat.id].done + 1) + ')' : ''),
           ' ', el('button', { class: 'btn', onclick: () => { stopRequested[chat.id] = true; toast('Stopping after the current request…'); } }, '■ Stop')) : null,

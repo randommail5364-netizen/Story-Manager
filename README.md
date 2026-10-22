@@ -86,6 +86,7 @@ Other settings:
 - **Messages are read whole.** Long messages aren't trimmed before the memory keeper reads them.
 - **Missing summaries are re-requested.** If the memory keeper skips a reply's summary, or its answer gets cut off, that reply is sent again (up to 3 times) until it has one.
 - **History is never rewritten.** Past events live in the reply summaries and chapters, which are written once. The story & character updates only change the current situation and the entries, and only the parts that changed.
+- **Entries are added to, not retyped.** For an existing entry the memory keeper writes only the new facts, which are added to the end; it rewrites an entry only when something in it is no longer true. That keeps updates fast however long the entries get.
 - **Facts are carried separately.** Each summary's Facts line is handed to the story & character update, so lasting facts reach the right entry.
 - **Facts aren't dropped.** The memory keeper is told never to remove a fact unless the story changed it. If an update would make the memory much shorter, it's retried, and if it's still too short the previous memory is kept (the reply log is still updated).
 - **Looping answers are cleaned up.** If the memory keeper gets stuck repeating the same text, the repeats are removed before anything is saved (and older saved memories are cleaned once). If the entries get very long, or the bot says a request is too long, only the entries the new messages involve are sent.

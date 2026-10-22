@@ -77,6 +77,7 @@ async function main() {
   let liveWs = null;
   let helperBroken = false;  // makes the MiniApps-bot memory keeper fail
   let helperDelay = 500;
+  let helperRunaway = false;   // the bot writes a good start, then repeats itself forever
   let helperChatError = false; // the existing helper chat answers with a "ce" error event     // how long the MiniApps-bot memory keeper takes to answer
   const aborts = [];         // POST /chat/abort bodies         // the page's fake Socket.IO connection, once open
   function reply(conv, text, delay, convId) {
@@ -187,7 +188,19 @@ async function main() {
         : { id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
       conv.messages.push(userMsg);
       added.push(userMsg);
-      if (body.toolId === 'tool-helper' && helperChatError && !isNew) {
+      if (body.toolId === 'tool-helper' && helperRunaway) {
+        llmCalls.push(text);
+        const full = keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)');
+        const pieces = full.match(/[\s\S]{1,40}/g);
+        const loop = 'and then she said the same thing again, and again, over and over. ';
+        let k = 0;
+        const timer = setInterval(() => {
+          const stopped = aborts.some((a) => a.requestId === body.requestId);
+          if (stopped || k > 3000) return clearInterval(timer);
+          const piece = k < pieces.length ? pieces[k] : loop;
+          if (liveWs) liveWs.send('42["pcm",' + JSON.stringify({ cId: id, requestId: body.requestId, tmpId: 'run', tmpO: 0, payload: { type: 'text', text: piece, i: k++ } }) + ']');
+        }, 5);
+      } else if (body.toolId === 'tool-helper' && helperChatError && !isNew) {
         setTimeout(() => liveWs && liveWs.send('42["ce",' + JSON.stringify({ conversationId: id, requestId: body.requestId, messageId: userMsg.id, replyToMessageId: null, error: 'Context too long', code: 'CONTEXT_LIMIT' }) + ']'), 300);
       } else if (body.toolId === 'tool-helper') {
         llmCalls.push(text);
@@ -671,6 +684,19 @@ async function main() {
   await page.getByText('Diagnostics', { exact: true }).click();
   const diagCe = await page.locator('#story-manager-root >> textarea.diag').inputValue();
   check(/Last chat error from MiniApps: helper chat, \d+s ago: Context too long · code CONTEXT_LIMIT/.test(diagCe), 'chat error shown in Diagnostics');
+
+  console.log('29) A bot answer stuck repeating itself is cut off and used');
+  await page.locator('#story-manager-root >> .x').click();
+  helperRunaway = true;
+  const abortsBefore = aborts.length;
+  const beforeLoop = await keyNow();
+  await page.evaluate(() => window.sendMsg('We climb the stairs.'));
+  await page.evaluate(() => window.sendMsg('We open the door.'));
+  await waitFor(async () => { const c = await keyNow(); return c.lastUpdate !== beforeLoop.lastUpdate || c.lastError !== beforeLoop.lastError; }, 120000, 'update with a looping answer');
+  helperRunaway = false;
+  const afterLoop = await keyNow();
+  check(aborts.length > abortsBefore, 'MiniApps asked to stop the looping answer');
+  check(!afterLoop.lastError && /via MiniApps bot/.test(afterLoop.memory) && !/over and over/.test(JSON.stringify(afterLoop)), 'the good part of the answer was used, without the repetition' + (afterLoop.lastError ? ' (got: ' + afterLoop.lastError + ')' : ''));
 
   await browser.close();
   console.log('\nAll checks passed.');

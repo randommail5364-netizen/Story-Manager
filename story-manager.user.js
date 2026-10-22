@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      2.6.3
+// @version      2.6.4
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -776,17 +776,37 @@
   const chatErrors = {};   // chat id -> { error, code, at }: the site's "ce" (chat error) events
   let lastChatError = null;
 
-  // If the bot reports an error in the shared helper chat (e.g. the chat got
-  // too long for it), try once more in a fresh helper chat.
+  const helperStream = {};  // chat id -> { requestId, text, at }: a reply as it is being written
+
+  // If the bot fails (reports an error, never answers, or rambles on), try
+  // again in a fresh helper chat, up to 3 tries in all.
   async function callMiniApps(prompt) {
-    try {
-      return await callMiniAppsOnce(prompt);
-    } catch (e) {
-      if (!e.botError || !e.reused) throw e;
-      helperChat = null;
-      await Store.set('helperChat', null);
-      return callMiniAppsOnce(prompt);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await callMiniAppsOnce(prompt);
+      } catch (e) {
+        if (!e.botError || attempt >= 3) throw e;
+        toast(e.message + ' Trying again in a fresh helper chat…', true);
+        helperChat = null;
+        await Store.set('helperChat', null);
+        for (let i = 0; i < 15; i++) { await sleep(1000); checkStop(); }
+      }
     }
+  }
+
+  // Where a reply starts repeating the same passage over and over (at
+  // least 2,000 characters of repeats at the end), or -1.
+  function loopStart(t) {
+    const L = 200;
+    if (t.length < 2500) return -1;
+    const idx = t.lastIndexOf(t.slice(-L), t.length - L - 1);
+    if (idx < 0) return -1;
+    const p = t.length - L - idx; // length of the repeated passage
+    const n = Math.max(2000, 3 * p);
+    if (p > 3000 || t.length < n + p || t.slice(-n) !== t.slice(-n - p, -p)) return -1;
+    let at = t.length - n - p;
+    while (at > 0 && t[at - 1] === t[at - 1 + p]) at--;
+    return at;
   }
 
   async function callMiniAppsOnce(prompt) {
@@ -851,12 +871,25 @@
     // after 3 minutes without any sign of it.
     const started = Date.now();
     let prev = null;
-    while (Date.now() - started < 20 * 60000) {
+    for (;;) {
       await sleep(4000);
       if (activeChatId && stopRequested[activeChatId]) {
         // Ask MiniApps to stop writing the answer (endpoint from MiniappsAI-API).
         rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
         throw stopError();
+      }
+      // A reply that loops or never ends: stop it and use what is usable.
+      const st = helperStream[cid];
+      const streamed = st && st.at >= started ? st.text : '';
+      const loopAt = loopStart(streamed);
+      const tooLong = Date.now() - started > 30 * 60000;
+      if (loopAt >= 0 || tooLong) {
+        rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
+        const part = loopAt >= 0 ? streamed.slice(0, loopAt) : streamed;
+        if (/===\s*STORY\s*===|===\s*LOG\s*===|===\s*ENTRY/i.test(part)) return part;
+        const err = new Error(loopAt >= 0 ? 'The MiniApps bot got stuck repeating itself.' : 'The MiniApps bot was still writing after 30 minutes.');
+        err.botError = true;
+        throw err;
       }
       const ce = chatErrors[cid];
       if (ce && ce.at >= started) {
@@ -900,7 +933,9 @@
       if (!reply && idle > 3 * 60000) break;
     }
     if (prev) return prev;
-    throw new Error('The MiniApps bot did not answer (no activity for 3 minutes). Try again, or use a different memory keeper in Settings.');
+    const err = new Error('The MiniApps bot did not answer (no activity for 3 minutes).');
+    err.botError = true;
+    throw err;
   }
 
   function systemPrompt() {
@@ -1731,7 +1766,17 @@
     }
     // "pcm" events are pieces of a reply still being written (a few words
     // each), not messages; the finished reply arrives later as "cm".
-    if (d.event === 'pcm' || (first && first.tmpO !== undefined)) return;
+    if (d.event === 'pcm' || (first && first.tmpO !== undefined)) {
+      // Kept so a reply that never finishes can still be used.
+      const pm = first && first.payload;
+      if (chatOf && pm && typeof pm.text === 'string') {
+        const key = String(chatOf).toLowerCase();
+        let st = helperStream[key];
+        if (!st || st.requestId !== first.requestId) st = helperStream[key] = { requestId: first.requestId, text: '', at: Date.now() };
+        if (st.text.length < 400000) st.text += pm.text;
+      }
+      return;
+    }
     let msgs = extractMessages(args);
     let conv = null;
     // Events like { cId, requestId, payload: { …message… } } carry a whole message.

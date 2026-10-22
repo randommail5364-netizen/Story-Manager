@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.0.0
+// @version      3.0.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1721,9 +1721,9 @@
     try {
       // 1. Summaries, a few requests at a time when allowed.
       const parts = chunk(todo, CHUNK_CHARS);
-      const P = parallel();
       let next = chat.log.length;
-      for (let i = 0; i < parts.length; i += P) {
+      // Read every time, so a change in Settings applies to a run already going.
+      for (let i = 0, P = parallel(); i < parts.length; i += P, P = parallel()) {
         checkStop();
         const wave = parts.slice(i, i + P);
         const labels = wave.map((part) => {

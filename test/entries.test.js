@@ -20,8 +20,8 @@ function grab(name) {
   throw new Error('unbalanced ' + name);
 }
 const consts = src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0];
-const lib = new Function(consts + ['entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
-  .map(grab).join('\n') + '\nreturn { organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
+const lib = new Function(consts + ['composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
+  .map(grab).join('\n') + '\nreturn { composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -183,6 +183,20 @@ test('"add" entry updates append only the new facts', () => {
   const big = [{ name: 'Karina', kind: 'character', aliases: [], text: '- fact\n'.repeat(200) }];
   const r = lib.applyUpdates(big, [{ name: 'Karina', kind: '', aliases: [], text: '- one new fact', add: true }], []);
   assert(r.refused.length === 0 && big[0].text.endsWith('- one new fact'), 'a short "add" is never refused as a shrink');
+});
+
+test('long entries in play are shortened so the attached memory keeps to its size, keeping the newest facts', () => {
+  const big = (name) => ({ name, kind: 'character', keys: [name], text: Array.from({ length: 400 }, (_, i) => '- ' + name + ' fact ' + i + '.').join('\n') });
+  const plan = { prefix: '[[STORY-MEMORY]]\n', suffix: '\n[[/STORY-MEMORY]]', head: '## The story now\n' + 'x'.repeat(3000),
+    core: [big('Jacek'), big('Karina'), big('Winter')], extra: [], log: ['A summary.'], budget: 16000 };
+  const out = lib.composeMemory(plan, 'Hello').text;
+  assert(out.length < 16000, 'attached memory is ' + out.length + ' characters');
+  for (const n of ['Jacek', 'Karina', 'Winter']) {
+    assert(out.includes('- ' + n + ' fact 0.') && out.includes('- ' + n + ' fact 399.'), n + ': start and newest facts kept');
+  }
+  assert(/\[…\]/.test(out));
+  const small = Object.assign({}, plan, { core: [{ name: 'Ash', kind: 'character', keys: ['Ash'], text: '- A dragon.' }] });
+  assert(lib.composeMemory(small, '').text.includes('### Ash (character)\n- A dragon.'), 'short entries are sent whole');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

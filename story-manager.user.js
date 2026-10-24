@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.2.0
+// @version      3.3.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -58,7 +58,7 @@
   // through DOM events / attributes, so it works in every userscript manager.
   // ---------------------------------------------------------------------------
 
-  function pageHook(win) {
+  function pageHook(win, compose) {
     if (win.__smxHooked) return;
     win.__smxHooked = true;
     const doc = win.document;
@@ -160,44 +160,6 @@
       }
       emit('sent', { conversationId: convId, injected, userText, included, size });
       return injected;
-    }
-
-    function mentionsKey(text, key) {
-      const k = String(key || '').trim();
-      if (k.length < 2) return false;
-      const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '($|[^\\p{L}\\p{N}])', 'iu').test(text);
-    }
-
-    // Build the attached notes: the story, entries in play, entries this
-    // message mentions (while they fit), then the newest reply summaries.
-    function compose(plan, userText) {
-      if (typeof plan === 'string') return { text: plan, names: [] };
-      const names = [];
-      const blocks = [];
-      let size = plan.head.length;
-      const add = (e, force) => {
-        const t = '### ' + e.name + (e.kind ? ' (' + e.kind + ')' : '') + '\n' + e.text;
-        if (!force && size + t.length > plan.budget) return;
-        blocks.push(t);
-        names.push(e.name);
-        size += t.length + 2;
-      };
-      plan.core.forEach((e) => add(e, true));
-      plan.extra.filter((e) => e.keys.some((k) => mentionsKey(userText, k))).forEach((e) => add(e, false));
-      const logs = [];
-      for (let i = plan.log.length - 1; i >= 0; i--) {
-        const t = '- ' + plan.log[i];
-        if (size + t.length > plan.budget) break;
-        logs.unshift(t);
-        size += t.length + 1;
-      }
-      const parts = [];
-      if (plan.head) parts.push(plan.head);
-      if (blocks.length) parts.push('## Characters and details in play\n' + blocks.join('\n\n'));
-      if (logs.length) parts.push('## Recent events in detail (oldest first)\n' + logs.join('\n'));
-      if (logs.length) names.push(logs.length + ' reply summaries');
-      return { text: plan.prefix + parts.join('\n\n') + plan.suffix, names };
     }
 
     function report(info, text, status) {
@@ -349,20 +311,69 @@
     });
   }
 
+  // Builds the notes attached to a message from a plan (see buildPlan): the
+  // story, the entries in play, entries the message mentions (while they
+  // fit), then the newest reply summaries. Self-contained: the page hook gets
+  // a copy of it.
+  function composeMemory(plan, userText) {
+    if (typeof plan === 'string') return { text: plan, names: [] };
+    const mentionsKey = (text, key) => {
+      const k = String(key || '').trim();
+      if (k.length < 2) return false;
+      const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp('(^|[^\\p{L}\\p{N}])' + esc + '($|[^\\p{L}\\p{N}])', 'iu').test(text);
+    };
+    const names = [];
+    const blocks = [];
+    let size = plan.head.length;
+    // Entries in play are always sent, but a very long one is shortened for
+    // this message (its start and its newest facts) so the notes fit.
+    const room = Math.max(4000, plan.budget - size);
+    const share = Math.max(1200, Math.floor(room * 0.7 / Math.max(1, plan.core.length)));
+    const trim = (t) => {
+      if (t.length <= share) return t;
+      const head = t.slice(0, Math.floor(share * 0.35));
+      const tail = t.slice(t.length - Math.floor(share * 0.65));
+      return head.slice(0, Math.max(head.lastIndexOf('\n'), 1)) + '\n[…]\n' + tail.slice(tail.indexOf('\n') + 1);
+    };
+    const add = (e, force) => {
+      const t = '### ' + e.name + (e.kind ? ' (' + e.kind + ')' : '') + '\n' + (force ? trim(e.text) : e.text);
+      if (!force && size + t.length > plan.budget) return;
+      blocks.push(t);
+      names.push(e.name);
+      size += t.length + 2;
+    };
+    plan.core.forEach((e) => add(e, true));
+    plan.extra.filter((e) => e.keys.some((k) => mentionsKey(userText, k))).forEach((e) => add(e, false));
+    const logs = [];
+    for (let i = plan.log.length - 1; i >= 0; i--) {
+      const t = '- ' + plan.log[i];
+      if (size + t.length > plan.budget) break;
+      logs.unshift(t);
+      size += t.length + 1;
+    }
+    const parts = [];
+    if (plan.head) parts.push(plan.head);
+    if (blocks.length) parts.push('## Characters and details in play\n' + blocks.join('\n\n'));
+    if (logs.length) parts.push('## Recent events in detail (oldest first)\n' + logs.join('\n'));
+    if (logs.length) names.push(logs.length + ' reply summaries');
+    return { text: plan.prefix + parts.join('\n\n') + plan.suffix, names };
+  }
+
   function installPageHook() {
     const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-    if (W === window) { pageHook(window); return; }
+    if (W === window) { pageHook(window, composeMemory); return; }
     if (W.__smxHooked) return;
     try {
       const s = document.createElement('script');
-      s.textContent = '(' + pageHook.toString() + ')(window);';
+      s.textContent = '(' + pageHook.toString() + ')(window, ' + composeMemory.toString() + ');';
       (document.head || document.documentElement).appendChild(s);
       s.remove();
     } catch (e) { /* ignore */ }
     // Inline scripts can be blocked by a Content-Security-Policy; fall back to
     // patching the page directly through unsafeWindow.
     if (!document.documentElement || document.documentElement.getAttribute('data-smx-hook') !== '1') {
-      try { pageHook(W); } catch (e) { console.warn('[Story Manager] could not hook the page', e); }
+      try { pageHook(W, composeMemory); } catch (e) { console.warn('[Story Manager] could not hook the page', e); }
     }
   }
 
@@ -422,10 +433,10 @@
     foldEvery: 9,     // AI replies between story & character updates
     chapterSize: 15,  // AI replies per chapter
     parallel: 1,      // summary requests that may run at the same time
-    injectEvery: 1,   // attach memory to every Nth message (0 = never)
+    injectEvery: 3,   // attach memory to every Nth message (0 = never)
     detail: 'detailed', // how long summaries and entries are: standard | detailed | maximum
     logAttach: 15,    // detailed reply summaries attached to each message
-    injectBudget: 24000, // most characters attached to one message
+    injectBudget: 16000, // most characters attached to one message
     autoEnable: true, // manage new chats automatically
     buttonSide: 'right',
   };
@@ -1053,6 +1064,7 @@
       'STORY rules:',
       '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries, things that must be followed up), ## World & Timeline (world rules, the date and time, how much time has passed, important background).',
       '- Output only the sections that change, each as === SECTION: Name === followed by its complete new text, keeping every fact that is still true. Leave out sections that did not change. If a section is empty, write it in full.',
+      '- Keep each section short, at most about 1,500 characters: it is sent with every message. What happened belongs in the history (chapters), details about characters, places and items in their entries.',
       '- Details about a character, place or item belong in its entry, not here.',
       '',
       'ENTRY rules:',
@@ -1298,6 +1310,7 @@
       (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true, do not repeat them):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
       (chat.ignored.length ? 'NEVER write entries for (the user removed them): ' + chat.ignored.join(', ') + '\n\n' : '') +
       'NEW EVENTS (oldest first):\n<<<\n' + events + '\n>>>\n\n' +
+      (chat.memory.length > 6000 ? 'The STORY is ' + chat.memory.length + ' characters, which is too long: rewrite every section in full, at most 1,500 characters each, and move details about characters, places and items into their entries (with | add).\n\n' : '') +
       'JOB: UPDATE. Write the changed STORY sections, the CAST, and every new or changed ENTRY now.';
     const before = knowledgeSize(chat.memory.trim(), chat.entries);
     let result = null;
@@ -1945,6 +1958,46 @@
     }
   }
 
+  // Starts a new chat with the same bot that carries on the story: its first
+  // message holds the memory and the last AI reply, and the new chat gets a
+  // copy of this chat's memory. For chats that got too long for the AI.
+  async function continueInNewChat(chat) {
+    const conv = await rpc('GET', '/conversations/' + chat.id);
+    const toolId = conv && (conv.toolId || (conv.tool && conv.tool.id));
+    if (!toolId) throw new Error('Could not find which bot this chat uses');
+    const msgs = await fetchMessages(chat.id, { mode: 'latest' });
+    const last = [...msgs].reverse().find((m) => m.role === 'assistant');
+    const plan = buildPlan(chat);
+    // The first message may carry more than usual: it is the only one at first.
+    const memory = plan ? composeMemory(Object.assign(plan, { budget: Math.max(plan.budget, 30000) }), '').text : '';
+    const text = memory + '\n\n(OOC: We are continuing our story from a previous chat that became too long. ' +
+      'The notes above hold everything important so far.' + (last ? ' This was your last reply there:)\n\n' + last.text.slice(-6000) +
+      '\n\n(OOC: Continue the story from exactly this point, in the same style.)' : ' Continue the story from where it left off.)');
+    const res = await rpc('POST', '/chat', {
+      toolId,
+      revision: conv.toolRevision || (conv.tool && conv.tool.revision) || 1,
+      modelId: conv.modelId || (conv.model && conv.model.id) || '',
+      requestId: uuid4(),
+      elements: [{ type: 'text', text }],
+      language: 'en',
+    });
+    const id = res && res.conversationId && String(res.conversationId).toLowerCase();
+    if (!id) throw new Error('MiniApps did not start a new chat');
+    const copy = Object.assign(JSON.parse(JSON.stringify(chat)), {
+      id, processedIds: [], processedCount: 0, readCount: 0, knownMessages: 0, backlog: null, lastError: '',
+      sentSinceInject: 1, history: [], continuedFrom: chat.id,
+    });
+    logJob(copy, { kind: 'continue', label: 'Continued the story from chat ' + chat.id.slice(0, 8), ok: true, ms: 0 });
+    chats[id] = copy;
+    if (!chatIndex.includes(id)) chatIndex.push(id);
+    await Store.set('chatIndex', chatIndex);
+    await saveChat(copy);
+    chat.continuedIn = id;
+    logJob(chat, { kind: 'continue', label: 'Story continued in a new chat (' + id.slice(0, 8) + ')', ok: true, ms: 0 });
+    await saveChat(chat);
+    return id;
+  }
+
   // ---------------------------------------------------------------------------
   // Finding a chat's messages. MiniApps has no public API, so besides the
   // documented GET /conversations/{id} the script learns which request the
@@ -2273,7 +2326,13 @@
 
   const ready = (async () => {
     settings = Object.assign({}, DEFAULT_SETTINGS, await Store.get('settings', {}));
-    if (settings.injectBudget === 16000) settings.injectBudget = DEFAULT_SETTINGS.injectBudget;
+    // Each attached block stays in the chat for good, and MiniApps sends the
+    // whole chat to the AI: attach less, less often (once, for old settings).
+    if (!settings.attachSet) {
+      if (settings.injectBudget >= 16000) settings.injectBudget = DEFAULT_SETTINGS.injectBudget;
+      if (settings.injectEvery === 1) settings.injectEvery = DEFAULT_SETTINGS.injectEvery;
+      settings.attachSet = true;
+    }
     // Helper chats used to be kept forever, until they got too long for the bot.
     if (!settings.rotateSet) { settings.helperRotate = DEFAULT_SETTINGS.helperRotate; settings.rotateSet = true; }
     if (!DETAIL[settings.detail]) settings.detail = DEFAULT_SETTINGS.detail;
@@ -2748,6 +2807,19 @@
       renderPanel(true);
     };
 
+    const continueNew = async () => {
+      if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+      if (!confirm('Start a new chat with the same bot that carries on this story? Its first message holds the memory and your last AI reply, and the new chat gets a copy of this memory. This chat stays as it is.')) return;
+      await save(true);
+      try {
+        toast('Starting the new chat…');
+        const id = await continueInNewChat(chat);
+        location.href = location.pathname.includes(chat.id) ? location.pathname.replace(chat.id, id) : '/c/' + id;
+      } catch (e) {
+        toast('Could not start the new chat: ' + (e.message || e), true);
+      }
+    };
+
     const undo = async () => {
       if (!chat.history.length) return;
       restore(chat, chat.history.shift());
@@ -2778,7 +2850,11 @@
           ' ', el('button', { class: 'btn', onclick: () => { stopRequested[chat.id] = true; toast('Stopping after the current request…'); } }, '■ Stop')) : null,
         !isBusy && chat.backlog ? el('div', { class: 'error' }, '⚠ ' + chat.backlog.messages + ' messages are not in the memory yet (about ' +
           chat.backlog.requests + ' requests). Tap "Update now" to read them.') : null,
-        chat.lastError ? el('div', { class: 'error' }, '⚠ ' + chat.lastError) : null),
+        chat.lastError ? el('div', { class: 'error' }, '⚠ ' + chat.lastError) : null,
+        chatErrors[chat.id] && TOO_LONG_RE.test(chatErrors[chat.id].error)
+          ? el('div', { class: 'error' }, '⚠ This chat has become too long for the AI (MiniApps sends the whole chat every time). Tap "Continue in a new chat" below to carry the story on in a fresh chat.') : null,
+        chat.continuedIn ? el('div', {}, 'This story continues in chat ' + chat.continuedIn.slice(0, 8) + '.') : null,
+        chat.continuedFrom ? el('div', {}, 'Continued from chat ' + chat.continuedFrom.slice(0, 8) + ', with its memory.') : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),
       el('label', {}, '📌 Pinned facts (never changed automatically, always sent)'),
       pinned,
@@ -2806,7 +2882,8 @@
       el('div', { class: 'btns' },
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: factCheck }, 'Check for missing facts'),
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: redoFromSummaries }, 'Redo story & characters from summaries'),
-        el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat')),
+        el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat'),
+        el('button', { class: 'btn', disabled: isBusy, onclick: continueNew }, 'Continue in a new chat')),
       activityView(chat),
       diagnosticsBox());
   }
@@ -3127,6 +3204,7 @@
       detail: f.detail.value,
       logAttach: Math.max(0, parseInt(f.logAttach.value, 10) || 0),
       injectBudget: Math.max(2000, parseInt(f.injectBudget.value, 10) || DEFAULT_SETTINGS.injectBudget),
+      attachSet: true,
       autoEnable: f.autoEnable.checked,
       buttonSide: f.buttonSide.value,
     });

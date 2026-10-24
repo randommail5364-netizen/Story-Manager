@@ -167,7 +167,8 @@ async function main() {
       const c = convs[m[1]];
       if (!c) return json({ message: 'nope' }, 404);
       const title = c.toolId === 'tool-story' ? 'Dragon Tale' : 'helper';
-      return json(altApi ? { id: m[1], title } : { id: m[1], title, messages: c.messages });
+      const info = { id: m[1], title, toolId: c.toolId, toolRevision: 1, modelId: 'm1' };
+      return json(altApi ? info : Object.assign(info, { messages: c.messages }));
     }
     if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/([^/]+)\/messages$/))) {
       // Same shape as the real site: { items, hasMore, nextBeforeMessageId }.
@@ -268,7 +269,7 @@ async function main() {
     });
   });
 
-  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1 };
+  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1, attachSet: true };
   // A fake screen wake lock that records when it is taken and released.
   await ctx.addInitScript(() => {
     window.wakeLog = [];
@@ -873,6 +874,36 @@ async function main() {
   check(checked.log.filter((e) => e.checked).length === withFacts && /Checked the facts of replies 1–/.test(checked.jobs.find((j) => j.kind === 'check').label + checked.jobs.map((j) => j.label).join()),
     'all ' + withFacts + ' summaries marked as checked; recorded in Activity');
   check(/Facts checked: \d+ of \d+/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel shows how many facts are checked');
+
+  console.log('35) A chat that got too long for the AI carries on in a new chat, with its memory');
+  await page.locator('#story-manager-root >> .x').click();
+  const oldId = await page.evaluate(() => location.pathname.split('/c/')[1]);
+  const oldChat = await keyNow();
+  const lastReply35 = recapConv.messages.filter((x) => x.origin === 'assistant').pop().elements[0].text;
+  // The site reports the AI's context-length error for the story chat.
+  await page.evaluate((id) => document.dispatchEvent(new CustomEvent('smx:ws', { detail: JSON.stringify({ dir: 'in', event: 'ce',
+    text: JSON.stringify([{ conversationId: id, requestId: 'x', messageId: 'y', replyToMessageId: null, code: 'error',
+      error: "This endpoint's maximum context length is 163840 tokens. However, you requested about 177566 tokens. Please reduce the length" }]) }) })), oldId);
+  await page.locator('#story-manager-root >> .fab').click();
+  check(/too long for the AI/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel says the chat is too long and what to do');
+  const convsBefore35 = Object.keys(convs).length;
+  page.once('dialog', (d) => d.accept());
+  await page.getByRole('button', { name: 'Continue in a new chat' }).click({ timeout: 120000 });
+  await waitFor(async () => (await page.evaluate(() => location.pathname.split('/c/')[1])) !== oldId, 30000, 'move to the new chat');
+  const newId = await page.evaluate(() => location.pathname.split('/c/')[1]);
+  const newConv = convs[newId];
+  const opener = newConv && newConv.messages[0].elements[0].text;
+  check(Object.keys(convs).length === convsBefore35 + 1 && newConv.toolId === 'tool-story', 'a new chat with the same bot');
+  check(/^\[\[STORY-MEMORY\]\][\s\S]*### Mira[\s\S]*\[\[\/STORY-MEMORY\]\]/.test(opener) && opener.includes(lastReply35.slice(-40)) && /Continue the story from exactly this point/.test(opener),
+    'its first message carries the memory and the last reply');
+  await page.waitForTimeout(1500);
+  const moved = await keyNow();
+  check(moved.continuedFrom === oldId && moved.entries.length === oldChat.entries.length && moved.log.length === oldChat.log.length &&
+    moved.chapters.length === oldChat.chapters.length, 'the new chat has a copy of the memory');
+  check((await page.evaluate((id) => JSON.parse(localStorage.getItem('smx:chat:' + id)), oldId)).continuedIn === newId, 'the old chat points to the new one');
+  await waitFor(() => newConv.messages.length >= 2, 8000, 'first reply in the new chat');
+  await page.evaluate(() => window.sendMsg('And so we go on.'));
+  check(/^\[\[STORY-MEMORY\]\]/.test(chatBodies[chatBodies.length - 1].elements[0].text), 'the memory goes on being attached in the new chat');
 
   await browser.close();
   console.log('\nAll checks passed.');

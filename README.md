@@ -17,7 +17,9 @@ You don't need to do anything once it's set up.
    - **always:** your pinned facts, the chapters (the newest in full, older ones by title once they no longer fit), and the story now
    - entries for everyone and everything **in the current scene** or the last few messages
    - entries **your message mentions**, by name or any nickname
-   - the **reply summaries since the last chapter**, newest first, filling the space left (24,000 characters by default)
+   - the **reply summaries since the last chapter**, newest first, filling the space left (16,000 characters in all by default; very long character entries are shortened for the message, keeping their start and newest facts)
+
+   This happens on every 3rd message by default (the block stays in the chat, so the AI still sees the last one).
 
    A character who isn't involved right now doesn't take up space, but comes back the moment they're mentioned. The storyteller AI is told to use the notes silently.
 
@@ -75,9 +77,9 @@ Other settings:
 
 - **Summarise new AI replies every … replies** (3), **Update the story & characters every … replies** (9) and **Chapter length** (15). Lower means fresher, at the cost of more requests.
 - **Summary requests that may run at the same time** (1). 2 or 3 makes catching up faster, each in its own helper chat. Set it back to 1 if the bot starts failing.
-- **Attach the memory every … messages.** `1` attaches it to every message, which is the most reliable. `0` turns attaching off.
+- **Attach the memory every … messages.** `3` by default. `1` attaches it to every message, but each block stays in the chat and makes it longer. `0` turns attaching off.
 - **Summary detail.** Standard, Detailed or Maximum: how long reply summaries and character entries are. More detail means more memory-keeper requests, because each one covers fewer replies. Existing summaries keep their length until you tap Rebuild.
-- **Most characters attached to one message.** 24,000 by default.
+- **Most characters attached to one message.** 16,000 by default.
 - **Detailed reply summaries attached to each message.** Everything since the last chapter, and at least 15, as far as the space allows.
 - **Backup.** Export and import all your chats' memories, e.g. to move to another device. Your API key is never included.
 
@@ -94,6 +96,7 @@ Other settings:
 
 ## Good to know
 
+- **Very long chats.** MiniApps sends the *whole* chat to the AI with every message, and each attached memory block stays in the chat. Once a chat is longer than the AI can read (e.g. DeepSeek's 163,840 tokens), MiniApps shows a "maximum context length" error and 📖 says so. Tap **Continue in a new chat**: it starts a new chat with the same bot whose first message carries the memory and your last AI reply, and the new chat gets a copy of the whole memory. To make chats last longer, the memory is attached to every 3rd message by default and kept to 16,000 characters (long character entries are shortened for that message, keeping their start and newest facts).
 - **The screen stays on while the memory is updated.** Updates with the MiniApps bot can take many minutes, and they stop if the phone locks or you switch away from the tab. Story Manager asks the browser to keep the screen on until the update is done (Diagnostics shows whether that worked). Keep the miniapps.ai tab open in front until it finishes.
 - **You'll see the memory block in your own messages.** It's added to the text you send, so the chat shows it above what you typed. The add-on ignores these blocks when it updates the memory.
 - **Your data stays on your phone.** Memories and settings are saved in your browser's userscript storage. The only places they're sent are miniapps.ai and the memory-keeper AI you choose.

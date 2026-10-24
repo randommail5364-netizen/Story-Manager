@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.4.0
+// @version      3.4.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -158,7 +158,16 @@
           else if (typeof body.text === 'string') { body.text = made.text + '\n\n' + body.text; injected = true; }
         }
       }
-      emit('sent', { conversationId: convId, injected, userText, included, size });
+      // The request's fields (names, IDs and flags; never message text), so
+      // Diagnostics can show how e.g. an edit differs from a new message.
+      const shape = {};
+      for (const [k, v] of Object.entries(body)) {
+        if (k === 'elements') shape[k] = Array.isArray(v) ? v.map((x) => (x && x.type) || '?').join(',') : typeof v;
+        else if (typeof v === 'string') shape[k] = /text|content|message|prompt/i.test(k) || v.length > 64 ? 'text(' + v.length + ')' : v;
+        else if (v === null || typeof v !== 'object') shape[k] = v;
+        else shape[k] = Array.isArray(v) ? 'array[' + v.length + ']' : '{' + Object.keys(v).join(',') + '}';
+      }
+      emit('sent', { conversationId: convId, injected, userText, included, size, shape });
       return injected;
     }
 
@@ -2445,10 +2454,13 @@
   });
 
   const sentStats = { sent: 0, withMemory: 0 };
+  const sendShapes = [];        // the fields of recent send requests, for Diagnostics
   const lastSentInfo = {};      // chat id -> what the last message carried
 
   on('sent', async (d) => {
     sentStats.sent++;
+    if (d.shape) sendShapes.unshift({ at: Date.now(), shape: d.shape, injected: !!d.injected });
+    sendShapes.length = Math.min(sendShapes.length, 8);
     if (d.injected) sentStats.withMemory++;
     if (d.conversationId && d.injected) {
       lastSentInfo[d.conversationId] = 'story' + (d.included && d.included.length ? ', ' + d.included.join(', ') : '') +
@@ -3057,6 +3069,9 @@
       'Messages sent on this page: ' + sentStats.sent + ' · with memory attached: ' + sentStats.withMemory +
         (currentId && lastSentInfo[currentId] ? ' · last carried: ' + lastSentInfo[currentId] : ''),
       'Hook: ' + (hookStats ? JSON.stringify(hookStats) : 'not running'),
+      '',
+      'Send requests (newest first; field names and short values, no message text):',
+      ...(sendShapes.length ? sendShapes.map((x) => Math.round((Date.now() - x.at) / 1000) + 's ago' + (x.injected ? ' [memory attached]' : '') + ': ' + JSON.stringify(x.shape)) : ['(none yet)']),
       '',
       'Site requests to MiniApps (newest first, no message text):',
     ];

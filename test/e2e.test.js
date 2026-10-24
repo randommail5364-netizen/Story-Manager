@@ -446,6 +446,9 @@ async function main() {
   await page.getByText('Diagnostics', { exact: true }).click();
   const diag2 = await page.locator('#story-manager-root >> textarea.diag').inputValue();
   check(/in reply · messages: \d+/.test(diag2) && /Hook: \{"mode":"page"/.test(diag2), 'diagnostics show socket events and hook activity');
+  const shapeLine = (diag2.split('Send requests')[1] || '').split('\n')[1] || '';
+  check(/^\d+s ago \[memory attached\]: \{/.test(shapeLine) && /"conversationId":"[0-9a-f-]{36}"/.test(shapeLine) && /"elements":"text"/.test(shapeLine) && !/Socket send check/.test(diag2),
+    'diagnostics show the fields of send requests, without the message text');
 
   console.log('12) Script starts after the site already loaded the chat');
   await page.evaluate(() => {

@@ -191,6 +191,10 @@ async function main() {
       const hasMore = end - limit > 0;
       return json({ items, hasMore, nextBeforeMessageId: hasMore ? items[0].id : null });
     }
+    if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/([^/]+)\/messages\/pinned$/))) {
+      const c = convs[m[1]];
+      return json({ items: c ? c.messages.filter((x) => pins[m[1]] && pins[m[1]].has(x.id)) : [] });
+    }
     if (req.method() === 'POST' && (m = url.pathname.match(/^\/chat-messages\/([^/]+)\/([^/]+)\/(pin|unpin)$/))) {
       const set = pins[m[1]] || (pins[m[1]] = new Set());
       if (m[3] === 'unpin') { set.delete(m[2]); return json({}, 201); }
@@ -210,7 +214,7 @@ async function main() {
       // A plain edit: the message's text is replaced, no new reply.
       if (body.overrideMessageId && body.editInPlace) {
         const target = convs[body.conversationId].messages.find((x) => x.id === body.overrideMessageId);
-        if (!target) return json({ message: 'Message not found' }, 404);
+        if (!target) return json({ message: 'Message to override not found' }, 400);
         target.elements = [{ type: 'text', text: body.elements[0].text }];
         edits.push(body);
         return json({ conversationId: body.conversationId, chatMessageId: target.id, requestId: body.requestId, addedMessages: [] });
@@ -1002,6 +1006,25 @@ async function main() {
   await page.locator('#story-manager-root >> .x').click();
   await page.evaluate((id) => window.editMsg(id, 'Then we rest by the fire.'), lastUser());
   check(!/STORY-MEMORY/.test(edits[edits.length - 1].elements[0].text), 'the user\'s own edits get no memory');
+
+  console.log('38) A pinned memory message that was deleted or regenerated is replaced by the next one');
+  // Like "edit and regenerate": the pinned message is replaced by a new one.
+  const gone = carrier;
+  const gi = newConv.messages.findIndex((x) => x.id === gone);
+  newConv.messages[gi] = Object.assign({}, newConv.messages[gi], { id: uuid() });
+  pins[newId].delete(gone);
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> textarea').first().fill('Mira cannot swim. Ash cannot read.');
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await waitFor(async () => !(await keyNow()).pinnedMemoryId, 15000, 'the lost pinned message forgotten');
+  const lostState = await keyNow();
+  check(!lostState.memoryMsgError && /no longer pinned/.test(lostState.jobs[0].label), 'noticed that the pinned message is gone, without an error');
+  await page.locator('#story-manager-root >> .x').click();
+  await waitFor(() => newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.evaluate(() => window.sendMsg('Onwards, freshly pinned.'));
+  check(/^\[\[STORY-MEMORY\]\][\s\S]*Ash cannot read/.test(chatBodies[chatBodies.length - 1].elements[0].text), 'the next message carries the memory again');
+  await waitFor(() => pinnedOf().includes(lastUser()), 8000, 'new carrier pinned');
+  check((await keyNow()).pinnedMemoryId === lastUser(), 'and becomes the new pinned memory message');
 
   await browser.close();
   console.log('\nAll checks passed.');

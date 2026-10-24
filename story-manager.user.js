@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.5.0
+// @version      3.5.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2521,6 +2521,21 @@
     const text = block + (chat.pinnedMemoryText ? '\n\n' + chat.pinnedMemoryText : '');
     if (chat.memoryMsgHash === hashText(text) && chat.memoryMsgSynced) return;
     const t0 = Date.now();
+    // The message may be gone (deleted, or replaced by "edit and regenerate")
+    // or unpinned: then the next message carries the memory and is pinned instead.
+    const lost = async (why) => {
+      chat.pinnedMemoryId = null;
+      chat.memoryMsgSynced = false;
+      chat.memoryMsgError = '';
+      logJob(chat, { kind: 'pin', label: 'The pinned memory message ' + why + '; your next message carries the memory and is pinned instead', ok: true, ms: Date.now() - t0 });
+      await saveChat(chat);
+      renderPanel();
+    };
+    try {
+      const pinned = await rpc('GET', '/conversations/' + chat.id + '/messages/pinned');
+      const items = pinned && Array.isArray(pinned.items) ? pinned.items : null;
+      if (items && !items.some((m) => m && String(m.id) === chat.pinnedMemoryId)) return lost('is no longer pinned (deleted, regenerated or unpinned)');
+    } catch (e) { /* checked again by the edit below */ }
     try {
       if (!chat.tool) {
         const conv = await rpc('GET', '/conversations/' + chat.id);
@@ -2539,6 +2554,7 @@
       logJob(chat, { kind: 'pin', label: 'Updated the pinned memory message (' + text.length.toLocaleString() + ' characters)', ok: true, ms: Date.now() - t0 });
     } catch (e) {
       const msg = String(e.message || e).slice(0, 160);
+      if (/not found|HTTP 404/i.test(msg)) return lost('no longer exists');
       if (chat.memoryMsgError !== msg) toast('Could not update the pinned memory message: ' + msg + '. The memory is attached to your messages instead.', true);
       chat.memoryMsgSynced = false;
       chat.memoryMsgError = msg;

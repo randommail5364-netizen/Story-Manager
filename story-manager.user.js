@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.3.0
+// @version      3.4.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -437,6 +437,7 @@
     detail: 'detailed', // how long summaries and entries are: standard | detailed | maximum
     logAttach: 15,    // detailed reply summaries attached to each message
     injectBudget: 16000, // most characters attached to one message
+    pinMemory: true,  // keep the newest message carrying the memory pinned
     autoEnable: true, // manage new chats automatically
     buttonSide: 'right',
   };
@@ -1992,6 +1993,10 @@
     if (!chatIndex.includes(id)) chatIndex.push(id);
     await Store.set('chatIndex', chatIndex);
     await saveChat(copy);
+    const opener = (Array.isArray(res.addedMessages) ? res.addedMessages : []).filter((m) => m && roleOf(m) === 'user').pop();
+    const openerId = (opener && opener.id) || res.chatMessageId;
+    copy.pinnedMemoryId = null;
+    if (openerId) await pinMemory(copy, String(openerId));
     chat.continuedIn = id;
     logJob(chat, { kind: 'continue', label: 'Story continued in a new chat (' + id.slice(0, 8) + ')', ok: true, ms: 0 });
     await saveChat(chat);
@@ -2470,8 +2475,46 @@
       chat.sentSinceInject += 1;
       await saveChat(chat);
     }
+    // The message that carried the memory gets pinned (it then stays in the
+    // AI's memory however long the chat gets); the previous one is unpinned.
+    if (lastSent && lastSent.injected) {
+      const added = Array.isArray(data.addedMessages) ? data.addedMessages : [];
+      const mine = added.filter((m) => m && roleOf(m) === 'user').pop();
+      const mid = (mine && mine.id) || data.chatMessageId;
+      if (mid) pinMemory(chat, String(mid));
+    }
     waitForReply(id, lastSent && lastSent.userText.replace(MEM_BLOCK_RE, ''));
   });
+
+  // MiniApps (PRO) keeps pinned messages in the AI's memory permanently, with
+  // at most 2 pins per chat. Story Manager uses one of them for the newest
+  // message that carries the memory, and never touches the user's own pins.
+  async function pinMemory(chat, mid) {
+    if (!settings.pinMemory || chat.pinnedMemoryId === mid) return;
+    const old = chat.pinnedMemoryId;
+    const pin = (m) => rpc('POST', '/chat-messages/' + chat.id + '/' + m + '/pin', {});
+    const unpin = (m) => rpc('POST', '/chat-messages/' + chat.id + '/' + m + '/unpin', {}).catch(() => {});
+    try {
+      try {
+        await pin(mid);
+      } catch (e) {
+        // Both pin slots taken: free ours first, then try again.
+        if (!old) throw e;
+        await unpin(old);
+        await pin(mid);
+      }
+      if (old) await unpin(old);
+      chat.pinnedMemoryId = mid;
+      chat.pinError = '';
+      logJob(chat, { kind: 'pin', label: 'Pinned the newest memory message' + (old ? ' (unpinned the previous one)' : ''), ok: true, ms: 0 });
+    } catch (e) {
+      const msg = String(e.message || e).slice(0, 160);
+      if (chat.pinError !== msg) toast('Could not pin the memory message: ' + msg + '. (Pinning needs MiniApps PRO and a free pin slot.)', true);
+      chat.pinError = msg;
+      logJob(chat, { kind: 'pin', label: 'Pinning the memory message', ok: false, ms: 0, error: msg });
+    }
+    await saveChat(chat);
+  }
 
   function setCurrent(id) {
     if (!id || id === currentId || helperIds.has(id)) return;
@@ -2853,6 +2896,8 @@
         chat.lastError ? el('div', { class: 'error' }, '⚠ ' + chat.lastError) : null,
         chatErrors[chat.id] && TOO_LONG_RE.test(chatErrors[chat.id].error)
           ? el('div', { class: 'error' }, '⚠ This chat has become too long for the AI (MiniApps sends the whole chat every time). Tap "Continue in a new chat" below to carry the story on in a fresh chat.') : null,
+        chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
+        chat.pinError && settings.pinMemory ? el('div', { class: 'error' }, '⚠ Could not pin the memory message: ' + chat.pinError) : null,
         chat.continuedIn ? el('div', {}, 'This story continues in chat ' + chat.continuedIn.slice(0, 8) + '.') : null,
         chat.continuedFrom ? el('div', {}, 'Continued from chat ' + chat.continuedFrom.slice(0, 8) + ', with its memory.') : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),
@@ -2996,6 +3041,8 @@
         chat.log.filter((e) => e.checked).length + ' facts-checked, ' + st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +
         ' · settings: summaries every ' + settings.updateEvery + ', story & characters every ' + foldEvery() + ', chapter every ' + chapterSize() +
         ', ' + parallel() + ' at once, detail ' + settings.detail; })() : 'no chat'),
+      'Pinned memory message: ' + (!settings.pinMemory ? 'off' : chat && chat.pinnedMemoryId ? chat.pinnedMemoryId.slice(0, 8) : 'none yet') +
+        (chat && chat.pinError ? ' · last pin error: ' + chat.pinError : ''),
       'Last tidy-up: ' + (chat && chat.checked ? ago(chat.checked) : 'never') +
         (chat && chat.jobs ? ' · ' + ((chat.jobs.find((j) => j.kind === 'check') || {}).label || 'nothing needed fixing') : ''),
       'Recent jobs: ' + (chat && chat.jobs && chat.jobs.length ? chat.jobs.slice(0, 6).map((j) => (j.ok ? '✓ ' : '✗ ') + j.label +
@@ -3163,6 +3210,8 @@
     f.detail = el('select', {}, ...Object.entries(DETAIL).map(([k, d]) => el('option', { value: k, selected: s.detail === k ? '' : null }, d.label)));
     f.logAttach = el('input', { type: 'number', min: '0', value: String(s.logAttach) });
     f.injectBudget = el('input', { type: 'number', min: '2000', step: '1000', value: String(s.injectBudget) });
+    f.pinMemory = el('input', { type: 'checkbox', id: 'smx-pin' });
+    f.pinMemory.checked = s.pinMemory !== false;
     f.autoEnable = el('input', { type: 'checkbox', id: 'smx-auto' });
     f.autoEnable.checked = s.autoEnable;
     f.buttonSide = el('select', {},
@@ -3206,6 +3255,7 @@
       injectBudget: Math.max(2000, parseInt(f.injectBudget.value, 10) || DEFAULT_SETTINGS.injectBudget),
       attachSet: true,
       autoEnable: f.autoEnable.checked,
+      pinMemory: f.pinMemory.checked,
       buttonSide: f.buttonSide.value,
     });
 
@@ -3269,6 +3319,8 @@
       el('div', { class: 'hint' }, 'The story and entries in play are always attached; entries your message mentions and the newest reply summaries fill the rest of this space.'),
       el('label', {}, 'Detailed reply summaries attached to each message'), f.logAttach,
       el('div', { class: 'hint' }, 'Every AI reply gets a summary (length set by Summary detail above). The newest ones are attached to your messages in full, as far as the space above allows. More helps the AI remember detail, but makes every message longer.'),
+      el('div', { class: 'row' }, f.pinMemory, el('label', { for: 'smx-pin' }, 'Pin the newest message that carries the memory')),
+      el('div', { class: 'hint' }, 'MiniApps (PRO) keeps pinned messages in the AI\'s memory however long the chat gets. Uses one of the 2 pin slots; your own pins are left alone.'),
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),
       el('label', {}, 'Button position'), f.buttonSide,
       el('div', { class: 'btns' },

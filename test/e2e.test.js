@@ -80,6 +80,7 @@ async function main() {
   let helperMaxChars = 0;      // longer requests get a "context length" chat error (0 = no limit)
   let helperRunaway = false;   // the bot writes a good start, then repeats itself forever
   let helperChatError = false; // the existing helper chat answers with a "ce" error event     // how long the MiniApps-bot memory keeper takes to answer
+  const pins = {};           // conversation id -> Set of pinned message ids
   const aborts = [];         // POST /chat/abort bodies         // the page's fake Socket.IO connection, once open
   function reply(conv, text, delay, convId) {
     const msg = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text: '- **' }] };
@@ -185,6 +186,13 @@ async function main() {
       const items = c.messages.slice(start, end).map((x, i) => Object.assign({ conversationId: m[1], index: start + i }, x));
       const hasMore = end - limit > 0;
       return json({ items, hasMore, nextBeforeMessageId: hasMore ? items[0].id : null });
+    }
+    if (req.method() === 'POST' && (m = url.pathname.match(/^\/chat-messages\/([^/]+)\/([^/]+)\/(pin|unpin)$/))) {
+      const set = pins[m[1]] || (pins[m[1]] = new Set());
+      if (m[3] === 'unpin') { set.delete(m[2]); return json({}, 201); }
+      if (set.size >= 2 && !set.has(m[2])) return json({ message: 'You can pin at most 2 messages' }, 400);
+      set.add(m[2]);
+      return json({}, 201);
     }
     if (req.method() === 'POST' && url.pathname === '/chat/abort') {
       aborts.push(JSON.parse(req.postData()));
@@ -901,9 +909,34 @@ async function main() {
   check(moved.continuedFrom === oldId && moved.entries.length === oldChat.entries.length && moved.log.length === oldChat.log.length &&
     moved.chapters.length === oldChat.chapters.length, 'the new chat has a copy of the memory');
   check((await page.evaluate((id) => JSON.parse(localStorage.getItem('smx:chat:' + id)), oldId)).continuedIn === newId, 'the old chat points to the new one');
+  check(moved.pinnedMemoryId === newConv.messages[0].id && pins[newId] && pins[newId].has(newConv.messages[0].id), 'the first message, with the memory, is pinned');
   await waitFor(() => newConv.messages.length >= 2, 8000, 'first reply in the new chat');
   await page.evaluate(() => window.sendMsg('And so we go on.'));
   check(/^\[\[STORY-MEMORY\]\]/.test(chatBodies[chatBodies.length - 1].elements[0].text), 'the memory goes on being attached in the new chat');
+
+  console.log('36) The newest message that carries the memory stays pinned; the user\'s own pins are left alone');
+  await waitFor(() => newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  const pinnedOf = () => [...(pins[newId] || [])];
+  const lastUser = () => newConv.messages.filter((x) => x.origin === 'user').pop().id;
+  await waitFor(() => pinnedOf().includes(lastUser()), 8000, 'pin of the newest memory message');
+  check(pinnedOf().length === 1, 'only the newest memory message is pinned (' + pinnedOf().length + ')');
+  pins[newId].add('users-own-pin');
+  await page.evaluate(() => window.sendMsg('Onward again.'));
+  await waitFor(() => pinnedOf().includes(lastUser()), 8000, 'pin moved to the newest memory message');
+  check(pinnedOf().length === 2 && pinnedOf().includes('users-own-pin'), 'pin moved to the newest one; the user\'s own pin kept');
+  // Both slots are full now (the user's pin and ours): ours moves to the newest message.
+  await waitFor(() => newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.evaluate(() => window.sendMsg('And on.'));
+  await waitFor(() => pinnedOf().includes(lastUser()), 8000, 'pin moved with both slots full');
+  check(pinnedOf().length === 2 && pinnedOf().includes('users-own-pin'), 'with both slots full, ours is moved, never the user\'s');
+  // Both slots taken by the user's own pins: nothing of theirs is touched, and the panel says so.
+  pins[newId] = new Set(['users-own-pin', 'users-second-pin']);
+  await waitFor(() => newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.evaluate(() => window.sendMsg('Further.'));
+  await waitFor(async () => !!(await keyNow()).pinError, 8000, 'pin error recorded');
+  check(pinnedOf().join() === 'users-own-pin,users-second-pin', 'the user\'s two pins are left alone');
+  await page.locator('#story-manager-root >> .fab').click();
+  check(/Could not pin the memory message/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'the panel says why the memory could not be pinned');
 
   await browser.close();
   console.log('\nAll checks passed.');

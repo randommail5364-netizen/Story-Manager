@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.4.1
+// @version      3.5.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -144,7 +144,9 @@
         ? body.elements.find((e) => e && e.type === 'text' && typeof e.text === 'string')
         : null;
       userText = textEl ? textEl.text : (typeof body.text === 'string' ? body.text : '');
-      if (convId) {
+      // An edit (or edit and regenerate) of an earlier message gets no memory.
+      const edit = !!body.overrideMessageId;
+      if (convId && !edit) {
         let map = injectMap || {};
         if (!injectMap) {
           try { map = JSON.parse(doc.documentElement.getAttribute('data-smx-inject') || '{}'); } catch (e) { /* ignore */ }
@@ -167,7 +169,7 @@
         else if (v === null || typeof v !== 'object') shape[k] = v;
         else shape[k] = Array.isArray(v) ? 'array[' + v.length + ']' : '{' + Object.keys(v).join(',') + '}';
       }
-      emit('sent', { conversationId: convId, injected, userText, included, size, shape });
+      emit('sent', { conversationId: convId, injected, userText, included, size, shape, edit });
       return injected;
     }
 
@@ -447,6 +449,7 @@
     logAttach: 15,    // detailed reply summaries attached to each message
     injectBudget: 16000, // most characters attached to one message
     pinMemory: true,  // keep the newest message carrying the memory pinned
+    memoryMessage: true, // keep the memory in that pinned message, edited in place
     autoEnable: true, // manage new chats automatically
     buttonSide: 'right',
   };
@@ -633,7 +636,7 @@
     if (every > 0) {
       for (const id of Object.keys(chats)) {
         const c = chats[id];
-        if (!c.enabled) continue;
+        if (!c.enabled || memoryInMessage(c)) continue;
         if (c.sentSinceInject > 0 && c.sentSinceInject < every) continue;
         const plan = buildPlan(c);
         if (plan) map[id] = plan;
@@ -1833,6 +1836,7 @@
         chat.history = [before].concat(chat.history).slice(0, 5);
       }
       await saveChat(chat);
+      await refreshMemoryMessage(chat);
       return 'done';
     } catch (e) {
       if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) {
@@ -1934,6 +1938,7 @@
       tidy(chat);
       if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) chat.history = [before].concat(chat.history).slice(0, 5);
       await saveChat(chat);
+      await refreshMemoryMessage(chat);
       toast('Checked ' + todo.length + ' summaries\' facts' + (changed.size ? '; added missing facts to ' + [...changed].join(', ') : '; nothing was missing'));
       return 'done';
     } catch (e) {
@@ -2005,7 +2010,8 @@
     const opener = (Array.isArray(res.addedMessages) ? res.addedMessages : []).filter((m) => m && roleOf(m) === 'user').pop();
     const openerId = (opener && opener.id) || res.chatMessageId;
     copy.pinnedMemoryId = null;
-    if (openerId) await pinMemory(copy, String(openerId));
+    copy.tool = { toolId, revision: conv.toolRevision || (conv.tool && conv.tool.revision) || 1, modelId: conv.modelId || (conv.model && conv.model.id) || '' };
+    if (openerId) await pinMemory(copy, String(openerId), text.replace(MEM_BLOCK_RE, ''));
     chat.continuedIn = id;
     logJob(chat, { kind: 'continue', label: 'Story continued in a new chat (' + id.slice(0, 8) + ')', ok: true, ms: 0 });
     await saveChat(chat);
@@ -2470,7 +2476,11 @@
     lastSent = d;
     if (!d.conversationId) return;
     const chat = await getChat(d.conversationId, true);
-    chat.sentSinceInject = d.injected ? 1 : chat.sentSinceInject + 1;
+    // What the site sends with a message, for editing the memory message later.
+    const sh = d.shape || {};
+    if (sh.toolId && sh.modelId) chat.tool = { toolId: sh.toolId, revision: sh.revision || 1, modelId: sh.modelId };
+    if (typeof sh.personaId === 'string' && sh.personaId.length <= 64) chat.personaId = sh.personaId;
+    if (!d.edit) chat.sentSinceInject = d.injected ? 1 : chat.sentSinceInject + 1;
     await saveChat(chat);
   });
 
@@ -2493,15 +2503,59 @@
       const added = Array.isArray(data.addedMessages) ? data.addedMessages : [];
       const mine = added.filter((m) => m && roleOf(m) === 'user').pop();
       const mid = (mine && mine.id) || data.chatMessageId;
-      if (mid) pinMemory(chat, String(mid));
+      if (mid) pinMemory(chat, String(mid), lastSent.userText);
     }
     waitForReply(id, lastSent && lastSent.userText.replace(MEM_BLOCK_RE, ''));
   });
 
+  // With a pinned memory message, the memory is kept up to date in that one
+  // message (a plain edit: MiniApps' editInPlace, which writes no new reply),
+  // so new messages need not carry the memory. On failure, memory goes back
+  // to being attached to messages.
+  const MEMORY_MESSAGE_CHARS = 24000;
+  async function refreshMemoryMessage(chat) {
+    if (!settings.memoryMessage || !settings.pinMemory || !chat.pinnedMemoryId) return;
+    const plan = buildPlan(chat);
+    if (!plan) return;
+    const block = composeMemory(Object.assign(plan, { budget: Math.max(plan.budget, MEMORY_MESSAGE_CHARS) }), '').text;
+    const text = block + (chat.pinnedMemoryText ? '\n\n' + chat.pinnedMemoryText : '');
+    if (chat.memoryMsgHash === hashText(text) && chat.memoryMsgSynced) return;
+    const t0 = Date.now();
+    try {
+      if (!chat.tool) {
+        const conv = await rpc('GET', '/conversations/' + chat.id);
+        const toolId = conv && (conv.toolId || (conv.tool && conv.tool.id));
+        if (!toolId) throw new Error('could not find which bot this chat uses');
+        chat.tool = { toolId, revision: conv.toolRevision || (conv.tool && conv.tool.revision) || 1, modelId: conv.modelId || (conv.model && conv.model.id) || '' };
+      }
+      const body = Object.assign({ toolId: chat.tool.toolId, revision: chat.tool.revision, modelId: chat.tool.modelId, conversationId: chat.id, requestId: uuid4() },
+        chat.personaId ? { personaId: chat.personaId } : {},
+        { overrideMessageId: chat.pinnedMemoryId, editInPlace: true, elements: [{ type: 'text', text }], language: 'en' });
+      await rpc('POST', '/chat', body);
+      chat.memoryMsgHash = hashText(text);
+      chat.memoryMsgSynced = true;
+      chat.memoryMsgAt = Date.now();
+      chat.memoryMsgError = '';
+      logJob(chat, { kind: 'pin', label: 'Updated the pinned memory message (' + text.length.toLocaleString() + ' characters)', ok: true, ms: Date.now() - t0 });
+    } catch (e) {
+      const msg = String(e.message || e).slice(0, 160);
+      if (chat.memoryMsgError !== msg) toast('Could not update the pinned memory message: ' + msg + '. The memory is attached to your messages instead.', true);
+      chat.memoryMsgSynced = false;
+      chat.memoryMsgError = msg;
+      logJob(chat, { kind: 'pin', label: 'Updating the pinned memory message', ok: false, ms: Date.now() - t0, error: msg });
+    }
+    await saveChat(chat);
+    renderPanel();
+  }
+
+  function memoryInMessage(chat) {
+    return !!(settings.memoryMessage && settings.pinMemory && chat.pinnedMemoryId && chat.memoryMsgSynced);
+  }
+
   // MiniApps (PRO) keeps pinned messages in the AI's memory permanently, with
   // at most 2 pins per chat. Story Manager uses one of them for the newest
   // message that carries the memory, and never touches the user's own pins.
-  async function pinMemory(chat, mid) {
+  async function pinMemory(chat, mid, ownText) {
     if (!settings.pinMemory || chat.pinnedMemoryId === mid) return;
     const old = chat.pinnedMemoryId;
     const pin = (m) => rpc('POST', '/chat-messages/' + chat.id + '/' + m + '/pin', {});
@@ -2517,6 +2571,10 @@
       }
       if (old) await unpin(old);
       chat.pinnedMemoryId = mid;
+      // The text the user wrote in it (kept when the memory in it is updated).
+      chat.pinnedMemoryText = String(ownText || '').replace(MEM_BLOCK_RE, '').trim();
+      chat.memoryMsgSynced = true;
+      chat.memoryMsgHash = '';
       chat.pinError = '';
       logJob(chat, { kind: 'pin', label: 'Pinned the newest memory message' + (old ? ' (unpinned the previous one)' : ''), ok: true, ms: 0 });
     } catch (e) {
@@ -2744,6 +2802,7 @@
       if (JSON.stringify(snap) !== JSON.stringify(snapshot(chat))) chat.history = [snap].concat(chat.history).slice(0, 5);
       await saveChat(chat);
       if (quiet !== true) toast('Saved');
+      refreshMemoryMessage(chat);
       renderPanel(true);
     };
 
@@ -2908,7 +2967,10 @@
         chat.lastError ? el('div', { class: 'error' }, '⚠ ' + chat.lastError) : null,
         chatErrors[chat.id] && TOO_LONG_RE.test(chatErrors[chat.id].error)
           ? el('div', { class: 'error' }, '⚠ This chat has become too long for the AI (MiniApps sends the whole chat every time). Tap "Continue in a new chat" below to carry the story on in a fresh chat.') : null,
-        chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
+        memoryInMessage(chat)
+          ? el('div', {}, '📌 The memory lives in one pinned message, updated in place' + (chat.memoryMsgAt ? ' (' + ago(chat.memoryMsgAt) + ')' : '') + '. The AI keeps it however long the chat gets, and new messages carry no memory.')
+          : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
+        chat.memoryMsgError && settings.memoryMessage && !memoryInMessage(chat) ? el('div', { class: 'error' }, '⚠ Could not update the pinned memory message (' + chat.memoryMsgError + '); the memory is attached to your messages instead.') : null,
         chat.pinError && settings.pinMemory ? el('div', { class: 'error' }, '⚠ Could not pin the memory message: ' + chat.pinError) : null,
         chat.continuedIn ? el('div', {}, 'This story continues in chat ' + chat.continuedIn.slice(0, 8) + '.') : null,
         chat.continuedFrom ? el('div', {}, 'Continued from chat ' + chat.continuedFrom.slice(0, 8) + ', with its memory.') : null),
@@ -3054,6 +3116,8 @@
         ' · settings: summaries every ' + settings.updateEvery + ', story & characters every ' + foldEvery() + ', chapter every ' + chapterSize() +
         ', ' + parallel() + ' at once, detail ' + settings.detail; })() : 'no chat'),
       'Pinned memory message: ' + (!settings.pinMemory ? 'off' : chat && chat.pinnedMemoryId ? chat.pinnedMemoryId.slice(0, 8) : 'none yet') +
+        (chat && memoryInMessage(chat) ? ' · holds the memory (updated ' + ago(chat.memoryMsgAt || 0) + ')' : '') +
+        (chat && chat.memoryMsgError ? ' · last update error: ' + chat.memoryMsgError : '') +
         (chat && chat.pinError ? ' · last pin error: ' + chat.pinError : ''),
       'Last tidy-up: ' + (chat && chat.checked ? ago(chat.checked) : 'never') +
         (chat && chat.jobs ? ' · ' + ((chat.jobs.find((j) => j.kind === 'check') || {}).label || 'nothing needed fixing') : ''),
@@ -3227,6 +3291,8 @@
     f.injectBudget = el('input', { type: 'number', min: '2000', step: '1000', value: String(s.injectBudget) });
     f.pinMemory = el('input', { type: 'checkbox', id: 'smx-pin' });
     f.pinMemory.checked = s.pinMemory !== false;
+    f.memoryMessage = el('input', { type: 'checkbox', id: 'smx-memmsg' });
+    f.memoryMessage.checked = s.memoryMessage !== false;
     f.autoEnable = el('input', { type: 'checkbox', id: 'smx-auto' });
     f.autoEnable.checked = s.autoEnable;
     f.buttonSide = el('select', {},
@@ -3271,6 +3337,7 @@
       attachSet: true,
       autoEnable: f.autoEnable.checked,
       pinMemory: f.pinMemory.checked,
+      memoryMessage: f.memoryMessage.checked,
       buttonSide: f.buttonSide.value,
     });
 
@@ -3336,6 +3403,8 @@
       el('div', { class: 'hint' }, 'Every AI reply gets a summary (length set by Summary detail above). The newest ones are attached to your messages in full, as far as the space above allows. More helps the AI remember detail, but makes every message longer.'),
       el('div', { class: 'row' }, f.pinMemory, el('label', { for: 'smx-pin' }, 'Pin the newest message that carries the memory')),
       el('div', { class: 'hint' }, 'MiniApps (PRO) keeps pinned messages in the AI\'s memory however long the chat gets. Uses one of the 2 pin slots; your own pins are left alone.'),
+      el('div', { class: 'row' }, f.memoryMessage, el('label', { for: 'smx-memmsg' }, 'Keep the memory in that pinned message, updated in place')),
+      el('div', { class: 'hint' }, 'The pinned message is edited (without a new reply) whenever the memory changes, so your new messages carry no memory and the chat stays short. If an edit fails, the memory is attached to messages again.'),
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),
       el('label', {}, 'Button position'), f.buttonSide,
       el('div', { class: 'btns' },

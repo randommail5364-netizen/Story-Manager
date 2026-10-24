@@ -63,6 +63,9 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
     conv = r.conversationId;
     history.replaceState(null, '', '/c/' + conv);
   };
+  // Like the site's plain "Edit" (no new reply).
+  window.editMsg = (id, text) => xhr('POST', 'https://api.miniapps.ai/chat', { toolId: 'tool-story', revision: 1, modelId: 'm1',
+    conversationId: conv, requestId: crypto.randomUUID(), overrideMessageId: id, editInPlace: true, elements: [{ type: 'text', text }], language: 'en' });
   load();
 </script></body></html>`;
 
@@ -80,6 +83,7 @@ async function main() {
   let helperMaxChars = 0;      // longer requests get a "context length" chat error (0 = no limit)
   let helperRunaway = false;   // the bot writes a good start, then repeats itself forever
   let helperChatError = false; // the existing helper chat answers with a "ce" error event     // how long the MiniApps-bot memory keeper takes to answer
+  const edits = [];           // plain edits the "server" received
   const pins = {};           // conversation id -> Set of pinned message ids
   const aborts = [];         // POST /chat/abort bodies         // the page's fake Socket.IO connection, once open
   function reply(conv, text, delay, convId) {
@@ -203,6 +207,14 @@ async function main() {
       if (req.headers()['x-csrf-token'] !== 'csrf-123') return json({ message: 'csrf' }, 403);
       chatBodies.push(body);
       if (body.conversationId && !convs[body.conversationId]) return json({ message: 'Conversation not found' }, 404);
+      // A plain edit: the message's text is replaced, no new reply.
+      if (body.overrideMessageId && body.editInPlace) {
+        const target = convs[body.conversationId].messages.find((x) => x.id === body.overrideMessageId);
+        if (!target) return json({ message: 'Message not found' }, 404);
+        target.elements = [{ type: 'text', text: body.elements[0].text }];
+        edits.push(body);
+        return json({ conversationId: body.conversationId, chatMessageId: target.id, requestId: body.requestId, addedMessages: [] });
+      }
       if (body.toolId === 'tool-helper' && helperBroken) return json({ message: 'Insufficient credits' }, 412);
       const id = body.conversationId || uuid();
       const isNew = !convs[id];
@@ -277,7 +289,7 @@ async function main() {
     });
   });
 
-  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1, attachSet: true };
+  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1, attachSet: true, memoryMessage: false };
   // A fake screen wake lock that records when it is taken and released.
   await ctx.addInitScript(() => {
     window.wakeLog = [];
@@ -887,7 +899,13 @@ async function main() {
   check(/Facts checked: \d+ of \d+/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel shows how many facts are checked');
 
   console.log('35) A chat that got too long for the AI carries on in a new chat, with its memory');
-  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.memoryMessage = true;
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
   const oldId = await page.evaluate(() => location.pathname.split('/c/')[1]);
   const oldChat = await keyNow();
   const lastReply35 = recapConv.messages.filter((x) => x.origin === 'assistant').pop().elements[0].text;
@@ -915,9 +933,18 @@ async function main() {
   check(moved.pinnedMemoryId === newConv.messages[0].id && pins[newId] && pins[newId].has(newConv.messages[0].id), 'the first message, with the memory, is pinned');
   await waitFor(() => newConv.messages.length >= 2, 8000, 'first reply in the new chat');
   await page.evaluate(() => window.sendMsg('And so we go on.'));
-  check(/^\[\[STORY-MEMORY\]\]/.test(chatBodies[chatBodies.length - 1].elements[0].text), 'the memory goes on being attached in the new chat');
+  check(!/STORY-MEMORY/.test(chatBodies[chatBodies.length - 1].elements[0].text), 'later messages carry no memory: it lives in the pinned first message');
 
   console.log('36) The newest message that carries the memory stays pinned; the user\'s own pins are left alone');
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.memoryMessage = false; // attach the memory to messages, as without the pinned memory message
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  await waitFor(() => newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.evaluate(() => window.sendMsg('A new step.'));
   await waitFor(() => newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
   const pinnedOf = () => [...(pins[newId] || [])];
   const lastUser = () => newConv.messages.filter((x) => x.origin === 'user').pop().id;
@@ -940,6 +967,41 @@ async function main() {
   check(pinnedOf().join() === 'users-own-pin,users-second-pin', 'the user\'s two pins are left alone');
   await page.locator('#story-manager-root >> .fab').click();
   check(/Could not pin the memory message/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'the panel says why the memory could not be pinned');
+
+  console.log('37) The memory lives in one pinned message that is edited in place; new messages and the user\'s edits carry none');
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.memoryMessage = true;
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    c.pinnedMemoryId = null;
+    c.pinError = '';
+    localStorage.setItem(key, JSON.stringify(c));
+  });
+  pins[newId] = new Set();
+  await page.reload();
+  await page.waitForTimeout(800);
+  await waitFor(() => newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.evaluate(() => window.sendMsg('Pin this one.'));
+  const carrier = lastUser();
+  check(/^\[\[STORY-MEMORY\]\]/.test(chatBodies[chatBodies.length - 1].elements[0].text), 'the first message carries the memory');
+  await waitFor(() => pinnedOf().includes(carrier), 8000, 'carrier pinned');
+  await waitFor(() => newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.evaluate(() => window.sendMsg('Then we rest.'));
+  check(!/STORY-MEMORY/.test(chatBodies[chatBodies.length - 1].elements[0].text), 'the next message carries none');
+  const editsBefore = edits.length;
+  await waitFor(() => edits.length > editsBefore, 60000, 'the pinned message updated after the memory changed');
+  const memEdit = edits[edits.length - 1];
+  const pinnedText = newConv.messages.find((x) => x.id === carrier).elements[0].text;
+  check(memEdit.overrideMessageId === carrier && memEdit.editInPlace === true && memEdit.toolId === 'tool-story' &&
+    /^\[\[STORY-MEMORY\]\][\s\S]*\[\[\/STORY-MEMORY\]\]\n\nPin this one\.$/.test(pinnedText), 'the pinned message was edited in place with the new memory, keeping the user\'s text');
+  check(newConv.messages.filter((x) => x.origin === 'user').length === newConv.messages.filter((x) => x.origin === 'assistant').length, 'the edit wrote no new reply');
+  await page.locator('#story-manager-root >> .fab').click();
+  check(/The memory lives in one pinned message/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'the panel says where the memory lives');
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate((id) => window.editMsg(id, 'Then we rest by the fire.'), lastUser());
+  check(!/STORY-MEMORY/.test(edits[edits.length - 1].elements[0].text), 'the user\'s own edits get no memory');
 
   await browser.close();
   console.log('\nAll checks passed.');

@@ -1026,6 +1026,30 @@ async function main() {
   await waitFor(() => pinnedOf().includes(lastUser()), 8000, 'new carrier pinned');
   check((await keyNow()).pinnedMemoryId === lastUser(), 'and becomes the new pinned memory message');
 
+  console.log('39) Deleted and rewritten messages: old summaries dropped, rewritten replies summarised again');
+  await page.evaluate(() => window.wsLoad());
+  await page.locator('#story-manager-root >> .fab').click().catch(() => {});
+  await page.getByText('Update now').click({ timeout: 120000 });
+  await settle();
+  const log39 = (await keyNow()).log;
+  const replies39 = newConv.messages.filter((x) => x.origin === 'assistant' && log39.some((e) => e.id === x.id));
+  const [deleted, rewritten] = replies39.slice(-2);
+  const sock = (event, payload) => page.evaluate(([ev, p]) => document.dispatchEvent(new CustomEvent('smx:ws', { detail: JSON.stringify({ dir: 'in', event: ev, text: JSON.stringify([p]) }) })), [event, payload]);
+  newConv.messages = newConv.messages.filter((x) => x.id !== deleted.id);
+  await sock('cmd', { conversationId: newId, ids: [deleted.id] });
+  rewritten.elements = [{ type: 'text', text: 'REWRITTEN reply: Ash flies away.' }];
+  await sock('cmu', { conversationId: newId, message: Object.assign({ conversationId: newId }, rewritten) });
+  await page.waitForTimeout(500);
+  const after39 = await keyNow();
+  check(!after39.log.some((e) => e.id === deleted.id) && after39.redo.includes(rewritten.id), 'deleted reply\'s summary removed; rewritten reply queued');
+  const calls39 = llmCalls.length;
+  await page.getByText('Update now').click({ timeout: 120000 });
+  await settle();
+  const redone39 = await keyNow();
+  check(llmCalls.slice(calls39).some((c) => /JOB: SUMMARISE/.test(c) && /REWRITTEN reply: Ash flies away/.test(c)) &&
+    /Reply: REWRITTEN reply/.test(redone39.log.find((e) => e.id === rewritten.id).text) && !(redone39.redo || []).length, 'rewritten reply summarised again from its new text');
+  check(redone39.staleFacts && /Redo story & characters from summaries/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel suggests redoing the story & characters');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

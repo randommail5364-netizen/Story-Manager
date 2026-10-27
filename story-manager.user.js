@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.5.1
+// @version      3.6.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1764,9 +1764,11 @@
     const chat = await getChat(id, true);
     if (busy[id] || (!chat.enabled && !force)) return 'skipped';
     const todo = unprocessed(chat, msgs);
+    // Replies that changed after they were summarised (see overwritten()).
+    const redo = (chat.redo || []).map((x) => msgs.find((m) => m.id === x && m.role === 'assistant')).filter(Boolean);
     const st = stages(chat);
     const foldDue = st.unfolded && (force || st.unfolded >= foldEvery() || !chat.memory.trim());
-    if (!todo.length && !foldDue && st.unchaptered < chapterSize()) return 'skipped';
+    if (!todo.length && !redo.length && !foldDue && st.unchaptered < chapterSize()) return 'skipped';
     busy[id] = true;
     keepAwake(true);
     stopRequested[id] = false;
@@ -1790,6 +1792,16 @@
       }
     };
     try {
+      // 0. Changed replies get a new summary in place of the old one.
+      if (redo.length) {
+        const got = await job('summarise', 'Summarised ' + redo.length + ' changed repl' + (redo.length === 1 ? 'y' : 'ies') + ' again',
+          () => summarise(chat, withPrompts(msgs, redo)));
+        const ids = new Set(got.map((e) => e.id));
+        if (chat.log.some((e) => ids.has(e.id) && e.folded)) chat.staleFacts = true;
+        chat.log = chat.log.map((e) => (ids.has(e.id) ? Object.assign(got.find((g) => g.id === e.id), { folded: false }, e.chapter != null ? { chapter: e.chapter } : {}) : e));
+        chat.redo = chat.redo.filter((x) => !redo.some((m) => m.id === x));
+        await saveChat(chat);
+      }
       // 1. Summaries, a few requests at a time when allowed.
       const parts = chunk(todo, CHUNK_CHARS);
       let next = chat.log.length;
@@ -2423,6 +2435,14 @@
       };
       return;
     }
+    // "cmd" = messages deleted (e.g. replaced by "edit and regenerate"),
+    // "cmu" = a message changed (e.g. a plain edit, or a reply regenerated in
+    // place). Their old summaries no longer describe the story.
+    if (d.dir === 'in' && chatOf && (d.event === 'cmd' || d.event === 'cmu')) {
+      const cid = String(chatOf).toLowerCase();
+      if (!helperIds.has(cid)) await overwritten(cid, d.event === 'cmd' ? (first.ids || []) : [first.message && first.message.id], d.event === 'cmu');
+      return;
+    }
     // "pcm" events are pieces of a reply still being written (a few words
     // each), not messages; the finished reply arrives later as "cm".
     if (d.event === 'pcm' || (first && first.tmpO !== undefined)) {
@@ -2458,6 +2478,36 @@
     const final = msgs.length === 1 && msgs[0].role === 'assistant';
     await syncChat(conv.id, remember(conv.id, msgs), { final });
   });
+
+  // Messages the user deleted or rewrote: their summaries are dropped; a
+  // changed reply (or the reply after a changed message of the user's) is
+  // summarised again at the next update.
+  async function overwritten(cid, ids, changed) {
+    const chat = chats[cid];
+    ids = ids.filter(Boolean).map(String);
+    if (!chat || !ids.length || ids.includes(chat.pinnedMemoryId)) return;
+    const gone = new Set(ids);
+    const hit = chat.log.filter((e) => gone.has(e.id));
+    const seen = seenMsgs[cid] ? [...seenMsgs[cid].values()] : [];
+    if (changed) {
+      // A changed user message: the reply after it is summarised again too.
+      const i = seen.findIndex((m) => gone.has(m.id));
+      const next = i >= 0 ? seen.slice(i + 1).find((m) => m.role === 'assistant') : null;
+      if (next && chat.log.some((e) => e.id === next.id)) gone.add(next.id);
+      chat.redo = [...new Set((chat.redo || []).concat([...gone].filter((x) => chat.log.some((e) => e.id === x))))];
+    }
+    const dropped = chat.log.filter((e) => gone.has(e.id) && (!changed || !chat.redo.includes(e.id)));
+    if (!hit.length && !(chat.redo || []).length) return;
+    if (dropped.length) {
+      chat.log = chat.log.filter((e) => !dropped.includes(e));
+      for (const c of chat.chapters) if (c.ids) c.ids = c.ids.filter((x) => !gone.has(x));
+      if (dropped.some((e) => e.folded)) chat.staleFacts = true;
+    }
+    chat.processedIds = chat.processedIds.filter((x) => !gone.has(x) || (chat.redo || []).includes(x));
+    logJob(chat, { kind: 'check', label: changed ? 'A message was changed: its reply will be summarised again' : 'Removed the summaries of ' + dropped.length + ' deleted message(s)', ok: true, ms: 0 });
+    await saveChat(chat);
+    if (cid === currentId) renderPanel();
+  }
 
   const sentStats = { sent: 0, withMemory: 0 };
   const sendShapes = [];        // the fields of recent send requests, for Diagnostics
@@ -2882,7 +2932,7 @@
           }
           renderPanel(true);
           return;
-        } else if (!unprocessed(chat, msgs).length && !stages(chat).unfolded) {
+        } else if (!unprocessed(chat, msgs).length && !stages(chat).unfolded && !(chat.redo || []).length) {
           toast('Memory is already up to date (' + msgs.length + ' messages checked)');
           return;
         }
@@ -2908,6 +2958,7 @@
       chat.memory = '';
       chat.entries = chat.entries.filter((e) => e.always);
       chat.chapters = [];
+      chat.staleFacts = false;
       for (const e of chat.log) { e.folded = false; delete e.chapter; }
       await saveChat(chat);
       const status = await updateMemory(chat.id, [], { force: true });
@@ -2988,6 +3039,7 @@
           : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
         chat.memoryMsgError && settings.memoryMessage && !memoryInMessage(chat) ? el('div', { class: 'error' }, '⚠ Could not update the pinned memory message (' + chat.memoryMsgError + '); the memory is attached to your messages instead.') : null,
         chat.pinError && settings.pinMemory ? el('div', { class: 'error' }, '⚠ Could not pin the memory message: ' + chat.pinError) : null,
+        chat.staleFacts ? el('div', {}, 'ℹ Some replies were deleted or rewritten after their facts went into the story & characters. Tap "Redo story & characters from summaries" to remove anything from the old versions.') : null,
         chat.continuedIn ? el('div', {}, 'This story continues in chat ' + chat.continuedIn.slice(0, 8) + '.') : null,
         chat.continuedFrom ? el('div', {}, 'Continued from chat ' + chat.continuedFrom.slice(0, 8) + ', with its memory.') : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),

@@ -20,8 +20,8 @@ function grab(name) {
   throw new Error('unbalanced ' + name);
 }
 const consts = src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0];
-const lib = new Function(consts + ['composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
-  .map(grab).join('\n') + '\nreturn { composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -197,6 +197,12 @@ test('long entries in play are shortened so the attached memory keeps to its siz
   assert(/\[…\]/.test(out));
   const small = Object.assign({}, plan, { core: [{ name: 'Ash', kind: 'character', keys: ['Ash'], text: '- A dragon.' }] });
   assert(lib.composeMemory(small, '').text.includes('### Ash (character)\n- A dragon.'), 'short entries are sent whole');
+});
+
+test('regenerated versions of a message: only the newest is kept', () => {
+  const m = (id, index, version, t) => ({ id, index, version, t, role: 'assistant', text: id });
+  const out = lib.latestVersions([m('u1', 0, 0, 1), m('a1', 1, 0, 2), m('a1b', 1, 1, 3), m('a1c', 1, 2, 4), m('u2', 2, 0, 5), m('x', null, 0, 6)]);
+  assert.deepStrictEqual(out.map((x) => x.id), ['u1', 'a1c', 'u2', 'x']);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

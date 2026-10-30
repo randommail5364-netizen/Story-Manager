@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.7.1
+// @version      3.7.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -719,9 +719,22 @@
       text: textOf(m).replace(MEM_BLOCK_RE, '').trim(),
       t: Date.parse(m.createdAt || m.created_at || '') || 0,
       index: typeof m.index === 'number' ? m.index : null,
+      version: typeof m.version === 'number' ? m.version : 0,
     })).filter((m) => m.role !== 'system' && m.text);
     if (out.length > 1 && out.every((m) => m.t)) out.sort((a, b) => a.t - b.t);
-    return out;
+    return latestVersions(out);
+  }
+
+  // MiniApps lists every version of a regenerated (or re-edited) message at
+  // the same index; only the newest one is part of the story.
+  function latestVersions(msgs) {
+    const best = new Map();
+    for (const m of msgs) {
+      if (m.index == null) continue;
+      const b = best.get(m.index);
+      if (!b || m.version > b.version || (m.version === b.version && m.t >= b.t)) best.set(m.index, m);
+    }
+    return msgs.filter((m) => m.index == null || best.get(m.index) === m);
   }
 
   function titleOf(data) {
@@ -2060,7 +2073,7 @@
     for (const list of lists) for (const m of list) map.set(m.id, m);
     const out = [...map.values()];
     if (out.length > 1 && out.every((m) => m.t)) out.sort((a, b) => a.t - b.t);
-    return out;
+    return latestVersions(out);
   }
 
   function remember(id, msgs) {
@@ -2477,7 +2490,8 @@
       const text = textOf(pm).replace(MEM_BLOCK_RE, '').trim();
       const role = roleOf(pm);
       if (text && role !== 'system') {
-        msgs = [{ id: String(pm.id || first.tmpId || first.requestId || ('h-' + hashText(text))), role, text, t: Date.parse(pm.createdAt || '') || Date.now() }];
+        msgs = [{ id: String(pm.id || first.tmpId || first.requestId || ('h-' + hashText(text))), role, text, t: Date.parse(pm.createdAt || '') || Date.now(),
+          index: typeof pm.index === 'number' ? pm.index : null, version: typeof pm.version === 'number' ? pm.version : 0 }];
         conv = { id: String(chatOf).toLowerCase() };
       }
     }

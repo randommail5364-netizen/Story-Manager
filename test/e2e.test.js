@@ -92,12 +92,14 @@ async function main() {
     // while it is still being streamed in small "pcm" pieces.
     if (delay >= 10000) conv.messages.push(msg);
     const tmpId = uuid();
+    conv.generating = (conv.generating || 0) + 1;
     let i = 0;
     const typing = setInterval(() => {
       if (liveWs) liveWs.send('42["pcm",' + JSON.stringify({ cId: convId, requestId: 'r', tmpId, tmpO: 0, payload: { type: 'text', text: i % 2 ? '- **' : ' ', i: i++ } }) + ']');
     }, Math.min(1000, delay / 3));
     setTimeout(() => {
       clearInterval(typing);
+      conv.generating--;
       msg.elements = [{ type: 'text', text }];
       if (!conv.messages.includes(msg)) conv.messages.push(msg);
       // Like the real site, finished replies are also pushed over the live connection.
@@ -190,6 +192,10 @@ async function main() {
       const items = c.messages.slice(start, end).map((x, i) => Object.assign({ conversationId: m[1], index: start + i }, x));
       const hasMore = end - limit > 0;
       return json({ items, hasMore, nextBeforeMessageId: hasMore ? items[0].id : null });
+    }
+    if (req.method() === 'GET' && (m = url.pathname.match(/^\/chat\/([^/]+)\/run-state$/))) {
+      const c = convs[m[1]];
+      return json({ conversationId: m[1], activeRunRequestId: null, isGenerating: !!(c && c.generating > 0) });
     }
     if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/([^/]+)\/messages\/pinned$/))) {
       const c = convs[m[1]];
@@ -293,7 +299,7 @@ async function main() {
     });
   });
 
-  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1, attachSet: true, memoryMessage: false };
+  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1, attachSet: true, memoryMessage: false, holdBack: 0 };
   // A fake screen wake lock that records when it is taken and released.
   await ctx.addInitScript(() => {
     window.wakeLog = [];
@@ -922,7 +928,10 @@ async function main() {
   const convsBefore35 = Object.keys(convs).length;
   page.once('dialog', (d) => d.accept());
   await page.getByRole('button', { name: 'Continue in a new chat' }).click({ timeout: 120000 });
-  await waitFor(async () => (await page.evaluate(() => location.pathname.split('/c/')[1])) !== oldId, 30000, 'move to the new chat');
+  await waitFor(async () => {
+    try { return (await page.evaluate(() => location.pathname.split('/c/')[1])) !== oldId; } catch (e) { return false; } // mid-navigation
+  }, 60000, 'move to the new chat');
+  await page.waitForLoadState();
   const newId = await page.evaluate(() => location.pathname.split('/c/')[1]);
   const newConv = convs[newId];
   const opener = newConv && newConv.messages[0].elements[0].text;
@@ -1049,6 +1058,41 @@ async function main() {
   check(llmCalls.slice(calls39).some((c) => /JOB: SUMMARISE/.test(c) && /REWRITTEN reply: Ash flies away/.test(c)) &&
     /Reply: REWRITTEN reply/.test(redone39.log.find((e) => e.id === rewritten.id).text) && !(redone39.redo || []).length, 'rewritten reply summarised again from its new text');
   check(redone39.staleFacts && /Redo story & characters from summaries/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel suggests redoing the story & characters');
+
+  console.log('40) Pins wait for the story AI to finish; the newest replies are held back until newer ones follow');
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.holdBack = 1;
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  await waitFor(() => !newConv.generating, 8000, 'idle');
+  // Lose the pin, so the next message carries the memory and gets pinned.
+  pins[newId] = new Set();
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> textarea').first().fill('Mira cannot swim. Ash cannot read. Winter sings.');
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await waitFor(async () => !(await keyNow()).pinnedMemoryId, 15000, 'pin forgotten');
+  await page.locator('#story-manager-root >> .x').click();
+  let pinnedWhileWriting = false;
+  const watch = setInterval(() => { if (newConv.generating && pins[newId].size) pinnedWhileWriting = true; }, 20);
+  await page.evaluate(() => window.sendMsg('Pin me after the reply.'));
+  await waitFor(() => pins[newId].size > 0, 30000, 'pin after the reply');
+  clearInterval(watch);
+  check(!pinnedWhileWriting, 'the pin waited until the story AI had finished its reply');
+  const newest = newConv.messages.filter((x) => x.origin === 'assistant').pop().id;
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
+  await settle();
+  check(!(await keyNow()).log.some((e) => e.id === newest), 'the newest reply is held back');
+  await page.locator('#story-manager-root >> .x').click();
+  await page.evaluate(() => window.sendMsg('One more.'));
+  await waitFor(() => !newConv.generating && newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
+  await settle();
+  check((await keyNow()).log.some((e) => e.id === newest), 'once a newer reply follows, it is summarised');
 
   await browser.close();
   console.log('\nAll checks passed.');

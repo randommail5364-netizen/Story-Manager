@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.6.0
+// @version      3.7.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -441,6 +441,7 @@
     miniappsSlug: 'claude-37',
     helperRotate: 30, // start a new helper chat every N requests (0 = always the same one)
     updateEvery: 3,   // AI replies between summary requests
+    holdBack: 2,      // newest AI replies left out until newer ones come (they may be redone)
     foldEvery: 9,     // AI replies between story & character updates
     chapterSize: 15,  // AI replies per chapter
     parallel: 1,      // summary requests that may run at the same time
@@ -1763,7 +1764,19 @@
   async function updateMemory(id, msgs, { force = false } = {}) {
     const chat = await getChat(id, true);
     if (busy[id] || (!chat.enabled && !force)) return 'skipped';
-    const todo = unprocessed(chat, msgs);
+    let todo = unprocessed(chat, msgs);
+    // The newest replies wait: the user often has them redone.
+    const hold = Math.max(0, Number(settings.holdBack) || 0);
+    if (hold) {
+      const replies = msgs.filter((m) => m.role === 'assistant');
+      if (replies.length >= hold) {
+        let cut = msgs.indexOf(replies[replies.length - hold]);
+        while (cut > 0 && msgs[cut - 1].role === 'user') cut--;
+        todo = todo.filter((m) => msgs.indexOf(m) < cut);
+      } else {
+        todo = [];
+      }
+    }
     // Replies that changed after they were summarised (see overwritten()).
     const redo = (chat.redo || []).map((x) => msgs.find((m) => m.id === x && m.role === 'assistant')).filter(Boolean);
     const st = stages(chat);
@@ -2558,6 +2571,19 @@
     waitForReply(id, lastSent && lastSent.userText.replace(MEM_BLOCK_RE, ''));
   });
 
+  // Waits until the story AI is not writing in a chat (MiniApps' run-state,
+  // and no live activity for a few seconds), so a pin or an edit never lands
+  // while a reply is being written. Gives up after 10 minutes.
+  async function waitIdle(cid) {
+    for (let i = 0; i < 200; i++) {
+      let writing = false;
+      try { const r = await rpc('GET', '/chat/' + cid + '/run-state'); writing = !!(r && r.isGenerating); } catch (e) { /* unknown: rely on activity */ }
+      if (!writing && Date.now() - (lastActivity[cid] || 0) > 8000) return true;
+      await sleep(3000);
+    }
+    return false;
+  }
+
   // With a pinned memory message, the memory is kept up to date in that one
   // message (a plain edit: MiniApps' editInPlace, which writes no new reply),
   // so new messages need not carry the memory. On failure, memory goes back
@@ -2570,6 +2596,7 @@
     const block = composeMemory(Object.assign(plan, { budget: Math.max(plan.budget, MEMORY_MESSAGE_CHARS) }), '').text;
     const text = block + (chat.pinnedMemoryText ? '\n\n' + chat.pinnedMemoryText : '');
     if (chat.memoryMsgHash === hashText(text) && chat.memoryMsgSynced) return;
+    if (!await waitIdle(chat.id)) return;
     const t0 = Date.now();
     // The message may be gone (deleted, or replaced by "edit and regenerate")
     // or unpinned: then the next message carries the memory and is pinned instead.
@@ -2623,6 +2650,7 @@
   // message that carries the memory, and never touches the user's own pins.
   async function pinMemory(chat, mid, ownText) {
     if (!settings.pinMemory || chat.pinnedMemoryId === mid) return;
+    if (!await waitIdle(chat.id)) return;
     const old = chat.pinnedMemoryId;
     const pin = (m) => rpc('POST', '/chat-messages/' + chat.id + '/' + m + '/pin', {});
     const unpin = (m) => rpc('POST', '/chat-messages/' + chat.id + '/' + m + '/unpin', {}).catch(() => {});
@@ -3350,6 +3378,7 @@
     f.miniappsSlug = el('input', { value: s.miniappsSlug, placeholder: 'claude-37' });
     f.helperRotate = el('input', { type: 'number', min: '0', value: String(s.helperRotate) });
     f.updateEvery = el('input', { type: 'number', min: '1', value: String(s.updateEvery) });
+    f.holdBack = el('input', { type: 'number', min: '0', value: String(s.holdBack == null ? 2 : s.holdBack) });
     f.foldEvery = el('input', { type: 'number', min: '1', value: String(s.foldEvery) });
     f.chapterSize = el('input', { type: 'number', min: '4', value: String(s.chapterSize) });
     f.parallel = el('select', {}, ...[1, 2, 3].map((n) => el('option', { value: String(n), selected: Number(s.parallel) === n ? '' : null }, String(n))));
@@ -3395,6 +3424,7 @@
       helperRotate: Math.max(0, parseInt(f.helperRotate.value, 10) || 0),
       rotateSet: true,
       updateEvery: Math.max(1, parseInt(f.updateEvery.value, 10) || 1),
+      holdBack: Math.max(0, parseInt(f.holdBack.value, 10) || 0),
       foldEvery: Math.max(1, parseInt(f.foldEvery.value, 10) || DEFAULT_SETTINGS.foldEvery),
       chapterSize: Math.max(4, parseInt(f.chapterSize.value, 10) || DEFAULT_SETTINGS.chapterSize),
       parallel: Math.min(3, Math.max(1, parseInt(f.parallel.value, 10) || 1)),
@@ -3457,6 +3487,8 @@
       el('label', {}, 'Memory keeper AI'), providerSel,
       keyBox, baseBox, slugBox,
       el('label', {}, 'Summarise new AI replies every … replies'), f.updateEvery,
+      el('label', {}, 'Wait until the newest … AI replies are no longer the newest'), f.holdBack,
+      el('div', { class: 'hint' }, 'They are summarised only once newer replies follow, so a reply you have redone is never summarised. 0 = no waiting.'),
       el('label', {}, 'Update the story & characters every … AI replies'), f.foldEvery,
       el('div', { class: 'hint' }, 'The newest reply summaries are always sent with your messages, so the story & characters can be updated less often. Update now does it straight away.'),
       el('label', {}, 'Chapter length (AI replies)'), f.chapterSize,

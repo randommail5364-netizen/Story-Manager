@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.7.0
+// @version      3.7.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2712,6 +2712,8 @@
       display: flex; align-items: center; justify-content: center; cursor: pointer; -webkit-tap-highlight-color: transparent; }
     .fab.right { right: 12px; } .fab.left { left: 12px; }
     .fab.top-right { right: 12px; top: 120px; bottom: auto; } .fab.top-left { left: 12px; top: 120px; bottom: auto; }
+    .fab.middle-right { right: 6px; top: 45%; bottom: auto; }
+    .fab.typing { display: none; }
     .fab .dot { position: absolute; top: 2px; right: 2px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; display: none; }
     .fab.busy .dot { display: block; background: #f5b400; animation: pulse 1s infinite; }
     .fab.err .dot { display: block; background: #e5484d; }
@@ -2776,6 +2778,20 @@
     root = host.attachShadow({ mode: 'open' });
     root.append(el('style', {}, CSS));
     ui.fab = el('button', { class: 'fab ' + settings.buttonSide, title: 'Story Manager', onclick: () => togglePanel() }, '📖', el('span', { class: 'dot' }));
+    // Out of the way while the user types or edits on the site (a text box
+    // has focus, or the on-screen keyboard is open): it would cover the
+    // site's own buttons.
+    const typingOnSite = () => {
+      const a = document.activeElement;
+      const field = !!(a && a !== document.body && a.id !== 'story-manager-root' &&
+        (/^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName) || a.isContentEditable));
+      const vv = window.visualViewport;
+      const keyboard = !!(vv && vv.height < window.innerHeight * 0.75);
+      ui.fab.classList.toggle('typing', (field || keyboard) && !(ui.panel && ui.panel.classList.contains('open')));
+    };
+    document.addEventListener('focusin', typingOnSite, true);
+    document.addEventListener('focusout', () => setTimeout(typingOnSite, 50), true);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', typingOnSite);
     ui.body = el('div', { class: 'body' });
     ui.tabs = {
       memory: el('button', { onclick: () => { tab = 'memory'; renderPanel(true); } }, 'Memory'),
@@ -3394,7 +3410,8 @@
     f.autoEnable.checked = s.autoEnable;
     f.buttonSide = el('select', {},
       el('option', { value: 'right' }, 'Bottom right'), el('option', { value: 'left' }, 'Bottom left'),
-      el('option', { value: 'top-right' }, 'Top right'), el('option', { value: 'top-left' }, 'Top left'));
+      el('option', { value: 'top-right' }, 'Top right'), el('option', { value: 'top-left' }, 'Top left'),
+      el('option', { value: 'middle-right' }, 'Middle right'));
     f.buttonSide.value = s.buttonSide;
 
     const keyBox = el('div', {}, el('label', {}, 'API key'), f.apiKey, el('label', {}, 'Model'), f.model);

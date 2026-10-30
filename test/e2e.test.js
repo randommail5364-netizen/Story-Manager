@@ -1094,6 +1094,15 @@ async function main() {
   await settle();
   check((await keyNow()).log.some((e) => e.id === newest), 'once a newer reply follows, it is summarised');
 
+  console.log('41) The button gets out of the way while the user types or edits on the site');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+  await page.locator('#msg').focus();
+  await page.waitForTimeout(200);
+  check(!(await page.locator('#story-manager-root >> .fab').isVisible()), 'hidden while a text box on the site has focus');
+  await page.locator('#msg').blur();
+  await page.waitForTimeout(300);
+  check(await page.locator('#story-manager-root >> .fab').isVisible(), 'back afterwards');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

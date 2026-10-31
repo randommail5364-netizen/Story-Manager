@@ -170,6 +170,10 @@ async function main() {
     if (url.pathname === '/auth/csrf') return json({ csrfToken: 'csrf-123' });
     if (url.pathname.startsWith('/tools/s/')) return json({ id: 'tool-helper', revision: 1, modelId: 'm-helper' });
     let m;
+    if (req.method() === 'GET' && url.pathname === '/conversations/quickAccess') {
+      const items = Object.keys(convs).map((id) => ({ id, toolId: convs[id].toolId }));
+      return json({ page: 1, take: 50, total: items.length, hasMore: false, items });
+    }
     if (req.method() === 'GET' && (m = url.pathname.match(/^\/conversations\/([^/]+)$/))) {
       const c = convs[m[1]];
       if (!c) return json({ message: 'nope' }, 404);
@@ -1169,6 +1173,20 @@ async function main() {
   await page.reload(); // as when the link is opened on another device
   await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:settings')).githubToken)) === 'gh-test-token', 15000, 'token from the sync link');
   check(!(await page.evaluate(() => location.href)).includes('smx-sync'), 'opening the sync link sets up sync, and the token leaves the address bar');
+
+  console.log('43) Helper chats are hidden from MiniApps\' chat lists');
+  const helperConvs = Object.keys(convs).filter((id) => convs[id].toolId === 'tool-helper');
+  const listed = async () => page.evaluate(() => fetch('https://api.miniapps.ai/conversations/quickAccess?options=%7B%7D', { credentials: 'include' }).then((r) => r.json()));
+  const shown = await listed();
+  check(helperConvs.length > 1 && !shown.items.some((x) => helperConvs.includes(x.id)) && shown.items.some((x) => x.id === newId),
+    'the ' + helperConvs.length + ' helper chats are left out; story chats are listed');
+  check(shown.total === shown.items.length, 'the count matches');
+  await page.reload();
+  check(!(await listed()).items.some((x) => helperConvs.includes(x.id)), 'hidden right from the start of a page load');
+  await page.evaluate(() => { const st = JSON.parse(localStorage.getItem('smx:settings')); st.hideHelpers = false; localStorage.setItem('smx:settings', JSON.stringify(st)); });
+  await page.reload();
+  await page.waitForTimeout(1500);
+  check((await listed()).items.some((x) => helperConvs.includes(x.id)), 'shown again when the setting is off');
 
   await browser.close();
   console.log('\nAll checks passed.');

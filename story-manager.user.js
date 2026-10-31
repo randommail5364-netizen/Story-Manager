@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.8.1
+// @version      3.9.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -183,6 +183,31 @@
       else if (info.kind === 'other') emit('api', { method: info.method, url: info.url, status, text: text && text.length < 3000000 ? text : '' });
     }
 
+    // Story Manager's helper chats are left out of MiniApps' chat lists.
+    let hidden = [];
+    // Read at once from the site's storage: the chat list loads before the script's own storage.
+    try { hidden = JSON.parse(win.localStorage.getItem('smx:hide') || doc.documentElement.getAttribute('data-smx-hide') || '[]'); } catch (e) { /* ignore */ }
+    doc.addEventListener('smx:hide', (ev) => { try { hidden = JSON.parse(ev.detail); } catch (e) { /* ignore */ } });
+    const LIST_RE = /\/conversations\/quickAccess|\/tools\/[^/?]+\/conversations|\/projects\/[^/?]+\/conversations|\/conversations\/?(\?|$)/;
+    function withoutHelpers(r) {
+      if (!r.ok || !hidden.length) return r;
+      return r.clone().text().then((t) => {
+        let d;
+        try { d = JSON.parse(t); } catch (e) { return r; }
+        const keep = (x) => !(x && x.id && hidden.includes(String(x.id).toLowerCase()));
+        const list = Array.isArray(d) ? d : d && Array.isArray(d.items) ? d.items : null;
+        if (!list) return r;
+        const kept = list.filter(keep);
+        if (kept.length === list.length) return r;
+        if (Array.isArray(d)) d = kept;
+        else {
+          d.items = kept;
+          if (typeof d.total === 'number') d.total = Math.max(0, d.total - (list.length - kept.length));
+        }
+        return new win.Response(JSON.stringify(d), { status: r.status, statusText: r.statusText, headers: r.headers });
+      }).catch(() => r);
+    }
+
     // --- fetch ---
     win.fetch = expFn(function (input, init) {
       let info = null;
@@ -199,7 +224,12 @@
           }
         }
       } catch (e) { info = null; }
-      const p = origFetch(input, init);
+      let p = origFetch(input, init);
+      try {
+        const u = typeof input === 'string' ? input : (input && input.url) || String(input);
+        const m = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+        if (m === 'GET' && hidden.length && LIST_RE.test(u)) p = p.then(withoutHelpers);
+      } catch (e) { /* leave the response as it is */ }
       if (info && (info.kind === 'send' || info.kind === 'conv')) {
         p.then((r) => (r.ok ? r.clone().text() : null))
           .then((t) => { if (t) report(info, t); })
@@ -454,6 +484,7 @@
     injectBudget: 16000, // most characters attached to one message
     pinMemory: true,  // keep the newest message carrying the memory pinned
     memoryMessage: true, // keep the memory in that pinned message, edited in place
+    hideHelpers: true, // leave Story Manager's helper chats out of MiniApps' chat lists
     autoEnable: true, // manage new chats automatically
     buttonSide: 'right',
   };
@@ -988,6 +1019,21 @@
   // run at the same time each get their own helper chat (slot).
   const helperChats = [];  // slot -> { slug, id, uses }
   const helperKey = (slot) => (slot ? 'helperChat' + slot : 'helperChat');
+
+  // Every helper chat ever used (also old ones after a fresh one was started),
+  // so they stay hidden from MiniApps' chat lists.
+  let helperAll = [];
+  function rememberHelper(cid) {
+    helperIds.add(cid);
+    if (!helperAll.includes(cid)) { helperAll.push(cid); Store.set('helperAll', helperAll); }
+    publishHidden();
+  }
+  function publishHidden() {
+    const ids = settings.hideHelpers === false ? [] : [...new Set(helperAll.concat([...helperIds]))];
+    document.dispatchEvent(new CustomEvent('smx:hide', { detail: JSON.stringify(ids) }));
+    if (document.documentElement) document.documentElement.setAttribute('data-smx-hide', JSON.stringify(ids));
+    try { localStorage.setItem('smx:hide', JSON.stringify(ids)); } catch (e) { /* private mode etc. */ }
+  }
   const lastActivity = {}; // chat id -> when the live connection last showed activity in it
   let helperWait = null;   // what the last wait for the bot saw, for Diagnostics
   const chatErrors = {};   // chat id -> { error, code, at }: the site's "ce" (chat error) events
@@ -1072,7 +1118,7 @@
     }
     const cid = res && res.conversationId;
     if (!cid) throw new Error('MiniApps did not start a conversation');
-    helperIds.add(cid);
+    rememberHelper(cid);
     helperChats[slot] = reuse && cid === helperChat.id ? Object.assign({}, helperChat, { uses: helperChat.uses + 1 }) : { slug, id: cid, uses: 1 };
     await Store.set(helperKey(slot), helperChats[slot]);
     // The send reply lists the messages it added (our request, maybe a
@@ -2515,10 +2561,13 @@
     if (!DETAIL[settings.detail]) settings.detail = DEFAULT_SETTINGS.detail;
     chatIndex = await Store.get('chatIndex', []);
     learned = await Store.get('learned', null);
+    helperAll = await Store.get('helperAll', []);
+    for (const h of helperAll) helperIds.add(h);
     for (let slot = 0; slot < 3; slot++) {
       helperChats[slot] = await Store.get(helperKey(slot), null);
-      if (helperChats[slot]) helperIds.add(helperChats[slot].id);
+      if (helperChats[slot]) rememberHelper(helperChats[slot].id);
     }
+    publishHidden();
     for (const id of chatIndex) await getChat(id, false);
     // A sync link from another device (miniapps.ai/#smx-sync=TOKEN): save the
     // token and take it out of the address bar.
@@ -3554,6 +3603,8 @@
     f.memoryMessage = el('input', { type: 'checkbox', id: 'smx-memmsg' });
     f.memoryMessage.checked = s.memoryMessage !== false;
     f.githubToken = el('input', { type: 'password', value: s.githubToken || '', placeholder: 'GitHub token (gist access only)', autocomplete: 'off' });
+    f.hideHelpers = el('input', { type: 'checkbox', id: 'smx-hide' });
+    f.hideHelpers.checked = s.hideHelpers !== false;
     f.autoEnable = el('input', { type: 'checkbox', id: 'smx-auto' });
     f.autoEnable.checked = s.autoEnable;
     f.buttonSide = el('select', {},
@@ -3599,6 +3650,7 @@
       injectBudget: Math.max(2000, parseInt(f.injectBudget.value, 10) || DEFAULT_SETTINGS.injectBudget),
       attachSet: true,
       autoEnable: f.autoEnable.checked,
+      hideHelpers: f.hideHelpers.checked,
       githubToken: f.githubToken.value.trim(),
       // A different token may belong to another GitHub account: find its gist again.
       gistId: f.githubToken.value.trim() === (s.githubToken || '') ? s.gistId || '' : '',
@@ -3614,6 +3666,7 @@
       ui.fab.className = 'fab ' + settings.buttonSide;
       setStatus();
       publishInjectMap();
+      publishHidden();
       toast('Settings saved');
     };
 
@@ -3673,6 +3726,7 @@
       el('div', { class: 'hint' }, 'MiniApps (PRO) keeps pinned messages in the AI\'s memory however long the chat gets. Uses one of the 2 pin slots; your own pins are left alone.'),
       el('div', { class: 'row' }, f.memoryMessage, el('label', { for: 'smx-memmsg' }, 'Keep the memory in that pinned message, updated in place')),
       el('div', { class: 'hint' }, 'The pinned message is edited (without a new reply) whenever the memory changes, so your new messages carry no memory and the chat stays short. If an edit fails, the memory is attached to messages again.'),
+      el('div', { class: 'row' }, f.hideHelpers, el('label', { for: 'smx-hide' }, 'Hide the helper chats from MiniApps\' chat lists')),
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),
       el('label', {}, 'Button position'), f.buttonSide,
       el('div', { class: 'btns' },

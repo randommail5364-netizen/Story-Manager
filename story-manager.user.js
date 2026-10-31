@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.8.0
+// @version      3.8.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2520,6 +2520,16 @@
       if (helperChats[slot]) helperIds.add(helperChats[slot].id);
     }
     for (const id of chatIndex) await getChat(id, false);
+    // A sync link from another device (miniapps.ai/#smx-sync=TOKEN): save the
+    // token and take it out of the address bar.
+    const link = location.hash.match(/smx-sync=([A-Za-z0-9_-]{8,255})/);
+    if (link) {
+      settings.githubToken = link[1];
+      settings.gistId = '';
+      await Store.set('settings', settings);
+      history.replaceState(null, '', location.pathname + location.search);
+      setTimeout(() => toast('Sync is set up on this device ✓'), 1500);
+    }
     runSync().catch(() => {});
     publishInjectMap();
   })();
@@ -3679,7 +3689,11 @@
         await runSync();
         toast(sync.state === 'ok' ? 'Synced ✓' : sync.state === 'error' ? 'Sync failed: ' + sync.error : 'Paste a GitHub token first', sync.state === 'error');
         renderPanel(true);
-      } }, 'Sync now')),
+      } }, 'Sync now'),
+      el('button', { class: 'btn', disabled: !s.githubToken, onclick: async () => {
+        const link = 'https://miniapps.ai/#smx-sync=' + s.githubToken;
+        try { await navigator.clipboard.writeText(link); toast('Sync link copied. Send it to yourself and open it on your other device (logged in to MiniApps, with Story Manager installed). Keep it private: it contains your token.'); } catch (e) { prompt('Copy this link and open it on your other device:', link); }
+      } }, 'Copy sync link')),
       el('label', {}, 'Backup / move to another device (API key is not included)'), backup,
       el('div', { class: 'btns' },
         el('button', { class: 'btn', onclick: exportAll }, 'Export'),

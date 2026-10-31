@@ -1163,6 +1163,12 @@ async function main() {
   await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
   await waitFor(() => JSON.parse(gist.files['chat-' + newId + '.json'].content).pinned === 'Changed on this device.', 30000, 'change saved to the gist');
   check(true, 'changes made here are saved to the gist by themselves');
+  // A second device opens the sync link: the token is saved and removed from the address bar.
+  await page.evaluate(() => { const st = JSON.parse(localStorage.getItem('smx:settings')); st.githubToken = ''; localStorage.setItem('smx:settings', JSON.stringify(st)); });
+  await page.goto('https://miniapps.ai/c/' + newId + '#smx-sync=gh-test-token');
+  await page.reload(); // as when the link is opened on another device
+  await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:settings')).githubToken)) === 'gh-test-token', 15000, 'token from the sync link');
+  check(!(await page.evaluate(() => location.href)).includes('smx-sync'), 'opening the sync link sets up sync, and the token leaves the address bar');
 
   await browser.close();
   console.log('\nAll checks passed.');

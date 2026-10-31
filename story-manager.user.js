@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.7.2
+// @version      3.8.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -20,6 +20,8 @@
 // @connect      api.openai.com
 // @connect      openrouter.ai
 // @connect      generativelanguage.googleapis.com
+// @connect      api.github.com
+// @connect      gist.githubusercontent.com
 // @connect      *
 // ==/UserScript==
 
@@ -436,6 +438,7 @@
   const DEFAULT_SETTINGS = {
     provider: 'miniapps', // miniapps | gemini | anthropic | openai
     apiKey: '',
+    githubToken: '',  // syncs every chat's memory to a private GitHub Gist when set
     model: '',
     baseUrl: 'https://openrouter.ai/api/v1',
     miniappsSlug: 'claude-37',
@@ -554,10 +557,122 @@
     await saveChat(chat);
   }
 
-  async function saveChat(chat) {
+  // fromSync: the chat was just loaded from the sync gist (not a local change).
+  async function saveChat(chat, fromSync) {
+    if (!fromSync) chat.changedAt = Date.now();
     await Store.set('chat:' + chat.id, chat);
     publishInjectMap();
+    if (!fromSync) scheduleSync();
   }
+
+  // ---------------------------------------------------------------------------
+  // Sync between devices: each chat's memory is kept in a private GitHub Gist
+  // ("Story Manager sync", one file per chat). Changes are saved there a few
+  // seconds after they happen; every couple of minutes, and when a chat is
+  // opened, newer copies from other devices are loaded. The newest copy wins.
+  // ---------------------------------------------------------------------------
+
+  const GIST_DESC = 'Story Manager sync (private; memory of your MiniApps chats)';
+  const sync = { state: 'off', at: 0, error: '', timer: null, running: null };
+
+  function gh(method, path, body) {
+    return requestJSON(method, 'https://api.github.com' + path, {
+      Accept: 'application/vnd.github+json',
+      Authorization: 'Bearer ' + settings.githubToken.trim(),
+      'Content-Type': 'application/json',
+    }, body);
+  }
+
+  async function syncGist() {
+    if (settings.gistId) return settings.gistId;
+    for (let page = 1; page <= 5; page++) {
+      const list = await gh('GET', '/gists?per_page=100&page=' + page);
+      const found = (list || []).find((g) => g && g.description === GIST_DESC);
+      if (found) { settings.gistId = found.id; break; }
+      if (!list || list.length < 100) break;
+    }
+    if (!settings.gistId) {
+      const made = await gh('POST', '/gists', { description: GIST_DESC, public: false,
+        files: { 'README.md': { content: 'Saved by the Story Manager userscript so its memories are the same on all your devices. Do not edit by hand.' } } });
+      settings.gistId = made.id;
+    }
+    await Store.set('settings', settings);
+    return settings.gistId;
+  }
+
+  function scheduleSync() {
+    if (!settings.githubToken || !settings.githubToken.trim()) return;
+    clearTimeout(sync.timer);
+    sync.timer = setTimeout(() => runSync().catch(() => {}), 8000);
+  }
+
+  // Loads newer chats from the gist, then saves chats changed here.
+  async function runSync() {
+    if (!settings.githubToken || !settings.githubToken.trim()) { sync.state = 'off'; return; }
+    if (sync.running) return sync.running;
+    sync.running = (async () => {
+      try {
+        let id = await syncGist();
+        let gist;
+        try {
+          gist = await gh('GET', '/gists/' + id);
+        } catch (e) {
+          if (!/HTTP 404/.test(String(e.message))) throw e;
+          settings.gistId = '';          // deleted on GitHub: make a new one
+          id = await syncGist();
+          gist = await gh('GET', '/gists/' + id);
+        }
+        const remote = {};
+        for (const [name, f] of Object.entries(gist.files || {})) {
+          const m = name.match(/^chat-([0-9a-f-]+)\.json$/i);
+          if (!m) continue;
+          // Big files come without their content: it is read from raw_url.
+          try { remote[m[1]] = f.truncated && f.raw_url ? await requestJSON('GET', f.raw_url, {}, undefined) : JSON.parse(f.content); } catch (e) { /* unreadable: skip */ }
+        }
+        // Newer on GitHub: load it (unless the memory is being updated here).
+        let loaded = 0;
+        for (const [cid, r] of Object.entries(remote)) {
+          if (!r || !r.id || busy[cid]) continue;
+          const local = await getChat(cid, false);
+          if (local && (local.changedAt || 0) >= (r.changedAt || 0)) continue;
+          // Updated in place, so an open panel keeps working on the same chat.
+          const fresh = Object.assign(newChat(cid), r, { id: cid, syncedAt: r.changedAt || 0 });
+          if (chats[cid]) { for (const k of Object.keys(chats[cid])) delete chats[cid][k]; Object.assign(chats[cid], fresh); } else chats[cid] = fresh;
+          if (!chatIndex.includes(cid)) { chatIndex.push(cid); await Store.set('chatIndex', chatIndex); }
+          await saveChat(chats[cid], true);
+          loaded++;
+        }
+        // Changed here since the last save to GitHub: save them.
+        const files = {};
+        for (const cid of chatIndex) {
+          const c = chats[cid] || await getChat(cid, false);
+          if (!c || busy[cid] || (c.changedAt || 0) <= (c.syncedAt || 0)) continue;
+          const r = remote[cid];
+          if (r && (r.changedAt || 0) > (c.changedAt || 0)) continue;
+          files['chat-' + cid + '.json'] = { content: JSON.stringify(Object.assign({}, c, { syncedAt: undefined })) };
+        }
+        const names = Object.keys(files);
+        if (names.length) {
+          await gh('PATCH', '/gists/' + id, { files });
+          for (const n of names) {
+            const c = chats[n.slice(5, -5)];
+            if (c) { c.syncedAt = c.changedAt; await Store.set('chat:' + c.id, c); }
+          }
+        }
+        sync.state = 'ok';
+        sync.at = Date.now();
+        sync.error = '';
+        if (loaded) { if (currentId && remote[currentId]) toast('Loaded the newer memory from your other device'); renderPanel(); }
+      } catch (e) {
+        sync.state = 'error';
+        sync.error = String(e.message || e).slice(0, 200);
+      } finally {
+        sync.running = null;
+      }
+    })();
+    return sync.running;
+  }
+  setInterval(() => { if (!anyBusy()) runSync().catch(() => {}); }, 120000);
 
   // ---------------------------------------------------------------------------
   // Memory injection
@@ -801,20 +916,24 @@
     return null;
   }
 
-  async function postJSON(url, headers, body) {
+  function postJSON(url, headers, body) {
+    return requestJSON('POST', url, headers, body);
+  }
+
+  async function requestJSON(method, url, headers, body) {
     const gm = gmRequest();
     let res;
     if (gm) {
       res = await new Promise((resolve, reject) => {
         gm({
-          method: 'POST', url, headers, data: JSON.stringify(body), timeout: 180000,
+          method, url, headers, data: body === undefined ? undefined : JSON.stringify(body), timeout: 180000,
           onload: (r) => resolve({ status: r.status, text: r.responseText }),
           onerror: () => reject(new Error('Network error contacting ' + new URL(url).hostname)),
           ontimeout: () => reject(new Error('Timed out contacting ' + new URL(url).hostname)),
         });
       });
     } else {
-      const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+      const r = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
       res = { status: r.status, text: await r.text() };
     }
     let json = null;
@@ -2401,6 +2520,7 @@
       if (helperChats[slot]) helperIds.add(helperChats[slot].id);
     }
     for (const id of chatIndex) await getChat(id, false);
+    runSync().catch(() => {});
     publishInjectMap();
   })();
 
@@ -2699,6 +2819,7 @@
     currentId = id;
     renderPanel();
     setStatus();
+    runSync().catch(() => {}); // the other device may have a newer memory of this chat
   }
 
   // Single-page app: also pick the chat id up from the address bar.
@@ -3245,6 +3366,8 @@
         (chat && memoryInMessage(chat) ? ' · holds the memory (updated ' + ago(chat.memoryMsgAt || 0) + ')' : '') +
         (chat && chat.memoryMsgError ? ' · last update error: ' + chat.memoryMsgError : '') +
         (chat && chat.pinError ? ' · last pin error: ' + chat.pinError : ''),
+      'Sync: ' + (sync.state === 'ok' ? 'last synced ' + ago(sync.at) : sync.state === 'error' ? 'error: ' + sync.error : 'off') +
+        (chat ? ' · this chat changed ' + ago(chat.changedAt || 0) + ', saved to GitHub ' + ago(chat.syncedAt || 0) : ''),
       'Last tidy-up: ' + (chat && chat.checked ? ago(chat.checked) : 'never') +
         (chat && chat.jobs ? ' · ' + ((chat.jobs.find((j) => j.kind === 'check') || {}).label || 'nothing needed fixing') : ''),
       'Recent jobs: ' + (chat && chat.jobs && chat.jobs.length ? chat.jobs.slice(0, 6).map((j) => (j.ok ? '✓ ' : '✗ ') + j.label +
@@ -3420,6 +3543,7 @@
     f.pinMemory.checked = s.pinMemory !== false;
     f.memoryMessage = el('input', { type: 'checkbox', id: 'smx-memmsg' });
     f.memoryMessage.checked = s.memoryMessage !== false;
+    f.githubToken = el('input', { type: 'password', value: s.githubToken || '', placeholder: 'GitHub token (gist access only)', autocomplete: 'off' });
     f.autoEnable = el('input', { type: 'checkbox', id: 'smx-auto' });
     f.autoEnable.checked = s.autoEnable;
     f.buttonSide = el('select', {},
@@ -3465,6 +3589,9 @@
       injectBudget: Math.max(2000, parseInt(f.injectBudget.value, 10) || DEFAULT_SETTINGS.injectBudget),
       attachSet: true,
       autoEnable: f.autoEnable.checked,
+      githubToken: f.githubToken.value.trim(),
+      // A different token may belong to another GitHub account: find its gist again.
+      gistId: f.githubToken.value.trim() === (s.githubToken || '') ? s.gistId || '' : '',
       pinMemory: f.pinMemory.checked,
       memoryMessage: f.memoryMessage.checked,
       buttonSide: f.buttonSide.value,
@@ -3493,7 +3620,7 @@
 
     const backup = el('textarea', { placeholder: 'Backup data appears here / paste a backup to import' });
     const exportAll = async () => {
-      const data = { version: 1, settings: Object.assign({}, settings, { apiKey: '' }), chats: {} };
+      const data = { version: 1, settings: Object.assign({}, settings, { apiKey: '', githubToken: '', gistId: '' }), chats: {} };
       for (const id of chatIndex) data.chats[id] = await getChat(id, false);
       backup.value = JSON.stringify(data);
       try { await navigator.clipboard.writeText(backup.value); toast('Backup copied to clipboard'); } catch (e) { toast('Backup ready — long-press the box to copy it'); }
@@ -3541,6 +3668,18 @@
       el('div', { class: 'btns' },
         el('button', { class: 'btn primary', onclick: save }, 'Save settings'),
         el('button', { class: 'btn', onclick: test }, 'Test connection')),
+      el('label', {}, 'Sync between your devices (GitHub)'), f.githubToken,
+      el('div', { class: 'hint' }, 'Keeps the memory of every chat the same on your phone and PC, automatically, in a private GitHub Gist. ',
+        el('a', { href: 'https://github.com/settings/tokens/new?scopes=gist&description=Story%20Manager%20sync', target: '_blank', rel: 'noopener' }, 'Make a token'),
+        ' (sign in or create a free GitHub account, set "Expiration" to "No expiration", leave only "gist" ticked, tap "Generate token", copy it), paste it here on every device and tap Save settings. ' +
+        (sync.state === 'ok' ? 'Last synced ' + ago(sync.at) + '.' : sync.state === 'error' ? 'Sync error: ' + sync.error : 'Not set up.')),
+      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+        await save();
+        toast('Syncing…');
+        await runSync();
+        toast(sync.state === 'ok' ? 'Synced ✓' : sync.state === 'error' ? 'Sync failed: ' + sync.error : 'Paste a GitHub token first', sync.state === 'error');
+        renderPanel(true);
+      } }, 'Sync now')),
       el('label', {}, 'Backup / move to another device (API key is not included)'), backup,
       el('div', { class: 'btns' },
         el('button', { class: 'btn', onclick: exportAll }, 'Export'),

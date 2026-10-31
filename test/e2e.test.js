@@ -272,6 +272,33 @@ async function main() {
     return json({});
   });
 
+  // Fake GitHub Gist API (sync between devices).
+  const gists = {};
+  await ctx.route('https://api.github.com/**', async (route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS' };
+    const reply = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
+    if (req.headers().authorization !== 'Bearer gh-test-token') return reply({ message: 'Bad credentials' }, 401);
+    let m;
+    if (url.pathname === '/gists' && req.method() === 'GET') return reply(Object.values(gists).map((g) => ({ id: g.id, description: g.description })));
+    if (url.pathname === '/gists' && req.method() === 'POST') {
+      const b = JSON.parse(req.postData());
+      const g = { id: 'g' + Object.keys(gists).length, description: b.description, files: {} };
+      for (const [n, f] of Object.entries(b.files)) g.files[n] = { content: f.content };
+      gists[g.id] = g;
+      return reply(g, 201);
+    }
+    if ((m = url.pathname.match(/^\/gists\/([^/]+)$/))) {
+      const g = gists[m[1]];
+      if (!g) return reply({ message: 'Not Found' }, 404);
+      if (req.method() === 'PATCH') for (const [n, f] of Object.entries(JSON.parse(req.postData()).files)) g.files[n] = { content: f.content };
+      return reply(g);
+    }
+    return reply({ message: 'Not Found' }, 404);
+  });
+
   // Fake OpenAI-compatible memory keeper.
   await ctx.route('https://mock-llm.test/**', async (route) => {
     const body = JSON.parse(route.request().postData());
@@ -1102,6 +1129,40 @@ async function main() {
   await page.locator('#msg').blur();
   await page.waitForTimeout(300);
   check(await page.locator('#story-manager-root >> .fab').isVisible(), 'back afterwards');
+
+  console.log('42) Memories sync between devices through a private GitHub Gist');
+  await page.locator('#story-manager-root >> .fab').click().catch(() => {});
+  await page.locator('#story-manager-root >> nav button', { hasText: 'Settings' }).click();
+  await page.locator('#story-manager-root >> input[placeholder^="GitHub token"]').fill('gh-test-token');
+  await page.getByText('Sync now').click();
+  await waitFor(() => Object.values(gists).some((g) => g.files['chat-' + newId + '.json']), 30000, 'chat saved to the gist');
+  const gist = Object.values(gists)[0];
+  check(/Story Manager sync/.test(gist.description) && Object.keys(gist.files).filter((n) => /^chat-/.test(n)).length >= 2, 'a private gist holds every chat');
+  const here = await keyNow();
+  check(JSON.parse(gist.files['chat-' + newId + '.json'].content).log.length === here.log.length, 'with the whole memory');
+  // A fresh device: no memories stored locally, same token.
+  await page.evaluate(() => { for (const k of Object.keys(localStorage)) if (/^smx:chat/.test(k)) localStorage.removeItem(k); });
+  await page.reload();
+  await waitFor(async () => !!(await keyNow()), 20000, 'memory loaded from the gist');
+  const restored = await keyNow();
+  check(restored.log.length === here.log.length && restored.entries.length === here.entries.length && restored.pinned === here.pinned, 'a new device gets the memory automatically');
+  // The other device changed it later: the newer copy is loaded here.
+  const other = JSON.parse(gist.files['chat-' + newId + '.json'].content);
+  other.pinned = 'Changed on the other device.';
+  other.changedAt = Date.now() + 1000;
+  gist.files['chat-' + newId + '.json'] = { content: JSON.stringify(other) };
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> nav button', { hasText: 'Settings' }).click();
+  await page.getByText('Sync now').click();
+  await waitFor(async () => (await keyNow()).pinned === 'Changed on the other device.', 20000, 'newer copy loaded');
+  check(true, 'the newer copy from the other device replaces the older one');
+  await page.waitForTimeout(1500); // the panel redraws after syncing
+  // A change here goes up to the gist.
+  await page.locator('#story-manager-root >> nav button', { hasText: 'Memory' }).click();
+  await page.locator('#story-manager-root >> textarea').first().fill('Changed on this device.');
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await waitFor(() => JSON.parse(gist.files['chat-' + newId + '.json'].content).pinned === 'Changed on this device.', 30000, 'change saved to the gist');
+  check(true, 'changes made here are saved to the gist by themselves');
 
   await browser.close();
   console.log('\nAll checks passed.');

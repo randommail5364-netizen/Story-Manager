@@ -443,15 +443,26 @@ async function main() {
   // Waits until a multi-request rebuild has sent all its requests.
   const settle = async () => {
     let n;
-    const stopShown = () => page.locator('#story-manager-root >> button', { hasText: 'Stop' }).count();
+    // Only a visible Stop button counts (a closed panel keeps an old one).
+    const stopShown = () => page.locator('#story-manager-root >> button:visible', { hasText: 'Stop' }).count();
     let rounds = 0;
     do {
       n = llmCalls.length;
       await page.waitForTimeout(3000);
       if (process.env.DEBUG_SETTLE && ++rounds % 10 === 0) {
         const last = llmCalls[llmCalls.length - 1] || '';
+        if (rounds % 20 === 0) {
+          const diagLine = await page.evaluate(() => {
+            const root = document.querySelector('#story-manager-root').shadowRoot;
+            const btn = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Diagnostics');
+            if (btn) btn.click();
+            const box = root.querySelector('textarea.diag');
+            return box ? box.value.split('\n').filter((l) => /^(Helper chat|Last chat error|Recent jobs|Pinned memory)/.test(l)).join(' || ') : 'no diagnostics';
+          });
+          console.log('  [settle-diag]', diagLine.slice(0, 1200));
+        }
         console.log('  [settle]', llmCalls.length, 'calls; last:', (last.match(/JOB: \w+|ENTRIES ONLY/) || ['?'])[0], (last.match(/\[R\d+[^\]]*\]/g) || []).length, 'replies',
-          await page.evaluate(() => { const b = document.querySelector('#story-manager-root').shadowRoot.querySelector('.status'); return b ? b.innerText.replace(/\s+/g, ' ').slice(0, 200) : ''; }));
+          await page.evaluate(() => { const b = document.querySelector('#story-manager-root').shadowRoot.querySelector('.status'); return b ? b.innerText.replace(/\s+/g, ' ').slice(150, 700) : ''; }));
       }
     } while (llmCalls.length !== n || await stopShown());
   };
@@ -801,8 +812,9 @@ async function main() {
   const beforeLoop = await keyNow();
   await page.evaluate(() => window.sendMsg('We climb the stairs.'));
   await page.evaluate(() => window.sendMsg('We open the door.'));
-  await waitFor(async () => { const c = await keyNow(); return c.lastUpdate !== beforeLoop.lastUpdate || c.lastError !== beforeLoop.lastError; }, 120000, 'update with a looping answer');
+  await waitFor(async () => { const c = await keyNow(); return c.lastError !== beforeLoop.lastError || aborts.length > abortsBefore; }, 120000, 'update with a looping answer');
   helperRunaway = false;
+  await settle();
   const afterLoop = await keyNow();
   check(aborts.length > abortsBefore, 'MiniApps asked to stop the looping answer');
   check(!afterLoop.lastError && /via MiniApps bot/.test(afterLoop.memory) && !/over and over/.test(JSON.stringify(afterLoop)), 'the good part of the answer was used, without the repetition' + (afterLoop.lastError ? ' (got: ' + afterLoop.lastError + ')' : ''));
@@ -1187,6 +1199,18 @@ async function main() {
   await page.reload();
   await page.waitForTimeout(1500);
   check((await listed()).items.some((x) => helperConvs.includes(x.id)), 'shown again when the setting is off');
+
+  console.log('44) The list of helper chats syncs too, so they are hidden on every device');
+  await page.evaluate(() => { const st = JSON.parse(localStorage.getItem('smx:settings')); st.hideHelpers = true; st.githubToken = 'gh-test-token'; localStorage.setItem('smx:settings', JSON.stringify(st)); });
+  await page.reload();
+  await waitFor(() => { try { return helperConvs.every((h) => JSON.parse(gist.files['helpers.json'].content).includes(h)); } catch (e) { return false; } }, 30000, 'helper list in the gist');
+  check(true, 'helper chats saved to the gist');
+  // Another device made a helper chat: it gets hidden here too.
+  convs['other-device-helper'] = { toolId: 'tool-helper', messages: [] };
+  gist.files['helpers.json'] = { content: JSON.stringify(JSON.parse(gist.files['helpers.json'].content).concat('other-device-helper')) };
+  await page.reload();
+  await waitFor(async () => (await page.evaluate(() => localStorage.getItem('smx:hide') || '')).includes('other-device-helper'), 20000, 'helper from the other device');
+  check(!(await listed()).items.some((x) => x.id === 'other-device-helper'), 'a helper chat from the other device is hidden here as well');
 
   await browser.close();
   console.log('\nAll checks passed.');

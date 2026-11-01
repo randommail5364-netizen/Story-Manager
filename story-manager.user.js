@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.9.0
+// @version      3.9.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -660,6 +660,10 @@
           // Big files come without their content: it is read from raw_url.
           try { remote[m[1]] = f.truncated && f.raw_url ? await requestJSON('GET', f.raw_url, {}, undefined) : JSON.parse(f.content); } catch (e) { /* unreadable: skip */ }
         }
+        // Helper chats from every device, so all of them stay hidden everywhere.
+        let remoteHelpers = [];
+        try { remoteHelpers = gist.files['helpers.json'] ? JSON.parse(gist.files['helpers.json'].content) : []; } catch (e) { /* ignore */ }
+        for (const h of remoteHelpers) if (typeof h === 'string' && !helperAll.includes(h)) rememberHelper(h);
         // Newer on GitHub: load it (unless the memory is being updated here).
         let loaded = 0;
         for (const [cid, r] of Object.entries(remote)) {
@@ -682,8 +686,9 @@
           if (r && (r.changedAt || 0) > (c.changedAt || 0)) continue;
           files['chat-' + cid + '.json'] = { content: JSON.stringify(Object.assign({}, c, { syncedAt: undefined })) };
         }
-        const names = Object.keys(files);
-        if (names.length) {
+        if (helperAll.some((h) => !remoteHelpers.includes(h))) files['helpers.json'] = { content: JSON.stringify(helperAll) };
+        const names = Object.keys(files).filter((n) => n !== 'helpers.json');
+        if (Object.keys(files).length) {
           await gh('PATCH', '/gists/' + id, { files });
           for (const n of names) {
             const c = chats[n.slice(5, -5)];
@@ -1025,7 +1030,7 @@
   let helperAll = [];
   function rememberHelper(cid) {
     helperIds.add(cid);
-    if (!helperAll.includes(cid)) { helperAll.push(cid); Store.set('helperAll', helperAll); }
+    if (!helperAll.includes(cid)) { helperAll.push(cid); Store.set('helperAll', helperAll); scheduleSync(); }
     publishHidden();
   }
   function publishHidden() {

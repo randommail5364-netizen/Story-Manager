@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.9.1
+// @version      3.9.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -307,6 +307,46 @@
 
     if (win.WebSocket && win.WebSocket.prototype) {
       const WP = win.WebSocket.prototype;
+      // Live events about a helper chat (or one of Story Manager's own
+      // requests, known before its chat exists) are not passed on to the site:
+      // otherwise a new helper chat shows up in its lists, and the site may
+      // even jump to it. Story Manager's own listener still gets them.
+      const aboutHelper = (ev) => {
+        try {
+          const d = ev && ev.data;
+          if (typeof d !== 'string' || !hidden.length || d.indexOf('42[') !== 0) return false;
+          const low = d.toLowerCase();
+          const path = String(win.location.pathname).toLowerCase();
+          return hidden.some((id) => low.indexOf(id) >= 0 && path.indexOf(id) < 0);
+        } catch (e) { return false; }
+      };
+      const wrapped = new WeakMap();
+      const wrap = (fn) => {
+        if (typeof fn !== 'function') return fn;
+        if (!wrapped.has(fn)) {
+          wrapped.set(fn, expFn(function (ev) { if (aboutHelper(ev)) return undefined; return fn.apply(this, arguments); }, win));
+        }
+        return wrapped.get(fn);
+      };
+      const oAdd = WP.addEventListener;
+      const oRemove = WP.removeEventListener;
+      WP.addEventListener = expFn(function (type, fn, opts) {
+        return oAdd.call(this, type, type === 'message' ? wrap(fn) : fn, opts);
+      }, WP);
+      WP.removeEventListener = expFn(function (type, fn, opts) {
+        return oRemove.call(this, type, type === 'message' && wrapped.has(fn) ? wrapped.get(fn) : fn, opts);
+      }, WP);
+      try {
+        const om = Object.getOwnPropertyDescriptor(WP, 'onmessage');
+        if (om && om.set && om.configurable) {
+          Object.defineProperty(WP, 'onmessage', {
+            configurable: true,
+            enumerable: om.enumerable,
+            get: om.get,
+            set: expFn(function (fn) { om.set.call(this, wrap(fn)); }, WP),
+          });
+        }
+      } catch (e) { /* the site keeps the unfiltered events */ }
       const oWsSend = WP.send;
       WP.send = expFn(function (data) {
         try {
@@ -314,7 +354,7 @@
           // Start listening to this socket the first time it sends anything.
           if (!this.__smxListening) {
             this.__smxListening = true;
-            this.addEventListener('message', sandboxed ? expFn(onWsMessage, win) : onWsMessage);
+            oAdd.call(this, 'message', sandboxed ? expFn(onWsMessage, win) : onWsMessage);
           }
           const p = sioParse(data);
           if (p) {
@@ -1033,8 +1073,9 @@
     if (!helperAll.includes(cid)) { helperAll.push(cid); Store.set('helperAll', helperAll); scheduleSync(); }
     publishHidden();
   }
+  const helperRequests = []; // request ids of Story Manager's own messages, hidden before their chat is known
   function publishHidden() {
-    const ids = settings.hideHelpers === false ? [] : [...new Set(helperAll.concat([...helperIds]))];
+    const ids = settings.hideHelpers === false ? [] : [...new Set(helperAll.concat([...helperIds], helperRequests))];
     document.dispatchEvent(new CustomEvent('smx:hide', { detail: JSON.stringify(ids) }));
     if (document.documentElement) document.documentElement.setAttribute('data-smx-hide', JSON.stringify(ids));
     try { localStorage.setItem('smx:hide', JSON.stringify(ids)); } catch (e) { /* private mode etc. */ }
@@ -1100,6 +1141,10 @@
       elements: [{ type: 'text', text: tag + '. This is a new, separate task: ignore all earlier messages in this chat.\n\n' + prompt }],
       language: 'en',
     };
+    helperRequests.push(body.requestId.toLowerCase());
+    if (helperRequests.length > 50) helperRequests.shift();
+    Store.set('helperRequests', helperRequests);
+    publishHidden();
     const rotate = Number(settings.helperRotate) || 0;
     let reuse = !!(helperChat && helperChat.slug === slug && !(rotate && helperChat.uses >= rotate));
     if (reuse) body.conversationId = helperChat.id;
@@ -2567,6 +2612,7 @@
     chatIndex = await Store.get('chatIndex', []);
     learned = await Store.get('learned', null);
     helperAll = await Store.get('helperAll', []);
+    helperRequests.push(...(await Store.get('helperRequests', [])));
     for (const h of helperAll) helperIds.add(h);
     for (let slot = 0; slot < 3; slot++) {
       helperChats[slot] = await Store.get(helperKey(slot), null);
@@ -3078,6 +3124,12 @@
     if (!chat) {
       return el('div', {},
         el('div', { class: 'empty' }, 'Open a chat (or send a message) and its story memory will appear here.'),
+        diagnosticsBox());
+    }
+    if (helperIds.has(chat.id)) {
+      return el('div', {},
+        el('div', { class: 'status' }, el('b', {}, 'This is one of Story Manager\'s helper chats.'),
+          el('div', {}, 'Story Manager sends its summary requests here; it is not one of your stories. Open your story chat to see its memory.')),
         diagnosticsBox());
     }
     const isBusy = !!busy[chat.id];

@@ -37,7 +37,11 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
     const ws = new WebSocket('wss://api.miniapps.ai/socket.io/?EIO=4&transport=websocket');
     window.sock = ws;
     ws.onopen = () => { ws.send('40'); ws.send('421["messages:list",' + JSON.stringify({ conversationId: conv }) + ']'); };
-    ws.onmessage = (ev) => { if (String(ev.data).startsWith('431')) res(); };
+    ws.onmessage = (ev) => {
+      if (String(ev.data).startsWith('42["cu"')) (window.cuSeen = window.cuSeen || []).push(String(ev.data));
+      if (String(ev.data).startsWith('42[')) (window.wsSeen = window.wsSeen || []).push(String(ev.data));
+      if (String(ev.data).startsWith('431')) res();
+    };
   });
   window.wsSend = (text) => window.sock.send('42["chat",' + JSON.stringify({ conversationId: conv, toolId: 'tool-story', elements: [{ type: 'text', text }] }) + ']');
   async function load() {
@@ -1211,6 +1215,28 @@ async function main() {
   await page.reload();
   await waitFor(async () => (await page.evaluate(() => localStorage.getItem('smx:hide') || '')).includes('other-device-helper'), 20000, 'helper from the other device');
   check(!(await listed()).items.some((x) => x.id === 'other-device-helper'), 'a helper chat from the other device is hidden here as well');
+
+  console.log('45) Live "new chat" events for helper chats do not reach the site; opening one says what it is');
+  await page.evaluate(() => window.wsLoad());
+  await page.waitForTimeout(500);
+  const helperId = helperConvs[0];
+  liveWs.send('42["cu",' + JSON.stringify({ id: helperId, type: 'conversation', conversation: { id: helperId, title: 'helper' } }) + ']');
+  liveWs.send('42["cu",' + JSON.stringify({ id: newId, type: 'conversation', conversation: { id: newId, title: 'Dragon Tale' } }) + ']');
+  await page.waitForTimeout(800);
+  const seen = await page.evaluate(() => window.cuSeen || []);
+  check(seen.some((x) => x.includes(newId)) && !seen.some((x) => x.includes(helperId)), 'the site hears about story chats, not helper chats');
+  // A brand-new helper chat is announced before Story Manager knows its id: the request id gives it away.
+  const helperReq = chatBodies.filter((b) => b.toolId === 'tool-helper').pop().requestId;
+  liveWs.send('42["crsu",' + JSON.stringify({ conversationId: 'brand-new-helper', requestId: helperReq, addedMessages: [] }) + ']');
+  liveWs.send('42["crsu",' + JSON.stringify({ conversationId: newId, requestId: 'users-own-request', addedMessages: [] }) + ']');
+  await page.waitForTimeout(800);
+  const all = await page.evaluate(() => window.wsSeen || []);
+  check(!all.some((x) => x.includes('brand-new-helper')) && all.some((x) => x.includes('users-own-request')), 'events of Story Manager\'s own requests are held back from the site, even before the chat is known');
+  await page.goto('https://miniapps.ai/c/' + helperId);
+  await page.waitForTimeout(1500);
+  await page.locator('#story-manager-root >> .fab').click();
+  const helperPanel = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/helper chats/.test(helperPanel) || /Open a chat/.test(helperPanel), 'opening a helper chat does not show it as a story');
 
   await browser.close();
   console.log('\nAll checks passed.');

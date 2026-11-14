@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.2
+// @version      3.10.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1143,6 +1143,7 @@
   function rememberHelper(cid) {
     if (notHelpers.includes(cid)) return;
     helperIds.add(cid);
+    if (location.href.toLowerCase().indexOf(cid) >= 0) setTimeout(() => renderPanel(true), 0);
     if (!helperAll.includes(cid)) { helperAll.push(cid); Store.set('helperAll', helperAll); scheduleSync(); }
     publishHidden();
   }
@@ -3264,7 +3265,14 @@
       return el('div', {},
         el('div', { class: 'status' }, el('b', {}, 'This is one of Story Manager\'s helper chats.'),
           el('div', {}, 'Story Manager sends its summary requests here; it is not one of your stories. Open your story chat to see its memory.'),
-          el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+          toolCache && chat.tool && toolCache.id === chat.tool.toolId || toolCache && Object.values(chats).some((c) => c.tool && c.tool.toolId === toolCache.id)
+            ? el('div', { class: 'error' }, '⚠ Your memory keeper is the same bot you write stories with, so MiniApps may open these helper chats as your latest chat with it. Pick a different bot in Settings → MiniApps bot.') : null,
+          el('div', { class: 'btns' }, el('button', { class: 'btn primary', onclick: () => {
+            const latest = Object.values(chats).filter((c) => c.id !== chat.id && !helperIds.has(c.id) && (c.log.length || c.processedIds.length))
+              .sort((a, b) => (b.changedAt || 0) - (a.changedAt || 0))[0];
+            if (!latest) { toast('No story with a memory yet on this device.'); return; }
+            location.href = location.pathname.replace(chat.id, latest.id);
+          } }, 'Back to my latest story'), el('button', { class: 'btn', onclick: async () => {
             if (!confirm('Treat this chat as one of your stories? Story Manager stops using it as a helper chat and starts managing its memory.')) return;
             await notHelper(chat.id);
             setCurrent(chat.id);
@@ -3484,6 +3492,8 @@
           : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
         chat.memoryMsgError && settings.memoryMessage && !memoryInMessage(chat) ? el('div', { class: 'error' }, '⚠ Could not update the pinned memory message (' + chat.memoryMsgError + '); the memory is attached to your messages instead.') : null,
         chat.pinError && settings.pinMemory ? el('div', { class: 'error' }, '⚠ Could not pin the memory message: ' + chat.pinError) : null,
+        settings.provider === 'miniapps' && toolCache && chat.tool && toolCache.id === chat.tool.toolId
+          ? el('div', { class: 'error' }, '⚠ The memory keeper is the same bot as this story. MiniApps may then open Story Manager\'s helper chats instead of your story. Pick a different bot in Settings → MiniApps bot.') : null,
         chat.staleFacts ? el('div', {}, 'ℹ Some replies were deleted or rewritten after their facts went into the story & characters. Tap "Redo story & characters from summaries" to remove anything from the old versions.') : null,
         chat.continuedIn ? el('div', {}, 'This story continues in chat ' + chat.continuedIn.slice(0, 8) + '.') : null,
         chat.continuedFrom ? el('div', {}, 'Continued from chat ' + chat.continuedFrom.slice(0, 8) + ', with its memory.') : null),
@@ -3823,7 +3833,9 @@
     const keyBox = el('div', {}, el('label', {}, 'API key'), f.apiKey, el('label', {}, 'Model'), f.model);
     const baseBox = el('div', {}, el('label', {}, 'Base URL'), f.baseUrl,
       el('div', { class: 'hint' }, 'OpenRouter: https://openrouter.ai/api/v1 · OpenAI: https://api.openai.com/v1 · Groq: https://api.groq.com/openai/v1'));
+    const sameBot = toolCache && Object.values(chats).some((c) => c.tool && c.tool.toolId === toolCache.id && !helperIds.has(c.id));
     const slugBox = el('div', {}, el('label', {}, 'MiniApps bot used as memory keeper (slug from its URL)'), f.miniappsSlug,
+      sameBot ? el('div', { class: 'error' }, '⚠ This is a bot you also write stories with. Use a different bot here: otherwise MiniApps can open Story Manager\'s helper chats as your latest chat with it.') : null,
       el('div', { class: 'hint' }, 'Memory updates are sent to this bot in one helper chat in your MiniApps history (uses MiniApps credits).'),
       el('label', {}, 'Start a fresh helper chat every … requests (0 = always the same chat)'), f.helperRotate,
       el('div', { class: 'hint' }, 'A helper chat that gets too long can make the bot stop answering. 30 is a safe default; lower it if the bot still errors, raise it for fewer chats in your history.'),

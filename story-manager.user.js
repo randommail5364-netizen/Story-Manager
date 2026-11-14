@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.3
+// @version      3.10.4
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1236,13 +1236,28 @@
     publishHidden();
     const rotate = Number(settings.helperRotate) || 0;
     let reuse = !!(helperChat && helperChat.slug === slug && !(rotate && helperChat.uses >= rotate));
-    if (reuse) body.conversationId = helperChat.id;
+    // With the same bot as one of the user's stories, asking MiniApps for a
+    // new chat can hand back the user's own (new) story chat. So never start a
+    // new helper chat then: keep using an existing one, or stop.
+    const storyBot = Object.values(chats).some((c) => c.tool && c.tool.toolId === toolCache.id && !helperIds.has(c.id));
+    if (!reuse && storyBot) {
+      const existing = helperChats.find((h) => h && h.slug === slug);
+      if (!existing) {
+        publishHidden();
+        throw new Error('The memory-keeper bot "' + slug + '" is the bot you write stories with, so Story Manager will not start a chat with it ' +
+          '(MiniApps could hand back one of your stories). Pick a different bot in Settings → MiniApps bot.');
+      }
+      helperChats[slot] = existing;
+      reuse = true;
+    }
+    const usedChat = helperChats[slot];
+    if (reuse) body.conversationId = usedChat.id;
     // Messages already in the helper chat are not the answer. (The request
     // itself may not be readable: MiniApps can store long messages as files.)
     const before = new Set();
     if (reuse) {
-      try { (await fetchMessages(helperChat.id, { cache: false, mode: 'latest' })).forEach((m) => before.add(m.id)); } catch (e) { /* see below */ }
-      if (seenMsgs[helperChat.id]) for (const k of seenMsgs[helperChat.id].keys()) before.add(k);
+      try { (await fetchMessages(usedChat.id, { cache: false, mode: 'latest' })).forEach((m) => before.add(m.id)); } catch (e) { /* see below */ }
+      if (seenMsgs[usedChat.id]) for (const k of seenMsgs[usedChat.id].keys()) before.add(k);
     }
     let res;
     // Everything the bot sends from here on belongs to this request.
@@ -1252,6 +1267,11 @@
       res = await rpc('POST', '/chat', body);
     } catch (e) {
       if (!reuse) { publishHidden(); throw e; }
+      if (storyBot) {
+        helperChats[slot] = null;
+        await Store.set(helperKey(slot), null);
+        throw new Error('The helper chat is gone, and the memory-keeper bot "' + slug + '" is the bot you write stories with, so Story Manager will not start a new chat with it. Pick a different bot in Settings → MiniApps bot.');
+      }
       // The helper chat is gone (e.g. deleted); start a new one.
       delete body.conversationId;
       reuse = false;
@@ -1282,7 +1302,7 @@
       }
     }
     rememberHelper(cid);
-    helperChats[slot] = reuse && cid === helperChat.id ? Object.assign({}, helperChat, { uses: helperChat.uses + 1 }) : { slug, id: cid, uses: 1 };
+    helperChats[slot] = reuse && cid === usedChat.id ? Object.assign({}, usedChat, { uses: usedChat.uses + 1 }) : { slug, id: cid, uses: 1 };
     await Store.set(helperKey(slot), helperChats[slot]);
     // The send reply lists the messages it added (our request, maybe a
     // greeting); the answer comes after our request's position.

@@ -1300,6 +1300,28 @@ async function main() {
   await page.evaluate((u) => history.pushState(null, '', u), someChat);
   check((await where()) === someChat, 'a change right after the user taps goes through');
 
+  console.log('49) No new helper chat is started with a bot the user writes stories with');
+  // The story chat uses the same bot as the memory keeper, and no helper chat exists yet.
+  await page.evaluate((id) => {
+    const key = 'smx:chat:' + id;
+    const c = JSON.parse(localStorage.getItem(key));
+    c.tool = { toolId: 'tool-helper', revision: 1, modelId: 'm1' };
+    localStorage.setItem(key, JSON.stringify(c));
+    for (const k of ['smx:helperChat', 'smx:helperChat1', 'smx:helperChat2']) localStorage.removeItem(k);
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.provider = 'miniapps';
+    st.parallel = 1;
+    st.holdBack = 0;
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  }, newId);
+  await page.goto('https://miniapps.ai/c/' + newId);
+  await page.waitForTimeout(1500);
+  const newChatsBefore = chatBodies.filter((b) => b.toolId === 'tool-helper' && !b.conversationId).length;
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
+  await waitFor(async () => /bot you write stories with/.test((await keyNow()).lastError || ''), 60000, 'refusal');
+  check(chatBodies.filter((b) => b.toolId === 'tool-helper' && !b.conversationId).length === newChatsBefore, 'no new chat was asked for; the user is told to pick a different bot');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

@@ -20,8 +20,8 @@ function grab(name) {
   throw new Error('unbalanced ' + name);
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0];
-const lib = new Function(consts + ['countMessages', 'latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
-  .map(grab).join('\n') + '\nreturn { countMessages, latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -205,10 +205,10 @@ test('regenerated versions of a message: only the newest is kept', () => {
   assert.deepStrictEqual(out.map((x) => x.id), ['u1', 'a1c', 'u2', 'x']);
 });
 
-test('the total counts each position once, from the newest message\'s position', () => {
-  const m = (index) => ({ index });
-  assert.strictEqual(lib.countMessages({ knownMessages: 99 }, [m(388), m(389), m(390), m(391), m(392), m(393)]), 394, 'only the latest page read');
-  assert.strictEqual(lib.countMessages({ knownMessages: 3 }, [{ index: null }, { index: null }, { index: null }, { index: null }]), 4, 'no positions: count what was seen');
+test('messages that only share a number (it can start again) are all kept', () => {
+  const m = (id, index, version, t, role) => ({ id, index, version, t, role, text: id });
+  const out = lib.latestVersions([m('u1', 0, 0, 1, 'user'), m('a1', 1, 0, 2, 'assistant'), m('u2', 0, 0, 3, 'user'), m('a2', 1, 0, 4, 'assistant'), m('a2b', 1, 1, 5, 'assistant')]);
+  assert.deepStrictEqual(out.map((x) => x.id), ['u1', 'a1', 'u2', 'a2b']);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

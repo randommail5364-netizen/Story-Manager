@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.0
+// @version      3.10.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -223,6 +223,30 @@
         }
         return new win.Response(JSON.stringify(d), { status: r.status, statusText: r.statusText, headers: r.headers });
       }).catch(() => r);
+    }
+
+    // The site must not switch to a helper chat on its own (e.g. when it hears
+    // that a new chat was started). A page change the user did not just ask
+    // for (no tap or key press in the last 2 seconds) is refused if it leads
+    // to a helper chat, or to any chat while a helper chat is being created.
+    let lastInput = 0;
+    for (const t of ['pointerdown', 'touchstart', 'keydown', 'click']) {
+      doc.addEventListener(t, () => { lastInput = Date.now(); }, true);
+    }
+    const unwanted = (url) => {
+      try {
+        if (Date.now() - lastInput < 2000) return false;
+        const u = String(url || '').toLowerCase();
+        if (!/\/c\/[0-9a-f-]{36}/.test(u)) return false;
+        return Date.now() < holdUntil || hidden.some((id) => u.indexOf(id) >= 0);
+      } catch (e) { return false; }
+    };
+    for (const name of ['pushState', 'replaceState']) {
+      const orig = win.history[name];
+      win.history[name] = expFn(function (state, title, url) {
+        if (unwanted(url)) return undefined;
+        return orig.apply(this, arguments);
+      }, win.history);
     }
 
     // --- fetch ---
@@ -955,15 +979,25 @@
   }
 
   // MiniApps lists every version of a regenerated (or re-edited) message at
-  // the same index; only the newest one is part of the story.
+  // the same index, each with its own version number; only the newest is part
+  // of the story. The index can start again within a chat, so messages that
+  // share an index but not a version history (same version) are all kept.
   function latestVersions(msgs) {
-    const best = new Map();
-    for (const m of msgs) {
-      if (m.index == null) continue;
-      const b = best.get(m.index);
-      if (!b || m.version > b.version || (m.version === b.version && m.t >= b.t)) best.set(m.index, m);
+    // In time order, a higher version replaces the most recent earlier message
+    // with the same index and role (the one it is a new version of).
+    const order = msgs.slice().sort((a, b) => (a.t || 0) - (b.t || 0));
+    const drop = new Set();
+    const kept = [];
+    for (const m of order) {
+      if (m.index != null && m.version > 0) {
+        for (let i = kept.length - 1; i >= 0; i--) {
+          const k = kept[i];
+          if (k.index === m.index && k.role === m.role && k.version < m.version) { drop.add(k); kept.splice(i, 1); break; }
+        }
+      }
+      kept.push(m);
     }
-    return msgs.filter((m) => m.index == null || best.get(m.index) === m);
+    return msgs.filter((m) => !drop.has(m));
   }
 
   function titleOf(data) {
@@ -2586,13 +2620,12 @@
 
   const FIRST_RUN_MESSAGES = 40;
 
-  // How many messages the chat has, one per position (a regenerated reply's
-  // versions count once). MiniApps numbers every message by its position, so
-  // the newest one tells the total even when only the latest page was read.
+  // How many messages the chat has (a regenerated reply's versions count once).
   function countMessages(chat, msgs) {
     if (versionsSeen[chat.id]) chat.allVersions = Math.max(chat.allVersions || 0, versionsSeen[chat.id].size);
-    const top = Math.max(-1, ...msgs.map((m) => (typeof m.index === 'number' ? m.index : -1)));
-    return top >= 0 ? top + 1 : Math.max(chat.knownMessages || 0, msgs.length);
+    // MiniApps' message numbers can start again within a chat, so the count
+    // is what has been read (the whole chat after a full read).
+    return Math.max(chat.knownMessages || 0, msgs.length);
   }
 
   // Called whenever we see (part of) a chat's history.

@@ -1273,6 +1273,22 @@ async function main() {
   check(JSON.parse(gist.files['not-helpers.json'] ? gist.files['not-helpers.json'].content : '[]').includes(mistaken) ||
     (await page.waitForTimeout(10000), JSON.parse((gist.files['not-helpers.json'] || { content: '[]' }).content).includes(mistaken)), 'other devices are told too');
 
+  console.log('48) The site cannot switch to a helper chat on its own; the user still can');
+  await page.goto('https://miniapps.ai/c/' + newId);
+  await page.waitForTimeout(3000);
+  const where = () => page.evaluate(() => location.pathname);
+  const someChat = '/c/' + require('crypto').randomUUID();
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent('smx:hold')));
+  await page.evaluate((u) => history.pushState(null, '', u), someChat);
+  check((await where()) === '/c/' + newId, 'no jump while a helper chat is being created');
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent('smx:hide', { detail: localStorage.getItem('smx:hide') })));
+  const helperUrl = '/c/' + JSON.parse(await page.evaluate(() => localStorage.getItem('smx:hide'))).find((x) => /^[0-9a-f-]{36}$/.test(x));
+  await page.evaluate((u) => history.pushState(null, '', u), helperUrl);
+  check((await where()) === '/c/' + newId, 'no jump into a helper chat without a tap');
+  await page.mouse.click(5, 5);
+  await page.evaluate((u) => history.pushState(null, '', u), someChat);
+  check((await where()) === someChat, 'a change right after the user taps goes through');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

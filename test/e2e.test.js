@@ -412,6 +412,7 @@ async function main() {
   const memBox = await page.locator('#story-manager-root >> textarea.mem').inputValue();
   check(/update 4/.test(memBox), 'panel shows latest memory');
   check(/Reply summaries: 4/.test(panelText) && /Chapters: 0/.test(panelText), 'panel shows where each stage stands');
+  check(/Messages in this chat: \d+( \(\d+ counting every redone version[^)]*\))? · in memory: \d+/.test(panelText), 'panel shows the total number of messages and how many are in the memory');
 
   console.log('6) Pinned facts are always injected');
   await page.locator('#story-manager-root >> textarea').first().fill('Mira cannot swim.');

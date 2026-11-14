@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.9.5
+// @version      3.10.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -931,8 +931,17 @@
     return (h >>> 0).toString(36);
   }
 
+  // Every version of every message seen per chat (regenerated replies
+  // included), for the count of all versions.
+  const versionsSeen = {};
+
   function extractMessages(data) {
     const arr = findMessageArray(data);
+    for (const m of arr) {
+      if (!m || !m.id || !m.conversationId) continue;
+      const cid = String(m.conversationId).toLowerCase();
+      (versionsSeen[cid] = versionsSeen[cid] || new Set()).add(String(m.id));
+    }
     const out = arr.filter(looksLikeMessage).map((m) => ({
       id: String(m.id || m._id || m.chatMessageId || m.uuid || ('h-' + roleOf(m) + '-' + hashText(textOf(m)))),
       role: roleOf(m),
@@ -2577,6 +2586,15 @@
 
   const FIRST_RUN_MESSAGES = 40;
 
+  // How many messages the chat has, one per position (a regenerated reply's
+  // versions count once). MiniApps numbers every message by its position, so
+  // the newest one tells the total even when only the latest page was read.
+  function countMessages(chat, msgs) {
+    if (versionsSeen[chat.id]) chat.allVersions = Math.max(chat.allVersions || 0, versionsSeen[chat.id].size);
+    const top = Math.max(-1, ...msgs.map((m) => (typeof m.index === 'number' ? m.index : -1)));
+    return top >= 0 ? top + 1 : Math.max(chat.knownMessages || 0, msgs.length);
+  }
+
   // Called whenever we see (part of) a chat's history.
   async function syncChat(id, msgs, { final }) {
     if (helperIds.has(id)) return;
@@ -2584,7 +2602,7 @@
     // While the AI may still be typing, ignore its last message for now.
     let usable = msgs;
     if (!final && usable.length && usable[usable.length - 1].role === 'assistant') usable = usable.slice(0, -1);
-    chat.knownMessages = Math.max(chat.knownMessages || 0, msgs.length);
+    chat.knownMessages = countMessages(chat, msgs);
     if (!chat.enabled || busy[id]) return;
     // The site only loads the newest messages. When they don't reach back to
     // what the memory already holds, read further back to see what is missing.
@@ -3258,7 +3276,7 @@
         await save(true);
         toast(rebuild ? 'Reading the whole chat…' : 'Checking for new messages…');
         const msgs = await fetchMessages(chat.id, { mode: rebuild ? 'full' : 'since' });
-        chat.knownMessages = Math.max(chat.knownMessages || 0, msgs.length);
+        chat.knownMessages = countMessages(chat, msgs);
         if (!msgs.length) {
           toast('Could not find any messages in this chat yet. Scroll through the chat, then try again — or open Diagnostics and send it to Claude.', true);
           return;
@@ -3388,8 +3406,16 @@
     return el('div', {},
       el('div', { class: 'status' },
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
-        el('div', {}, 'Messages in memory: ', el('b', {}, String(chat.readCount || chat.processedCount)), total ? ' of ' + total : '',
-          ' · Last update: ', el('b', {}, ago(chat.lastUpdate))),
+        (() => {
+          const inMem = chat.readCount || chat.processedCount;
+          const hold = Math.max(0, Number(settings.holdBack) || 0);
+          const waiting = Math.max(0, total - inMem);
+          return el('div', {}, 'Messages in this chat: ', el('b', {}, total ? String(total) : '?'),
+            chat.allVersions > total ? ' (' + chat.allVersions + ' counting every redone version' + (chat.allVersions && inMem < total ? ' read so far' : '') + ')' : '',
+            ' · in memory: ', el('b', {}, String(inMem)),
+            waiting ? ' · not yet: ' + waiting + (hold ? ' (the newest ' + hold + ' AI ' + (hold === 1 ? 'reply waits' : 'replies wait') + ' in case you redo them)' : '') : '',
+            ' · Last update: ', el('b', {}, ago(chat.lastUpdate)));
+        })(),
         lastSentInfo[chat.id] ? el('div', {}, 'Last message carried: ' + lastSentInfo[chat.id]) : null,
         el('div', {}, 'Reply summaries: ', el('b', {}, String(st.summaries)),
           st.unfolded ? ' (' + st.unfolded + ' waiting to go into the story & characters)' : '',

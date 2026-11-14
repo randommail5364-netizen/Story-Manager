@@ -197,7 +197,7 @@ async function main() {
         if (end < 0) return json({ message: 'Invalid message cursor' }, 400);
       }
       const start = Math.max(0, end - limit);
-      const items = c.messages.slice(start, end).map((x, i) => Object.assign({ conversationId: m[1], index: start + i }, x));
+      const items = c.messages.slice(start, end).map((x, i) => Object.assign({ conversationId: m[1], index: start + i + (c.toolId === 'tool-helper' ? 7 : 0) }, x));
       const hasMore = end - limit > 0;
       return json({ items, hasMore, nextBeforeMessageId: hasMore ? items[0].id : null });
     }
@@ -275,7 +275,8 @@ async function main() {
         reply(conv, 'Story reply #' + n + ': the dragon Ash watches Mira.', 1500, id);
       }
       return json({ conversationId: id, chatMessageId: userMsg.id, requestId: body.requestId,
-        addedMessages: added.map((x) => Object.assign({ index: conv.messages.indexOf(x) }, x)) });
+        // Like the real site, numbers need not start at 0 (they can start again in a chat).
+        addedMessages: added.map((x) => Object.assign({ index: conv.messages.indexOf(x) + (body.toolId === 'tool-helper' ? 7 : 0) }, x)) });
     }
     return json({});
   });
@@ -359,6 +360,16 @@ async function main() {
   const waitFor = async (fn, ms, what) => {
     const end = Date.now() + ms;
     while (Date.now() < end) { if (await fn()) return; await new Promise((r) => setTimeout(r, 250)); }
+    if (process.env.DEBUG_SETTLE) {
+      const diag = await page.evaluate(() => {
+        const root = document.querySelector('#story-manager-root').shadowRoot;
+        const btn = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Diagnostics');
+        if (btn) btn.click();
+        const box = root.querySelector('textarea.diag');
+        return box ? box.value.split('\n').slice(0, 14).join('\n') : 'no diagnostics (panel closed)';
+      }).catch((e) => String(e));
+      console.log('  [timeout-diag]\n' + diag);
+    }
     throw new Error('Timed out waiting for ' + what);
   };
 

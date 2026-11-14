@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.1
+// @version      3.10.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1244,6 +1244,8 @@
       if (seenMsgs[helperChat.id]) for (const k of seenMsgs[helperChat.id].keys()) before.add(k);
     }
     let res;
+    // Everything the bot sends from here on belongs to this request.
+    let sentAt = Date.now();
     if (!reuse) document.dispatchEvent(new CustomEvent('smx:hold'));
     try {
       res = await rpc('POST', '/chat', body);
@@ -1254,6 +1256,7 @@
       reuse = false;
       before.clear();
       document.dispatchEvent(new CustomEvent('smx:hold'));
+      sentAt = Date.now();
       try { res = await rpc('POST', '/chat', body); } catch (e2) { publishHidden(); throw e2; }
     }
     const cid = res && res.conversationId;
@@ -1262,10 +1265,13 @@
     // put it into a chat that already had messages (e.g. a chat the user just
     // started with the same bot), that chat is the user's, not a helper chat.
     if (!reuse) {
-      const added = Array.isArray(res.addedMessages) ? res.addedMessages : [];
-      const pos = Math.max(-1, ...added.filter((m) => m && typeof m.index === 'number').map((m) => m.index));
+      // Read the chat: a new one holds only what this request added (and
+      // maybe a greeting). Message numbers are not used: they can start again.
+      const added = new Set((Array.isArray(res.addedMessages) ? res.addedMessages : []).map((m) => m && String(m.id)).concat(String(res.chatMessageId || '')));
+      let others = 0;
+      try { others = (await fetchMessages(cid, { cache: false, mode: 'latest' })).filter((m) => !added.has(m.id)).length; } catch (e) { /* unknown: trust it */ }
       const known = chats[String(cid).toLowerCase()];
-      if (pos > 1 || (known && (known.log.length || known.processedIds.length))) {
+      if (others > 1 || (known && (known.log.length || known.processedIds.length))) {
         rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
         publishHidden();
         const err = new Error('MiniApps put the memory keeper\'s request into one of your chats (' + String(cid).slice(0, 8) +
@@ -1300,7 +1306,7 @@
       }
       // A reply that loops or never ends: stop it and use what is usable.
       const st = helperStream[cid];
-      const streamed = st && st.at >= started ? st.text : '';
+      const streamed = st && st.at >= sentAt ? st.text : '';
       const loopAt = loopStart(streamed);
       if (activeChatId && progress[activeChatId]) {
         const w = progress[activeChatId].writing = progress[activeChatId].writing || [];
@@ -1320,7 +1326,7 @@
         throw err;
       }
       const ce = chatErrors[cid];
-      if (ce && ce.at >= started) {
+      if (ce && ce.at >= sentAt) {
         const err = new Error('The MiniApps bot reported an error' + (ce.error ? ': ' + ce.error : '') + (ce.code ? ' (' + ce.code + ')' : '') + '.');
         // A fresh chat doesn't help when the request itself is too long.
         err.botError = !TOO_LONG_RE.test(ce.error || '');
@@ -2629,8 +2635,15 @@
   }
 
   // Called whenever we see (part of) a chat's history.
+  // Story Manager's own request text (see callMiniAppsOnce).
+  const OWN_REQUEST_RE = /^Request [0-9a-f]{8}\. This is a new, separate task/;
+
   async function syncChat(id, msgs, { final }) {
     if (helperIds.has(id)) return;
+    // A chat where everything the "user" wrote is a Story Manager request is a
+    // helper chat (e.g. one an older version wrongly turned down).
+    const mine = msgs.filter((m) => m.role === 'user');
+    if (mine.length && mine.every((m) => OWN_REQUEST_RE.test(m.text)) && !notHelpers.includes(id)) { rememberHelper(id); return; }
     const chat = await getChat(id, true);
     // While the AI may still be typing, ignore its last message for now.
     let usable = msgs;

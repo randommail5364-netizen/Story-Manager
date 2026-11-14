@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.5
+// @version      3.10.6
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2774,6 +2774,8 @@
     for (const h of helperAll) helperIds.add(h);
     for (let slot = 0; slot < 3; slot++) {
       helperChats[slot] = await Store.get(helperKey(slot), null);
+      // A chat the user said is their story is never used as a helper again.
+      if (helperChats[slot] && notHelpers.includes(helperChats[slot].id)) { helperChats[slot] = null; await Store.set(helperKey(slot), null); }
       if (helperChats[slot]) rememberHelper(helperChats[slot].id);
     }
     publishHidden();
@@ -3281,6 +3283,15 @@
     // The page shows a helper chat (Story Manager never makes those "current").
     const onPage = ((location.href.match(UUID_RE) || [])[0] || '').toLowerCase();
     const chat = onPage && helperIds.has(onPage) ? (chats[onPage] || newChat(onPage)) : currentId && chats[currentId];
+    // The open chat (or the current one) has no memory loaded yet: load it.
+    const want = !chat && (onPage && !helperIds.has(onPage) ? onPage : currentId);
+    if (want) {
+      getChat(want, true).then((c) => {
+        if (!c) return;
+        if (!currentId || currentId === want || onPage === want) { currentId = want; renderPanel(true); }
+        fetchMessages(want, { mode: 'since' }).then((msgs) => syncChat(want, msgs, { final: true })).catch(() => {});
+      }).catch(() => {});
+    }
     if (!chat) {
       return el('div', {},
         el('div', { class: 'empty' }, 'Open a chat (or send a message) and its story memory will appear here.'),

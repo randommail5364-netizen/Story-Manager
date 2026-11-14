@@ -1322,6 +1322,17 @@ async function main() {
   await waitFor(async () => /bot you write stories with/.test((await keyNow()).lastError || ''), 60000, 'refusal');
   check(chatBodies.filter((b) => b.toolId === 'tool-helper' && !b.conversationId).length === newChatsBefore, 'no new chat was asked for; the user is told to pick a different bot');
 
+  console.log('50) A story wrongly listed as a helper chat still works when it is open');
+  await page.evaluate((id) => {
+    localStorage.setItem('smx:helperAll', JSON.stringify(JSON.parse(localStorage.getItem('smx:helperAll') || '[]').concat(id)));
+    localStorage.setItem('smx:hide', JSON.stringify(JSON.parse(localStorage.getItem('smx:hide') || '[]').concat(id)));
+  }, newId);
+  await page.goto('https://miniapps.ai/c/' + newId);
+  await page.waitForTimeout(3000);
+  await page.evaluate((id) => history.replaceState({ app: 'state' }, '', '/c/' + id + '?view=1'), newId);
+  check(/view=1/.test(await page.evaluate(() => location.search)), 'the site can still change the address of the open chat');
+  check((await listed()).items.some((x) => x.id === newId), 'the open chat stays in the site\'s chat list');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

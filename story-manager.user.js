@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.4
+// @version      3.10.5
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -211,7 +211,8 @@
       return r.clone().text().then((t) => {
         let d;
         try { d = JSON.parse(t); } catch (e) { return r; }
-        const keep = (x) => !(x && x.id && hidden.includes(String(x.id).toLowerCase()));
+        const here = pageChat();
+        const keep = (x) => !(x && x.id && String(x.id).toLowerCase() !== here && hidden.includes(String(x.id).toLowerCase()));
         const list = Array.isArray(d) ? d : d && Array.isArray(d.items) ? d.items : null;
         if (!list) return r;
         const kept = list.filter(keep);
@@ -233,11 +234,15 @@
     for (const t of ['pointerdown', 'touchstart', 'keydown', 'click']) {
       doc.addEventListener(t, () => { lastInput = Date.now(); }, true);
     }
+    // The chat the page is on (never hidden or blocked: the site needs it).
+    const pageChat = () => ((String(win.location.pathname).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) || [''])[0]).toLowerCase();
     const unwanted = (url) => {
       try {
         if (Date.now() - lastInput < 2000) return false;
         const u = String(url || '').toLowerCase();
         if (!/\/c\/[0-9a-f-]{36}/.test(u)) return false;
+        const here = pageChat();
+        if (here && u.indexOf(here) >= 0) return false; // the chat already open
         return Date.now() < holdUntil || hidden.some((id) => u.indexOf(id) >= 0);
       } catch (e) { return false; }
     };

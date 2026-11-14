@@ -1238,6 +1238,40 @@ async function main() {
   const helperPanel = await page.locator('#story-manager-root >> .panel').innerText();
   check(/helper chats/.test(helperPanel) || /Open a chat/.test(helperPanel), 'opening a helper chat does not show it as a story');
 
+  console.log('46) A new helper chat announced before its id is known is held back; pinned messages are never taken for the chat');
+  await page.goto('https://miniapps.ai/c/' + newId);
+  await page.evaluate(() => window.wsLoad());
+  await page.waitForTimeout(500);
+  // Story Manager starts creating a helper chat; the site announces it (and, meanwhile, a chat of the user's).
+  await page.evaluate(() => { window.wsSeen = []; document.dispatchEvent(new CustomEvent('smx:hold')); });
+  liveWs.send('42["cu",' + JSON.stringify({ id: 'fresh-helper', type: 'conversation', conversation: { id: 'fresh-helper' } }) + ']');
+  liveWs.send('42["cu",' + JSON.stringify({ id: 'users-new-chat', type: 'conversation', conversation: { id: 'users-new-chat' } }) + ']');
+  await page.waitForTimeout(300);
+  check(!(await page.evaluate(() => window.wsSeen.join())).includes('users-new-chat'), 'new-chat announcements wait while a helper chat is being created');
+  // The helper's id becomes known.
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent('smx:hide', { detail: JSON.stringify(JSON.parse(localStorage.getItem('smx:hide')).concat('fresh-helper')) })));
+  await page.waitForTimeout(300);
+  const after46 = await page.evaluate(() => window.wsSeen.join());
+  check(after46.includes('users-new-chat') && !after46.includes('fresh-helper'), 'then the user\'s chat is announced, the helper chat never');
+  // A wrongly learned pinned-messages address is dropped.
+  await page.evaluate(() => localStorage.setItem('smx:learned', JSON.stringify({ template: 'https://api.miniapps.ai/conversations/{id}/messages/pinned' })));
+  await page.reload();
+  await page.waitForTimeout(1500);
+  check(!/pinned/.test(await page.evaluate(() => localStorage.getItem('smx:learned') || '')), 'a pinned-messages address is not used as the message list');
+
+  console.log('47) A chat wrongly taken for a helper chat can be given back as a story');
+  const mistaken = helperConvs[1];
+  await page.goto('https://miniapps.ai/c/' + mistaken);
+  await page.waitForTimeout(1500);
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('This is my story, not a helper chat').click();
+  await page.waitForTimeout(1500);
+  const hide47 = await page.evaluate(() => JSON.parse(localStorage.getItem('smx:hide') || '[]'));
+  check(!hide47.includes(mistaken) && !/helper chats\./.test(await page.locator('#story-manager-root >> .panel').innerText()), 'it is shown again and treated as a story');
+  check(JSON.parse(gist.files['not-helpers.json'] ? gist.files['not-helpers.json'].content : '[]').includes(mistaken) ||
+    (await page.waitForTimeout(10000), JSON.parse((gist.files['not-helpers.json'] || { content: '[]' }).content).includes(mistaken)), 'other devices are told too');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

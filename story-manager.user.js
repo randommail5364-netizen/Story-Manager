@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.9.3
+// @version      3.9.5
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -187,7 +187,24 @@
     let hidden = [];
     // Read at once from the site's storage: the chat list loads before the script's own storage.
     try { hidden = JSON.parse(win.localStorage.getItem('smx:hide') || doc.documentElement.getAttribute('data-smx-hide') || '[]'); } catch (e) { /* ignore */ }
-    doc.addEventListener('smx:hide', (ev) => { try { hidden = JSON.parse(ev.detail); } catch (e) { /* ignore */ } });
+    // While Story Manager creates a helper chat, announcements of new chats are
+    // held back (its id is not known yet), then passed on unless they are it.
+    let holdUntil = 0;
+    let held = [];
+    const releaseHeld = () => {
+      const list = held;
+      held = [];
+      holdUntil = 0;
+      for (const h of list) { try { h.fn.apply(h.self, h.args); } catch (e) { /* the site's own handler */ } }
+    };
+    doc.addEventListener('smx:hold', () => { holdUntil = Date.now() + 20000; setTimeout(() => { if (held.length && Date.now() >= holdUntil) releaseHeld(); }, 20500); });
+    doc.addEventListener('smx:hide', (ev) => {
+      try { hidden = JSON.parse(ev.detail); } catch (e) { /* ignore */ }
+      if (held.length) {
+        held = held.filter((h) => !hidden.some((id) => String(h.args[0] && h.args[0].data).toLowerCase().indexOf(id) >= 0));
+        releaseHeld();
+      } else holdUntil = 0;
+    });
     const LIST_RE = /\/conversations\/quickAccess|\/tools\/[^/?]+\/conversations|\/projects\/[^/?]+\/conversations|\/conversations\/?(\?|$)/;
     function withoutHelpers(r) {
       if (!r.ok || !hidden.length) return r;
@@ -324,7 +341,15 @@
       const wrap = (fn) => {
         if (typeof fn !== 'function') return fn;
         if (!wrapped.has(fn)) {
-          wrapped.set(fn, expFn(function (ev) { if (aboutHelper(ev)) return undefined; return fn.apply(this, arguments); }, win));
+          wrapped.set(fn, expFn(function (ev) {
+            if (aboutHelper(ev)) return undefined;
+            const d = ev && typeof ev.data === 'string' ? ev.data : '';
+            if (Date.now() < holdUntil && d.indexOf('42["cu"') === 0 && d.indexOf('"conversation"') >= 0) {
+              held.push({ fn, self: this, args: arguments });
+              return undefined;
+            }
+            return fn.apply(this, arguments);
+          }, win));
         }
         return wrapped.get(fn);
       };
@@ -703,6 +728,9 @@
         // Helper chats from every device, so all of them stay hidden everywhere.
         let remoteHelpers = [];
         try { remoteHelpers = gist.files['helpers.json'] ? JSON.parse(gist.files['helpers.json'].content) : []; } catch (e) { /* ignore */ }
+        let remoteNot = [];
+        try { remoteNot = gist.files['not-helpers.json'] ? JSON.parse(gist.files['not-helpers.json'].content) : []; } catch (e) { /* ignore */ }
+        for (const h of remoteNot) if (typeof h === 'string' && !notHelpers.includes(h)) await notHelper(h);
         for (const h of remoteHelpers) if (typeof h === 'string' && !helperAll.includes(h)) rememberHelper(h);
         // Newer on GitHub: load it (unless the memory is being updated here).
         let loaded = 0;
@@ -726,7 +754,8 @@
           if (r && (r.changedAt || 0) > (c.changedAt || 0)) continue;
           files['chat-' + cid + '.json'] = { content: JSON.stringify(Object.assign({}, c, { syncedAt: undefined })) };
         }
-        if (helperAll.some((h) => !remoteHelpers.includes(h))) files['helpers.json'] = { content: JSON.stringify(helperAll) };
+        if (helperAll.some((h) => !remoteHelpers.includes(h)) || remoteHelpers.some((h) => notHelpers.includes(h))) files['helpers.json'] = { content: JSON.stringify(helperAll) };
+        if (notHelpers.some((h) => !remoteNot.includes(h))) files['not-helpers.json'] = { content: JSON.stringify(notHelpers) };
         const names = Object.keys(files).filter((n) => n !== 'helpers.json');
         if (Object.keys(files).length) {
           await gh('PATCH', '/gists/' + id, { files });
@@ -1069,13 +1098,29 @@
   // so they stay hidden from MiniApps' chat lists.
   let helperAll = [];
   function rememberHelper(cid) {
+    if (notHelpers.includes(cid)) return;
     helperIds.add(cid);
     if (!helperAll.includes(cid)) { helperAll.push(cid); Store.set('helperAll', helperAll); scheduleSync(); }
     publishHidden();
   }
   const helperRequests = []; // request ids of Story Manager's own messages, hidden before their chat is known
+  // The user says a chat is theirs, not a helper chat: forget it everywhere.
+  async function notHelper(cid) {
+    helperIds.delete(cid);
+    helperAll = helperAll.filter((h) => h !== cid);
+    await Store.set('helperAll', helperAll);
+    for (let slot = 0; slot < helperChats.length; slot++) {
+      if (helperChats[slot] && helperChats[slot].id === cid) { helperChats[slot] = null; await Store.set(helperKey(slot), null); }
+    }
+    notHelpers = [...new Set(notHelpers.concat(cid))];
+    await Store.set('notHelpers', notHelpers);
+    publishHidden();
+    scheduleSync();
+  }
+  let notHelpers = []; // chats the user said are theirs (synced, so other devices forget them too)
+
   function publishHidden() {
-    const ids = settings.hideHelpers === false ? [] : [...new Set(helperAll.concat([...helperIds], helperRequests))];
+    const ids = settings.hideHelpers === false ? [] : [...new Set(helperAll.concat([...helperIds], helperRequests))].filter((h) => !notHelpers.includes(h));
     document.dispatchEvent(new CustomEvent('smx:hide', { detail: JSON.stringify(ids) }));
     if (document.documentElement) document.documentElement.setAttribute('data-smx-hide', JSON.stringify(ids));
     try { localStorage.setItem('smx:hide', JSON.stringify(ids)); } catch (e) { /* private mode etc. */ }
@@ -1156,18 +1201,36 @@
       if (seenMsgs[helperChat.id]) for (const k of seenMsgs[helperChat.id].keys()) before.add(k);
     }
     let res;
+    if (!reuse) document.dispatchEvent(new CustomEvent('smx:hold'));
     try {
       res = await rpc('POST', '/chat', body);
     } catch (e) {
-      if (!reuse) throw e;
+      if (!reuse) { publishHidden(); throw e; }
       // The helper chat is gone (e.g. deleted); start a new one.
       delete body.conversationId;
       reuse = false;
       before.clear();
-      res = await rpc('POST', '/chat', body);
+      document.dispatchEvent(new CustomEvent('smx:hold'));
+      try { res = await rpc('POST', '/chat', body); } catch (e2) { publishHidden(); throw e2; }
     }
     const cid = res && res.conversationId;
     if (!cid) throw new Error('MiniApps did not start a conversation');
+    // A new chat starts with our request (maybe after a greeting). If MiniApps
+    // put it into a chat that already had messages (e.g. a chat the user just
+    // started with the same bot), that chat is the user's, not a helper chat.
+    if (!reuse) {
+      const added = Array.isArray(res.addedMessages) ? res.addedMessages : [];
+      const pos = Math.max(-1, ...added.filter((m) => m && typeof m.index === 'number').map((m) => m.index));
+      const known = chats[String(cid).toLowerCase()];
+      if (pos > 1 || (known && (known.log.length || known.processedIds.length))) {
+        rpc('POST', '/chat/abort', { conversationId: cid, requestId: body.requestId }).catch(() => {});
+        publishHidden();
+        const err = new Error('MiniApps put the memory keeper\'s request into one of your chats (' + String(cid).slice(0, 8) +
+          ') instead of a new one. It was stopped; you can delete that request from the chat. Using a different bot as the memory keeper (Settings) avoids this.');
+        err.botError = true;
+        throw err;
+      }
+    }
     rememberHelper(cid);
     helperChats[slot] = reuse && cid === helperChat.id ? Object.assign({}, helperChat, { uses: helperChat.uses + 1 }) : { slug, id: cid, uses: 1 };
     await Store.set(helperKey(slot), helperChats[slot]);
@@ -2364,6 +2427,8 @@
   // Query parameters that point at a position in the chat (a "cursor").
   // A saved cursor is only valid once, so they are never kept in the address.
   const CURSOR_PARAM = /before|after|cursor/i;
+  // Addresses that return some messages but are not the chat's message list.
+  const NOT_MESSAGE_LIST = /\/(pinned|alternatives|changes|status|context|run-state)(\/|\?|$)/i;
 
   function cleanTemplate(t) {
     const i = t.indexOf('?');
@@ -2455,7 +2520,7 @@
       if (!idRe.test(dec)) continue;
       let path = '';
       try { path = new URL(r.url).pathname; } catch (e) { continue; }
-      if (/\/conversations\/[0-9a-f-]{36}\/?$/i.test(path) || /\/chat\/?$/.test(path)) continue;
+      if (/\/conversations\/[0-9a-f-]{36}\/?$/i.test(path) || /\/chat\/?$/.test(path) || NOT_MESSAGE_LIST.test(path)) continue;
       const key = shortUrl(r.url);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -2611,7 +2676,10 @@
     if (!DETAIL[settings.detail]) settings.detail = DEFAULT_SETTINGS.detail;
     chatIndex = await Store.get('chatIndex', []);
     learned = await Store.get('learned', null);
-    helperAll = await Store.get('helperAll', []);
+    // Older versions could learn e.g. the pinned messages as the message list.
+    if (learned && NOT_MESSAGE_LIST.test(learned.template)) { learned = null; await Store.set('learned', null); }
+    notHelpers = await Store.get('notHelpers', []);
+    helperAll = (await Store.get('helperAll', [])).filter((h) => !notHelpers.includes(h));
     helperRequests.push(...(await Store.get('helperRequests', [])));
     for (const h of helperAll) helperIds.add(h);
     for (let slot = 0; slot < 3; slot++) {
@@ -2659,7 +2727,7 @@
     if (!msgs.some((m) => m.role === 'user') || !msgs.some((m) => m.role === 'assistant')) return;
     const conv = convIdFor(d.url, data, arr);
     if (!conv || helperIds.has(conv.id)) return;
-    if (conv.inUrl && d.method === 'GET') {
+    if (conv.inUrl && d.method === 'GET' && !NOT_MESSAGE_LIST.test(d.url)) {
       const decoded = (() => { try { return decodeURIComponent(d.url); } catch (e) { return d.url; } })();
       const template = cleanTemplate(decoded.split(conv.id).join('{id}'));
       if (!learned || learned.template !== template) {
@@ -3120,7 +3188,9 @@
   }
 
   function memoryView() {
-    const chat = currentId && chats[currentId];
+    // The page shows a helper chat (Story Manager never makes those "current").
+    const onPage = ((location.href.match(UUID_RE) || [])[0] || '').toLowerCase();
+    const chat = onPage && helperIds.has(onPage) ? (chats[onPage] || newChat(onPage)) : currentId && chats[currentId];
     if (!chat) {
       return el('div', {},
         el('div', { class: 'empty' }, 'Open a chat (or send a message) and its story memory will appear here.'),
@@ -3129,7 +3199,15 @@
     if (helperIds.has(chat.id)) {
       return el('div', {},
         el('div', { class: 'status' }, el('b', {}, 'This is one of Story Manager\'s helper chats.'),
-          el('div', {}, 'Story Manager sends its summary requests here; it is not one of your stories. Open your story chat to see its memory.')),
+          el('div', {}, 'Story Manager sends its summary requests here; it is not one of your stories. Open your story chat to see its memory.'),
+          el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+            if (!confirm('Treat this chat as one of your stories? Story Manager stops using it as a helper chat and starts managing its memory.')) return;
+            await notHelper(chat.id);
+            setCurrent(chat.id);
+            toast('This chat is now treated as a story');
+            renderPanel(true);
+            fetchMessages(chat.id, { mode: 'since' }).then((msgs) => syncChat(chat.id, msgs, { final: true })).catch(() => {});
+          } }, 'This is my story, not a helper chat'))),
         diagnosticsBox());
     }
     const isBusy = !!busy[chat.id];

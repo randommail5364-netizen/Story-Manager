@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.6
+// @version      3.10.7
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -3497,7 +3497,7 @@
       el('div', { class: 'status' },
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
         (() => {
-          const inMem = chat.readCount || chat.processedCount;
+          const inMem = Math.min(chat.readCount || chat.processedCount, total || Infinity);
           const hold = Math.max(0, Number(settings.holdBack) || 0);
           const waiting = Math.max(0, total - inMem);
           return el('div', {}, 'Messages in this chat: ', el('b', {}, total ? String(total) : '?'),
@@ -3661,7 +3661,7 @@
       'Page: ' + shortUrl(location.href),
       'Screen: ' + wake.state,
       'Current chat: ' + (currentId ? currentId.slice(0, 8) : 'none') +
-        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · in memory: ' + (chat.readCount || chat.processedCount) : ''),
+        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · in memory: ' + Math.min(chat.readCount || chat.processedCount, chat.knownMessages || Infinity) : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider + (settings.provider === 'miniapps' ? ' (' + settings.miniappsSlug + ')' : ''),
       'Helper chat: ' + (helperChats.some(Boolean) ? helperChats.map((h, i) => (h ? (i ? 'slot ' + i + ' ' : '') + h.id.slice(0, 8) + ', ' + h.uses + ' requests' : '')).filter(Boolean).join(' · ') : 'none yet') +

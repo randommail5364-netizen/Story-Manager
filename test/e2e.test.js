@@ -442,7 +442,7 @@ async function main() {
   const memBox = await page.locator('#story-manager-root >> textarea.mem').inputValue();
   check(/update 4/.test(memBox), 'panel shows latest memory');
   check(/Reply summaries: 4/.test(panelText) && /Chapters: 0/.test(panelText), 'panel shows where each stage stands');
-  check(/Messages in this chat: \d+( \(\d+ counting every redone version[^)]*\))? · AI replies summarised: \d+ · (none waiting|waiting: \d+)/.test(panelText), 'panel shows the total number of messages, how many replies are summarised and how many wait');
+  check(/AI replies in this chat: \d+ · summarised: \d+ · (none waiting|waiting: \d+[^(]*(\([^)]*\))?) \((\d+ messages including yours|messages not counted yet)/.test(panelText), 'panel shows AI replies, how many are summarised and how many wait, and all messages');
 
   console.log('6) Pinned facts are always injected');
   await page.locator('#story-manager-root >> textarea').first().fill('Mira cannot swim.');
@@ -1257,6 +1257,26 @@ async function main() {
   await settle();
   check((await keyNow()).jobs.some((j) => /Got the facts of [^:]*: 2 of 2 had facts/.test(j.label)), 'both summaries got their facts back; recorded in Activity');
   await page.locator('#story-manager-root >> .x').click();
+
+  console.log('39d) Opening a story compares it with the whole chat: summaries of replies that vanished unseen are removed and corrected; the old chat\'s summaries stay');
+  await settle();
+  const before39d = await keyNow();
+  const inherited39d = before39d.log.filter((e) => !newConv.messages.some((x) => x.id === e.id)).length;
+  const victim = before39d.log.filter((e) => newConv.messages.some((x) => x.id === e.id)).slice(-3)[0];
+  // Redone on another device: the reply is replaced, and this page never hears of it.
+  const vi = newConv.messages.findIndex((x) => x.id === victim.id);
+  newConv.messages[vi] = Object.assign({}, newConv.messages[vi], { id: uuid(), elements: [{ type: 'text', text: 'A quietly redone reply.' }] });
+  const calls39d = llmCalls.length;
+  await page.reload();
+  await waitFor(async () => !(await keyNow()).log.some((e) => e.id === victim.id), 60000, 'the vanished reply\'s summary removed');
+  await waitFor(() => llmCalls.slice(calls39d).some((c) => /JOB: CORRECT/.test(c)), 60000, 'correction');
+  await settle();
+  const after39d = await keyNow();
+  check(after39d.log.filter((e) => e.inherited).length === inherited39d && after39d.log.filter((e) => !newConv.messages.some((x) => x.id === e.id)).length === inherited39d,
+    'only the vanished reply\'s summary was removed; the ' + inherited39d + ' from the old chat stay');
+  check(after39d.jobs.some((j) => /Checked the whole chat: removed 1 summary of replies that are no longer in it/.test(j.label)) &&
+    llmCalls.slice(calls39d).some((c) => /JOB: CORRECT/.test(c) && c.includes(victim.text.slice(0, 50))), 'recorded in Activity, and the memory corrected for it');
+  check(after39d.knownReplies === newConv.messages.filter((x) => x.origin === 'assistant').length && after39d.knownMessages === newConv.messages.length, 'reply and message counts come from the whole chat');
 
   console.log('40) Pins wait for the story AI to finish; the newest replies are held back until newer ones follow');
   await page.evaluate(() => {

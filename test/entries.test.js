@@ -20,8 +20,8 @@ function grab(name) {
   throw new Error('unbalanced ' + name);
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0];
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState };')();
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -261,6 +261,20 @@ test('"Choi" and "Ms. Choi" become one entry, "Mr. Kim" and "Ms. Kim" stay apart
   assert.deepStrictEqual(chat.entries.map((e) => e.name).sort(), ['Choi', 'Mr. Kim', 'Ms. Kim']);
   const choi = chat.entries.find((e) => e.name === 'Choi');
   assert(choi.aliases.includes('Ms. Choi') && /Wears glasses/.test(choi.text));
+});
+
+test('comparing with the whole chat removes vanished replies, but not when the read looks incomplete', () => {
+  const mk = () => ({ log: Array.from({ length: 30 }, (_, i) => ({ id: 'r' + i, text: 'S' + i, folded: true })), chapters: [], processedIds: [], jobs: [] });
+  const msgs = (ids) => ids.map((id) => ({ id, role: 'assistant' }));
+  const a = mk();
+  assert.strictEqual(lib.reconcile(a, msgs(a.log.map((e) => e.id).filter((x) => x !== 'r5' && x !== 'r9'))), 2);
+  assert(!a.log.some((e) => e.id === 'r5') && a.stale.length === 2 && a.knownReplies === 28);
+  const b = mk();
+  assert.strictEqual(lib.reconcile(b, msgs(b.log.slice(0, 10).map((e) => e.id))), -1);
+  assert.strictEqual(b.log.length, 30);
+  const c = Object.assign(mk(), { continuedFrom: 'old' });
+  assert.strictEqual(lib.reconcile(c, msgs(c.log.slice(20).map((e) => e.id))), 0);
+  assert.strictEqual(c.log.filter((e) => e.inherited).length, 20);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

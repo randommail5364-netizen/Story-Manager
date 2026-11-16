@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.12.1
+// @version      3.13.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2698,6 +2698,9 @@
       id, processedIds: [], processedCount: 0, readCount: 0, knownMessages: 0, backlog: null, lastError: '',
       sentSinceInject: 1, history: [], continuedFrom: chat.id,
     });
+    // These summaries are of replies in the old chat, not missing ones.
+    for (const e of copy.log) e.inherited = true;
+    copy.inheritedMarked = true;
     logJob(copy, { kind: 'continue', label: 'Continued the story from chat ' + chat.id.slice(0, 8), ok: true, ms: 0 });
     chats[id] = copy;
     if (!chatIndex.includes(id)) chatIndex.push(id);
@@ -3475,12 +3478,68 @@
     await saveChat(chat);
   }
 
+  // Compares the summaries with the replies actually in the chat (from a
+  // read of the whole chat). A summary whose reply is gone (redone or
+  // deleted while Story Manager was not watching) is handled like a deleted
+  // reply: removed, and what only it said is corrected at the next update.
+  // Returns how many were removed, or -1 if the read looked incomplete.
+  function reconcile(chat, msgs) {
+    const here = new Set(msgs.map((m) => m.id));
+    chat.knownMessages = msgs.length;
+    chat.knownReplies = msgs.filter((m) => m.role === 'assistant').length;
+    chat.fullCheckAt = Date.now();
+    // A continued chat starts with the old chat's summaries: those stay.
+    if (chat.continuedFrom && !chat.inheritedMarked) {
+      const first = chat.log.findIndex((e) => here.has(e.id));
+      chat.log.forEach((e, i) => { if (first < 0 || i < first) e.inherited = true; });
+      chat.inheritedMarked = true;
+    }
+    const gone = chat.log.filter((e) => !e.inherited && !here.has(e.id));
+    const own = chat.log.filter((e) => !e.inherited).length;
+    // A read that misses many replies is more likely incomplete than right.
+    if (gone.length && (gone.length > Math.max(10, own * 0.2))) {
+      logJob(chat, { kind: 'check', label: 'Checked the whole chat: ' + gone.length + ' summaries have no reply in it — too many to be redone replies, so nothing was removed (the chat may not have loaded fully)', ok: false, ms: 0 });
+      return -1;
+    }
+    if (!gone.length) return 0;
+    for (const e of gone) markStale(chat, e);
+    const ids = new Set(gone.map((e) => e.id));
+    chat.log = chat.log.filter((e) => !ids.has(e.id));
+    for (const c of chat.chapters) if (c.ids) c.ids = c.ids.filter((x) => !ids.has(x));
+    chat.processedIds = chat.processedIds.filter((x) => !ids.has(x));
+    logJob(chat, { kind: 'check', label: 'Checked the whole chat: removed ' + gone.length + ' summar' + (gone.length === 1 ? 'y' : 'ies') + ' of replies that are no longer in it (redone or deleted); the memory is corrected at the next update', ok: true, ms: 0 });
+    return gone.length;
+  }
+
+  // Once per page load for each story opened: read the whole chat, compare,
+  // and correct the memory if summaries of vanished replies were found.
+  const fullChecked = new Set();
+  async function fullCheck(id) {
+    if (fullChecked.has(id) || helperIds.has(id)) return;
+    const chat = await getChat(id, false);
+    if (!chat || !chat.enabled || !chat.log.length) return;
+    if (busy[id]) { setTimeout(() => fullCheck(id), 20000 * TIME_SCALE); return; }
+    fullChecked.add(id);
+    let msgs;
+    try { msgs = await fetchMessages(id, { mode: 'full' }); } catch (e) { fullChecked.delete(id); return; }
+    if (!msgs.length || busy[id]) { fullChecked.delete(id); return; }
+    const removed = reconcile(chat, msgs);
+    await saveChat(chat);
+    if (id === currentId) renderPanel();
+    if (removed > 0) {
+      toast('Removed ' + removed + ' summar' + (removed === 1 ? 'y' : 'ies') + ' of replies no longer in this chat; correcting the memory…');
+      updateMemory(id, msgs).catch(() => {});
+    }
+  }
+
   function setCurrent(id) {
     if (!id || id === currentId || helperIds.has(id)) return;
     currentId = id;
     renderPanel();
     setStatus();
     runSync().catch(() => {}); // the other device may have a newer memory of this chat
+    // After the sync (which may bring a newer memory), compare with the whole chat.
+    setTimeout(() => ready.then(() => fullCheck(id)).catch(() => {}), 10000 * TIME_SCALE);
   }
 
   // Single-page app: also pick the chat id up from the address bar.
@@ -3679,7 +3738,7 @@
     if (want) {
       getChat(want, true).then((c) => {
         if (!c) return;
-        if (!currentId || currentId === want || onPage === want) { currentId = want; renderPanel(true); }
+        if (!currentId || currentId === want || onPage === want) { currentId = want; renderPanel(true); setTimeout(() => fullCheck(want).catch(() => {}), 10000 * TIME_SCALE); }
         fetchMessages(want, { mode: 'since' }).then((msgs) => syncChat(want, msgs, { final: true })).catch(() => {});
       }).catch(() => {});
     }
@@ -3895,10 +3954,14 @@
           const hold = Math.max(0, Number(settings.holdBack) || 0);
           const waiting = waitingReplies(chat);
           const done = chat.log.length;
-          return el('div', {}, 'Messages in this chat: ', el('b', {}, total ? String(total) : '?'),
-            chat.allVersions > total ? ' (' + chat.allVersions + ' counting every redone version)' : '',
-            ' · AI replies summarised: ', el('b', {}, String(done)),
+          const own = chat.log.filter((e) => !e.inherited).length;
+          const replies = Math.max(chat.knownReplies || 0, own + waiting);
+          return el('div', {}, 'AI replies in this chat: ', el('b', {}, String(replies)),
+            ' · summarised: ', el('b', {}, String(own)),
             waiting ? ' · waiting: ' + waiting + (hold && waiting <= hold ? ' (the newest ' + (hold === 1 ? 'reply waits' : hold + ' replies wait') + ' in case you redo ' + (hold === 1 ? 'it' : 'them') + ')' : '') : ' · none waiting',
+            ' (' + (total ? total + ' messages including yours' : 'messages not counted yet') +
+            (chat.allVersions > total ? ', ' + chat.allVersions + ' counting every redone version' : '') + ')',
+            chat.log.length > own ? ' · plus ' + (chat.log.length - own) + ' from the chat this one continues' : '',
             ' · Last update: ', el('b', {}, ago(chat.lastUpdate)));
         })(),
         lastSentInfo[chat.id] ? el('div', {}, 'Last message carried: ' + lastSentInfo[chat.id]) : null,
@@ -4118,7 +4181,8 @@
       'Page: ' + shortUrl(location.href),
       'Screen: ' + wake.state,
       'Current chat: ' + (currentId ? currentId.slice(0, 8) : 'none') +
-        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · AI replies summarised: ' + chat.log.length + ' · waiting: ' + waitingReplies(chat) : ''),
+        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · AI replies: ' + (chat.knownReplies || '?') + ' · summarised: ' + chat.log.filter((e) => !e.inherited).length + ' · waiting: ' + waitingReplies(chat) +
+          ' · whole chat last compared: ' + (chat.fullCheckAt ? ago(chat.fullCheckAt) : 'never') : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider + (settings.provider === 'miniapps' ? ' (' + settings.miniappsSlug + ')' : ''),
       'Helper chat: ' + (helperChats.some(Boolean) ? helperChats.map((h, i) => (h ? (i ? 'slot ' + i + ' ' : '') + h.id.slice(0, 8) + ', ' + h.uses + ' requests' : '')).filter(Boolean).join(' · ') : 'none yet') +

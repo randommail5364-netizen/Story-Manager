@@ -442,7 +442,7 @@ async function main() {
   const memBox = await page.locator('#story-manager-root >> textarea.mem').inputValue();
   check(/update 4/.test(memBox), 'panel shows latest memory');
   check(/Reply summaries: 4/.test(panelText) && /Chapters: 0/.test(panelText), 'panel shows where each stage stands');
-  check(/Messages in this chat: \d+( \(\d+ counting every redone version[^)]*\))? · in memory: \d+/.test(panelText), 'panel shows the total number of messages and how many are in the memory');
+  check(/Messages in this chat: \d+( \(\d+ counting every redone version[^)]*\))? · AI replies summarised: \d+ · (none waiting|waiting: \d+)/.test(panelText), 'panel shows the total number of messages, how many replies are summarised and how many wait');
 
   console.log('6) Pinned facts are always injected');
   await page.locator('#story-manager-root >> textarea').first().fill('Mira cannot swim.');
@@ -1285,6 +1285,8 @@ async function main() {
   await page.getByText('Update now').click({ timeout: 120000 });
   await settle();
   check(!(await keyNow()).log.some((e) => e.id === newest), 'the newest reply is held back');
+  const p40 = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/waiting: 1 \(the newest reply waits in case you redo it\)/.test(p40), 'the panel counts the held-back reply as waiting');
   await page.locator('#story-manager-root >> .x').click();
   await page.evaluate(() => window.sendMsg('One more.'));
   await waitFor(() => !newConv.generating && newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');

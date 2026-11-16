@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.12.0
+// @version      3.12.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2958,6 +2958,20 @@
   const FIRST_RUN_MESSAGES = 40;
 
   // How many messages the chat has (a regenerated reply's versions count once).
+  // AI replies (newest version of each) that have no summary yet: the held
+  // back ones, and any not summarised so far. Counted from the messages seen.
+  function waitingReplies(chat) {
+    const seen = seenMsgs[chat.id] ? latestVersions([...seenMsgs[chat.id].values()]) : null;
+    if (!seen) return chat.waitingReplies || 0;
+    const have = new Set(chat.log.map((e) => e.id));
+    // Only replies after the newest summarised one: older ones without a
+    // summary are deleted or replaced versions still in the list.
+    let last = -1;
+    seen.forEach((m, i) => { if (have.has(m.id)) last = i; });
+    chat.waitingReplies = seen.slice(last + 1).filter((m) => m.role === 'assistant').length;
+    return chat.waitingReplies;
+  }
+
   function countMessages(chat, msgs) {
     if (versionsSeen[chat.id]) chat.allVersions = Math.max(chat.allVersions || 0, versionsSeen[chat.id].size);
     // MiniApps' message numbers can start again within a chat, so the count
@@ -3878,13 +3892,13 @@
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
         versionLine(chat),
         (() => {
-          const inMem = Math.min(chat.readCount || chat.processedCount, total || Infinity);
           const hold = Math.max(0, Number(settings.holdBack) || 0);
-          const waiting = Math.max(0, total - inMem);
+          const waiting = waitingReplies(chat);
+          const done = chat.log.length;
           return el('div', {}, 'Messages in this chat: ', el('b', {}, total ? String(total) : '?'),
-            chat.allVersions > total ? ' (' + chat.allVersions + ' counting every redone version' + (chat.allVersions && inMem < total ? ' read so far' : '') + ')' : '',
-            ' · in memory: ', el('b', {}, String(inMem)),
-            waiting ? ' · not yet: ' + waiting + (hold ? ' (the newest ' + hold + ' AI ' + (hold === 1 ? 'reply waits' : 'replies wait') + ' in case you redo them)' : '') : '',
+            chat.allVersions > total ? ' (' + chat.allVersions + ' counting every redone version)' : '',
+            ' · AI replies summarised: ', el('b', {}, String(done)),
+            waiting ? ' · waiting: ' + waiting + (hold && waiting <= hold ? ' (the newest ' + (hold === 1 ? 'reply waits' : hold + ' replies wait') + ' in case you redo ' + (hold === 1 ? 'it' : 'them') + ')' : '') : ' · none waiting',
             ' · Last update: ', el('b', {}, ago(chat.lastUpdate)));
         })(),
         lastSentInfo[chat.id] ? el('div', {}, 'Last message carried: ' + lastSentInfo[chat.id]) : null,
@@ -4104,7 +4118,7 @@
       'Page: ' + shortUrl(location.href),
       'Screen: ' + wake.state,
       'Current chat: ' + (currentId ? currentId.slice(0, 8) : 'none') +
-        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · in memory: ' + Math.min(chat.readCount || chat.processedCount, chat.knownMessages || Infinity) : ''),
+        (chat ? ' · messages seen: ' + (seenMsgs[currentId] ? seenMsgs[currentId].size : 0) + ' · AI replies summarised: ' + chat.log.length + ' · waiting: ' + waitingReplies(chat) : ''),
       'Learned message address: ' + (learned ? shortUrl(learned.template.split('{id}').join('00000000-0000-0000-0000-000000000000')) : 'none yet'),
       'Memory keeper: ' + settings.provider + (settings.provider === 'miniapps' ? ' (' + settings.miniappsSlug + ')' : ''),
       'Helper chat: ' + (helperChats.some(Boolean) ? helperChats.map((h, i) => (h ? (i ? 'slot ' + i + ' ' : '') + h.id.slice(0, 8) + ', ' + h.uses + ' requests' : '')).filter(Boolean).join(' · ') : 'none yet') +

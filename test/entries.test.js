@@ -19,9 +19,9 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0];
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning };')();
+const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0];
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -230,6 +230,37 @@ test('short entries in play go in whole; long ones share what is left', () => {
 test('a summary without a FACTS line is marked missing, "FACTS: none" is marked none', () => {
   const p = lib.parseKeeperAnswer('=== LOG ===\n[R1] Jacek kissed Karina.\n[R2] They slept.\nFACTS: none', replies);
   assert.deepStrictEqual(p.entries.map((e) => e.nofacts), ['missing', 'none']);
+});
+
+test('the keeper\'s notes from the real pinned message are removed', () => {
+  const t = [
+    '- Current State: Last seen at the boardroom meeting, exiting with a swagger. (But note the timeline: the board meeting is after the rooftop reconciliation. We\'ll leave as last known.)',
+    'But note: we don\'t have her appearance, personality, etc. So we only include the headings we have information for.',
+    'We have already processed the new events in the previous update (Request 4666b241) and updated the STORY and entries accordingly.',
+    'So we output only the new entry for Ms. Choi.',
+    '- Head of PR at the agency.',
+  ].join('\n');
+  assert.strictEqual(lib.dropReasoning(t), '- Current State: Last seen at the boardroom meeting, exiting with a swagger.\n- Head of PR at the agency.');
+  assert.strictEqual(lib.dropReasoning('- Current State: In the rooftop pool with Ningning. Wearing swimwear (assumed).'), '- Current State: In the rooftop pool with Ningning.');
+});
+
+test('only the newest Current State line is kept', () => {
+  const r = lib.applyUpdates([{ name: 'Jacek', kind: 'character', aliases: [], text: '- Age 29\n- Current State: In the pool.\n- Loves coffee' }],
+    [{ name: 'Jacek', aliases: [], add: true, text: '- Current State: At the garage, fixing the car.\n- Bought a new watch' }], []);
+  assert.strictEqual(r.entries[0].text, '- Age 29\n- Loves coffee\n- Current State: At the garage, fixing the car.\n- Bought a new watch');
+});
+
+test('"Choi" and "Ms. Choi" become one entry, "Mr. Kim" and "Ms. Kim" stay apart', () => {
+  const chat = { entries: [
+    { name: 'Choi', kind: 'character', aliases: [], text: '- Manager' },
+    { name: 'Ms. Choi', kind: 'character', aliases: [], text: '- Manager\n- Wears glasses' },
+    { name: 'Mr. Kim', kind: 'character', aliases: [], text: '- Driver' },
+    { name: 'Ms. Kim', kind: 'character', aliases: [], text: '- Stylist' },
+  ], ignored: [], log: [], chapters: [], memory: '' };
+  lib.organize(chat);
+  assert.deepStrictEqual(chat.entries.map((e) => e.name).sort(), ['Choi', 'Mr. Kim', 'Ms. Kim']);
+  const choi = chat.entries.find((e) => e.name === 'Choi');
+  assert(choi.aliases.includes('Ms. Choi') && /Wears glasses/.test(choi.text));
 });
 
 console.log('All ' + passed + ' entry checks passed.');

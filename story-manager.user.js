@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.11.0
+// @version      3.11.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -658,12 +658,12 @@
       if (chat.version < 3) await migrate(chat);
       if (tidy(chat).length) await saveChat(chat);
       // Older versions could save a looping answer; clean it up once.
-      if ((chat.repaired || 0) < 2) {
+      if ((chat.repaired || 0) < 3) {
         const before = JSON.stringify([chat.memory, chat.entries, chat.log]).length;
         const changed = repairChat(chat);
-        chat.repaired = 2;
+        chat.repaired = 3;
         await saveChat(chat);
-        if (changed) toast('Removed ' + Math.round((before - JSON.stringify([chat.memory, chat.entries, chat.log]).length) / 1000) + 'k characters of repeated text and bot notes from this chat\'s memory.');
+        if (changed) toast('Removed ' + Math.round((before - JSON.stringify([chat.memory, chat.entries, chat.log]).length) / 1000) + 'k characters of repeated text, bot notes, guesses and out-of-date "Current State" lines from this chat\'s memory.');
       }
       return chats[id];
     }
@@ -1466,6 +1466,7 @@
       'The knowledge base has STORY sections (the situation now) and ENTRIES (one per character, and per important place, item, group or piece of lore). The history of events is kept separately, in chapters; do not write it here.',
       '',
       'STORY rules:',
+      '- ## Current Scene must describe the situation after the NEWEST event (later events override earlier ones, e.g. a punishment that was changed). Rewrite it fully each time it changes; never keep outdated parts.',
       '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries, things that must be followed up), ## World & Timeline (world rules, the date and time, how much time has passed, important background).',
       '- Output only the sections that change, each as === SECTION: Name === followed by its complete new text, keeping every fact that is still true. Leave out sections that did not change. If a section is empty, write it in full.',
       '- Keep each section short, at most about 1,500 characters: it is sent with every message. What happened belongs in the history (chapters), details about characters, places and items in their entries.',
@@ -1484,7 +1485,13 @@
       '- Only when something the entry says is no longer true (e.g. a relationship, condition or whereabouts changed), write the entry complete instead, with the normal header and every fact that is still true.',
       '- A NEW entry is written complete with the normal header.',
       '- Never remove a fact unless the story changed it; then update it. When something changes, update every entry it affects (e.g. both sides of a relationship).',
-      '- Never invent anything. Only record what actually happened or was stated.',
+      '- Never invent anything. Only record what actually happened or was stated. Never write guesses ("assumed", "presumed", "probably"): if something is not known, leave it out.',
+      '- Write ONLY facts about the story. Never write notes about your task, the request, the events list, the timeline or what you will output: no "But note", "We have", "So we output".',
+      '- "Current State" (and whereabouts, mood, clothing) is what is true NOW: when it changes, write ONE new "- Current State: …" line; it replaces the old one. Never keep several.',
+      '- Personality & Voice describes who the character is NOW, including how they have changed: when the story deepens or changes a trait, rewrite that line instead of only adding events.',
+      '- For secrets, private moments, cover stories and hidden relationships, say WHO KNOWS (and who must not find out).',
+      '- Use plain words for feelings and motives. Do not repeat the story\'s pet metaphors (e.g. "anchor", "sanctuary", "storm", "spark") as labels.',
+      '- One person, one entry: "Ms. Choi" and "Choi" are the same entry; give a person one role and correct it when the story changes it.',
       '',
     ].concat(RECAP_RULES, [
       '',
@@ -1615,7 +1622,8 @@
     const was = JSON.stringify([chat.memory, chat.entries, chat.log]);
     const fix = (t) => squashRepeats(t);
     chat.memory = fix(chat.memory);
-    for (const e of chat.entries) e.text = fix(dropReasoning(e.text));
+    for (const e of chat.entries) e.text = fix(latestState(dropReasoning(e.text)));
+    for (const c of chat.chapters || []) c.text = dropReasoning(c.text);
     chat.memory = fix(chat.memory.split('\n').some((l) => REASONING_RE.test(l) || REASONING_WORDS_RE.test(l)) ? dropReasoning(chat.memory) : chat.memory);
     for (const e of chat.log) e.text = fix(e.text);
     return JSON.stringify([chat.memory, chat.entries, chat.log]) !== was;
@@ -1623,11 +1631,27 @@
 
   // Some bots write their thinking into the answer ("Looking at the example…
   // So I think we can do:"). Those lines are not facts about the story.
-  const REASONING_RE = /^\s*(looking at|so,? i think|i think we|i think i|let me|let's|wait[,.]|hmm|okay,? so|ok,? so|alright,? so|now,? i|we (need|should|can|could|must)\b|i('ll| will| need| should| can| must)\b|first,? i|the (user|instructions?|example|task|knowledge base|entry format|format)\b|they (used|didn't|did not|updated|changed|want)|but they|this (means|entry|update)|actually,|note:? (that )?(the|i|we))/i;
-  const REASONING_WORDS_RE = /knowledge base|the example|"add"|\badd mode\b|=== ?entry|rewrite the (entire|whole) entry|the instructions/i;
+  const REASONING_RE = /^\s*[(\[]?\s*(looking at|so,? i think|i think we|i think i|let me|let's|wait[,.]|hmm|okay,? so|ok,? so|alright,? so|now,? i|we (need|should|can|could|must|have|had|don't|do not|did|will|'ll|are|were|only|already)\b|we'll|i('ll| will| need| should| can| must)\b|first,? i|the (user|instructions?|example|task|knowledge base|entry format|format|context|request)\b|they (used|didn't|did not|updated|changed|want)|but they|this (means|entry|update)|actually,|but note|note:? (that )?(the|i|we)|so we\b|how can we|in the provided|therefore,? we|since we|however,? (we|the user)|but wait)/i;
+  const REASONING_WORDS_RE = /knowledge base|the example|"add"|\badd mode\b|=== ?entry|rewrite the (entire|whole) entry|the instructions|\brequest [0-9a-f]{8}\b|entries only|output only|\b(previous|new|this|earlier) (request|update)\b|\bS\d+\s*[-–]\s*S\d+\b|the user (also )?(says|said|is now|asks|wants)|ignore all earlier messages/i;
+  // Notes in brackets inside a fact, e.g. "(But note the timeline: …)", and
+  // guesses marked "(assumed)" / "(presumed)": the guessed part is removed.
+  const ASIDE_RE = /\s*\((?:but )?(?:note|n\.b\.|we |i |actually|the timeline|however)[^()]*\)/gi;
+  const GUESS_RE = /[^.;\n]*\((?:assumed|presumed|probably|likely|guess(?:ed)?|unconfirmed|inferred)\)[^.;\n]*[.;]?/gi;
   function dropReasoning(t) {
     const text = String(t || '').replace(/<think(ing)?>[\s\S]*?<\/think(ing)?>/gi, '');
-    return text.split('\n').filter((l) => !(REASONING_RE.test(l) || REASONING_WORDS_RE.test(l))).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    return text.split('\n').filter((l) => !(REASONING_RE.test(l) || REASONING_WORDS_RE.test(l)))
+      .map((l) => l.replace(ASIDE_RE, '').replace(GUESS_RE, '').replace(/\s+$/, ''))
+      .join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // An entry's "right now" lines (Current State, whereabouts, mood, clothing):
+  // only the newest of each kind is true, so older ones are removed.
+  const STATE_RE = /^\s*[-*•]?\s*(?:\*\*)?\s*(current state|current location|whereabouts|location now|current mood|mood now|current clothing|wearing now|currently wearing|current condition)\s*(?:\*\*)?\s*(?:[:–—-]|\*\*)/i;
+  function latestState(text) {
+    const lines = String(text || '').split('\n');
+    const last = new Map();
+    lines.forEach((l, i) => { const m = l.match(STATE_RE); if (m) last.set(m[1].toLowerCase(), i); });
+    return lines.filter((l, i) => { const m = l.match(STATE_RE); return !m || last.get(m[1].toLowerCase()) === i; }).join('\n');
   }
 
   function cleanOutput(t) {
@@ -1853,7 +1877,7 @@
     checkStop();
     const m = out.match(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*CHAPTER\b[^\S\n]*:?([^\n=]*?)[^\S\n]*=+[^\n]*$/im);
     const title = (m ? m[1] : '').replace(/^\s*\d+\s*[:.–—-]\s*/, '').replace(/[*_#]/g, '').trim();
-    const text = squashRepeats((m ? out.slice(m.index + m[0].length) : out).trim());
+    const text = squashRepeats(dropReasoning((m ? out.slice(m.index + m[0].length) : out).trim()));
     if (text.length < 80) throw new Error('Memory keeper gave an unusable chapter: "' + out.slice(0, 120) + '"');
     return { title: title || 'Chapter ' + n, text, ids: items.map((e) => e.id) };
   }
@@ -1880,20 +1904,20 @@
       if ([u.name].concat(u.aliases).some((n) => skip.has(n.toLowerCase()))) continue;
       const e = findEntry(entries, u.name) || u.aliases.map((a) => findEntry(entries, a)).find(Boolean);
       if (!e) {
-        entries.push({ name: u.name, kind: (u.add ? '' : u.kind) || 'character', aliases: u.aliases, text: u.text, always: false, updated: Date.now() });
+        entries.push({ name: u.name, kind: (u.add ? '' : u.kind) || 'character', aliases: u.aliases, text: latestState(u.text), always: false, updated: Date.now() });
         continue;
       }
       if (u.add) {
         const have = new Set(e.text.split('\n').map((l) => l.trim().toLowerCase()).filter(Boolean));
         const lines = u.text.split('\n').filter((l) => l.trim() && !have.has(l.trim().toLowerCase()));
         if (lines.length) {
-          e.text = (e.text.trim() ? e.text.replace(/\s+$/, '') + '\n' : '') + lines.join('\n');
+          e.text = latestState((e.text.trim() ? e.text.replace(/\s+$/, '') + '\n' : '') + lines.join('\n'));
           e.updated = Date.now();
         }
       } else if (e.text.length > 800 && u.text.length < e.text.length * 0.5) {
         refused.push(e.name);
       } else {
-        e.text = u.text;
+        e.text = latestState(u.text);
         e.updated = Date.now();
       }
       if (u.kind && !u.add) e.kind = u.kind;
@@ -1911,6 +1935,14 @@
   //  - entries the user deleted that came back are removed
   //  - entries are sorted: characters, places, items, groups, lore
   //  - a reply has one summary (the longer one), with a valid chapter link
+  // "Choi" and "Ms. Choi" are the same person; "Mr. Kim" and "Ms. Kim" may not be.
+  const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|president)\.?\s+/i;
+  function sameButTitle(a, b) {
+    const ta = TITLE_RE.test(a);
+    const tb = TITLE_RE.test(b);
+    if (ta === tb) return false;
+    return a.replace(TITLE_RE, '').trim().toLowerCase() === b.replace(TITLE_RE, '').trim().toLowerCase();
+  }
   const KIND_ORDER = ['character', 'place', 'item', 'group', 'lore'];
   function organize(chat) {
     const fixes = [];
@@ -1923,7 +1955,7 @@
       // Only a name counts: two characters may share a nickname like "babe".
       const keys = entryKeys(e).map((k) => k.toLowerCase());
       const twin = kept.find((x) => (x.kind || 'character') === (e.kind || 'character') &&
-        (keys.includes(x.name.toLowerCase()) || entryKeys(x).some((k) => k.toLowerCase() === e.name.toLowerCase())));
+        (keys.includes(x.name.toLowerCase()) || entryKeys(x).some((k) => k.toLowerCase() === e.name.toLowerCase()) || sameButTitle(x.name, e.name)));
       if (!twin) { kept.push(e); continue; }
       // Merge: keep the longer text, add lines only the other one has.
       const [main, other] = twin.text.length >= e.text.length ? [twin.text, e.text] : [e.text, twin.text];
@@ -2041,6 +2073,7 @@
   // an "add" section gets new lines at its end, any other replaces it.
   const SECTION_ORDER = ['story so far', 'current scene', 'open threads', 'world & timeline'];
   function applySections(memory, edits) {
+    edits = edits.map((x) => Object.assign({}, x, { text: dropReasoning(x.text) })).filter((x) => x.text);
     const text = String(memory || '').trim();
     const parts = [];
     const re = /^##[^\S\n]*(.+?)[^\S\n]*$/gm;

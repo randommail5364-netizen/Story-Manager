@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.19.0
+// @version      3.20.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1464,7 +1464,9 @@
       'Rules:',
       '- Story replies are numbered [R1], [R2], … Write exactly one summary for EACH of them, starting a new line with its label.',
       '- Each summary is past-tense prose describing what happened in that reply and what the user did just before it, step by step in order: actions, important dialogue (short quotes are fine), decisions, revelations, emotions and reactions, changes in relationships, injuries, clothing and items, where and when it happened. Use names, be concrete; no vague phrases like "they talked" or "things got intense".',
-      '- Each [R…] label says how long its summary should be (longer replies get longer summaries). Reach that length with real details from the reply, never padding. Cover the whole reply, including its end.',
+      '- Each [R…] label gives the MOST its summary should be (longer replies get longer summaries). A short reply gets a short summary: never pad, never discuss the length. Cover the whole reply, including its end.',
+      '- A story reply may begin with the storyteller AI\'s own planning or thinking (e.g. "Okay, the user wants…", notes on how to write the scene). That is not part of the story: ignore it and summarise only the story itself.',
+      '- Write only the summaries and FACTS lines. Never write your own planning, questions about the task, notes on the format or the length, or what you are about to do.',
       '- After each summary, on its own line, write FACTS: followed by the lasting facts this reply revealed or changed, separated by " | ": names and nicknames, relationships and feelings, confessions, promises, secrets (and who knows them), injuries and condition, possessions, appearance changes, places, rules of the world, dates and times. Write FACTS: none if there are none.',
       '- A reply that is a recap gets a summary starting with "Recap of earlier events:".',
       '- Never invent anything. Use the names in KNOWN NAMES for people and places that already have them.',
@@ -1583,9 +1585,10 @@
   const CHARACTER_LAYOUT = '- Lay out a COMPLETE character entry under these headings, in this order, leaving out headings with nothing known: ' +
     '### Basics (full name, age, role, what they are) · ### Appearance (body, face, hair, eyes, height, build, scars, tattoos, usual and current clothing) · ' +
     '### Personality & Voice (traits, habits, mannerisms, how they talk, typical phrases) · ### Abilities & Skills · ### Likes, Dislikes & Boundaries · ' +
-    '### Backstory · ### Relationships (one bullet per other character: what they are to each other, how they feel, the key moments between them, in order; and for each important one a "Where things stand:" line — what last happened between them, what each needs, what was promised, what is still unresolved — rewritten whenever it changes) · ' +
+    '### Backstory · ### Relationships (one bullet per other character: what they are to each other, how they feel, the key moments between them, in order; and for each important one a "Where things stand:" line — the state of the RELATIONSHIP: what last changed between them, what each needs, what was promised, what is still unresolved; never where they are or what they are doing at this moment — rewritten whenever it changes) · ' +
     '### Key Moments (the important things that happened to or because of them, in order, with specifics) · ' +
     '### Goals, Promises & Secrets (and who knows each secret). In "add" updates, start each bullet with its topic, e.g. "- Relationships – Karina: …" or "- Key Moments: …". ' +
+    'Leave out headings with nothing known: never write "None stated" or "Unknown". ' +
     'Entries hold LASTING facts only: never where someone is, what they are doing, wearing or feeling at this moment — that is written once, in the Current Scene. ' +
     'Be concrete: exact names, numbers, words said, places and objects, not vague impressions like "they grew closer".';
 
@@ -1657,7 +1660,7 @@
     let kinds = 0;
     const moved = [];
     for (const e of chat.entries) {
-      const split = splitStates(dropJunk(clean(e.text), true));
+      const split = splitStates(dropEmpty(dropJunk(clean(e.text), true)));
       if (split.states.length && (e.kind || 'character') === 'character') moved.push({ name: e.name, states: ['last known — ' + split.states[split.states.length - 1]] });
       e.text = squashRepeats(split.text);
       // Objects and places filed as characters.
@@ -1666,6 +1669,8 @@
       else if (/^(place|item)$/.test(e.kind) && PERSON_RE.test(e.text) && !ITEM_WORDS.test(e.name)) { e.kind = 'character'; kinds++; }
     }
     for (const c of chat.chapters || []) c.text = squashRepeats(dropJunk(clean(c.text)));
+    const tmpl = chat.entries.filter((e) => TEMPLATE_NAME_RE.test(e.name) && !e.always);
+    if (tmpl.length) chat.entries = chat.entries.filter((e) => !tmpl.includes(e));
     if (moved.length) placeStates(chat, moved);
     for (const e of chat.log) e.text = squashRepeats(e.text);
     const gone = was - size();
@@ -1745,7 +1750,9 @@
   // Job 1: a detailed summary and the lasting facts of each AI reply.
   // Summaries the keeper skipped (or that were cut off) are asked for again.
   async function summarise(chat, msgs, slot = 0) {
-    const replies = msgs.filter((m) => m.role === 'assistant');
+    // The bot's greeting is not a story reply.
+    const replies = msgs.filter((m) => m.role === 'assistant' && m.id !== chat.greetingId);
+    if (chat.greetingId && msgs.some((m) => m.id === chat.greetingId)) msgs = msgs.filter((m) => m.id !== chat.greetingId);
     // Only user messages (e.g. the newest one, still waiting for its reply): nothing to summarise.
     if (!replies.length) return [];
     const names = chat.entries.map((e) => e.name + (e.aliases && e.aliases.length ? ' (' + e.aliases.join(', ') + ')' : ''));
@@ -1758,11 +1765,19 @@
       const out = cleanOutput(await callLLM(summarySystem(), user, slot));
       checkStop();
       const log = /^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out;
-      return { out, entries: parseKeeperAnswer(log, list.filter((m) => m.role === 'assistant')).entries };
+      // Working-out inside a summary is removed; a summary that is mostly
+      // working-out counts as missing, so it is asked for again.
+      const entries = parseKeeperAnswer(log, list.filter((m) => m.role === 'assistant')).entries.filter((e) => {
+        const c = cleanSummary(e.text);
+        e.text = c.text;
+        return !c.bad;
+      });
+      return { out, entries };
     };
     const first = await ask(msgs);
     let got = first.entries;
-    if (!got.length && replies.length) throw new Error('Memory keeper gave an unusable answer: "' + first.out.slice(0, 120) + '"');
+    // No [R…] summaries at all is unusable; summaries that were only working-out are asked for again below.
+    if (!got.length && replies.length && !/\[?R\d+/.test(first.out)) throw new Error('Memory keeper gave an unusable answer: "' + first.out.slice(0, 120) + '"');
     for (let round = 0; round < 3; round++) {
       const have = new Set(got.map((e) => e.id));
       const missing = replies.filter((r) => !have.has(r.id));
@@ -2102,6 +2117,46 @@
     return '';
   }
 
+  // A summary is one paragraph, so the keeper's working-out is found sentence
+  // by sentence: planning ("Need around 5000 chars", "Let's draft"),
+  // questions about the task, and talk about labels, format or length.
+  const SUMMARY_JUNK_RE = /^\s*(summary\s*:\s*)?(need|needs|we need|we should|we can|we must|we'll|we will|let'?s|let me|i need|i will|i'll|i should|must|should|okay|ok|so,? (we|i)|but (wait|note|the instruction)|wait|actually|hmm|however,? (the|we|i)|therefore,? (we|i)|maybe|perhaps (we|i)|now,? (we|i|let))\b|\[R\d+[^\]]*\]|\b(\d[\d,]* ?chars?\b|characters? long|summary target|the (instruction|instructions|format|label|messages block)\b|story repl(y|ies) (is|are|in)\b|(R\d+)\b (is|was|has|contains)|we (have|need|should|must|can)\b|draft|outline:)/i;
+  function cleanSummary(t) {
+    const text = String(t || '').trim();
+    // "Let's outline: Jacek joined…": the lead-in is planning, the rest may be the summary.
+    const split = text.replace(/((?:let'?s|let me|we'?ll|now,? (?:we|i)|i'?ll)\s+(?:outline|draft|write|summari[sz]e|start|begin)[^:.!?]{0,40}|(?:summary|outline|draft)(?: for \[?R\d+\]?)?)\s*:\s*/gi, '$1.\n');
+    const parts = split.split(/(?<=[.!?…]["”’']?)\s+(?=["“A-Z(\[])|\n+/);
+    const kept = parts.filter((x) => x.trim() && !SUMMARY_JUNK_RE.test(unquoted(x)) && !/^\s*facts?\s*:/i.test(x) && !/^\s*(summary|outline|draft)( for \[?R\d+\]?)?\.?\s*$/i.test(x));
+    const out = kept.join(' ').replace(/^\s*summary\s*:\s*/i, '').trim();
+    // Mostly working-out: not a usable summary (it is asked for again).
+    const bad = out.length < 40 || out.length < text.length * 0.5;
+    return { text: out, bad };
+  }
+
+  // An entry whose name is the template's ("Name", "kind", "Title", …): the
+  // keeper copied the format instead of writing an entry.
+  const TEMPLATE_NAME_RE = /^\s*(name|names|title|kind|entry|character|person|place|item|thing|group|lore|n\/?a|\.{2,}|…|\(.*\)|<.*>|\[.*\])\s*$/i;
+  const TEMPLATE_ALIAS_RE = /^(other names|nicknames|titles|aliases?|…|\.{2,})$/i;
+
+  // "None stated" and the like are not facts; a heading with nothing under
+  // it is dropped too.
+  const EMPTY_FACT_RE = /^\s*[-*•]?\s*(none|nothing|n\/?a|unknown|not (stated|mentioned|known|specified|given)|none (stated|known|yet|mentioned|specified|given|so far))\.?\s*$/i;
+  function dropEmpty(t) {
+    const lines = String(t || '').split('\n').filter((l) => !EMPTY_FACT_RE.test(l));
+    return lines.filter((l, i) => {
+      if (!/^\s*#{1,4}\s/.test(l)) return true;
+      const next = lines.slice(i + 1).find((x) => x.trim());
+      return !!next && !/^\s*#{1,4}\s/.test(next);
+    }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  // The bot's greeting (an AI message before the user's first message) is
+  // not a story reply: it is not summarised.
+  function greetingOf(msgs) {
+    const first = (msgs || []).find((m) => m.role === 'user' || m.role === 'assistant');
+    return first && first.role === 'assistant' ? first.id : null;
+  }
+
   // "Choi" and "Ms. Choi" are the same person; "Mr. Kim" and "Ms. Kim" may not be.
   const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|president)\.?\s+/i;
   function sameButTitle(a, b) {
@@ -2231,8 +2286,10 @@
       }
     });
     sections.forEach((x) => { x.text = dropJunk(squashRepeats(x.text)); });
+    for (let i = updates.length - 1; i >= 0; i--) if (TEMPLATE_NAME_RE.test(updates[i].name)) updates.splice(i, 1);
     updates.forEach((u) => {
-      const split = splitStates(structuredOnly(squashRepeats(u.text)));
+      u.aliases = (u.aliases || []).filter((a) => !TEMPLATE_ALIAS_RE.test(a));
+      const split = splitStates(dropEmpty(structuredOnly(squashRepeats(u.text))));
       u.text = split.text;
       u.states = split.states;
       if (!u.kind && !u.add) u.kind = guessKind(u.name, cast, u.text);
@@ -2417,6 +2474,8 @@
   async function updateMemory(id, msgs, { force = false } = {}) {
     const chat = await getChat(id, true);
     if (busy[id] || compare.running || (!chat.enabled && !force)) return 'skipped';
+    // A first read of the chat starts at its beginning: note the greeting.
+    if (!chat.processedIds.length && !chat.log.length && msgs.length) chat.greetingId = greetingOf(msgs);
     let todo = unprocessed(chat, msgs);
     // The newest replies wait: the user often has them redone.
     const hold = Math.max(0, Number(settings.holdBack) || 0);
@@ -3048,7 +3107,8 @@
     if (busy[chat.id] || compare.running) { toast('The memory is being updated right now — try again in a moment'); return null; }
     let msgs;
     try { msgs = await fetchMessages(chat.id, { mode: 'full' }); } catch (e) { toast('Could not read the chat: ' + (e.message || e), true); return null; }
-    const replies = msgs.filter((m) => m.role === 'assistant').slice(0, count);
+    const greeting = greetingOf(msgs);
+    const replies = msgs.filter((m) => m.role === 'assistant' && m.id !== greeting).slice(0, count);
     if (!replies.length) { toast('This chat has no AI replies yet.'); return null; }
     const part = withPrompts(msgs, replies);
     const results = [];
@@ -3063,7 +3123,7 @@
           compare.slot = 8 + i;
           compare.raw = r.raw;
           toolCache = null;
-          const temp = Object.assign(newChat(chat.id), { title: chat.title });
+          const temp = Object.assign(newChat(chat.id), { title: chat.title, greetingId: greetingOf(msgs) });
           try {
             setStep(chat.id, slug + ': summarising replies 1–' + replies.length + '…');
             let t0 = Date.now();
@@ -4285,6 +4345,12 @@
   // Returns how many were removed, or -1 if the read looked incomplete.
   function reconcile(chat, msgs) {
     const here = new Set(msgs.map((m) => m.id));
+    // The bot's greeting is not a story reply: no summary for it.
+    chat.greetingId = greetingOf(msgs);
+    if (chat.greetingId && chat.log.some((e) => e.id === chat.greetingId)) {
+      chat.log = chat.log.filter((e) => e.id !== chat.greetingId);
+      logJob(chat, { kind: 'check', label: 'Removed the summary of the bot\'s greeting (it is not part of the story)', ok: true, ms: 0 });
+    }
     chat.knownMessages = msgs.length;
     chat.knownReplies = msgs.filter((m) => m.role === 'assistant').length;
     chat.fullCheckAt = Date.now();

@@ -19,9 +19,9 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const factKey = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts };')();
+const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const factKey = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts, cleanSummary, greetingOf };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -265,7 +265,7 @@ test('"Choi" and "Ms. Choi" become one entry, "Mr. Kim" and "Ms. Kim" stay apart
 
 test('comparing with the whole chat removes vanished replies, but not when the read looks incomplete', () => {
   const mk = () => ({ log: Array.from({ length: 30 }, (_, i) => ({ id: 'r' + i, text: 'S' + i, folded: true })), chapters: [], processedIds: [], jobs: [] });
-  const msgs = (ids) => ids.map((id) => ({ id, role: 'assistant' }));
+  const msgs = (ids) => [{ id: 'u0', role: 'user' }].concat(ids.map((id) => ({ id, role: 'assistant' })));
   const a = mk();
   assert.strictEqual(lib.reconcile(a, msgs(a.log.map((e) => e.id).filter((x) => x !== 'r5' && x !== 'r9'))), 2);
   assert(!a.log.some((e) => e.id === 'r5') && a.stale.length === 2 && a.knownReplies === 28);
@@ -385,6 +385,33 @@ test('a block headed by another character\'s name goes to that character', () =>
   const r = lib.applyUpdates(entries, [{ name: 'Giselle', aliases: [], add: true, text: '- Bit her lip.\n**Ningning**\n- Packed neon swimwear and an inflatable unicorn horn.' }], []);
   assert.strictEqual(r.entries[0].text, '- Bold.\n- Bit her lip.');
   assert.strictEqual(r.entries[1].text, '- Youngest.\n- Packed neon swimwear and an inflatable unicorn horn.');
+});
+
+// Real answers from the user's bot comparison (er-8 and smut-fic-writer).
+test('regression: working-out inside a summary is removed; a summary that is mostly working-out is not used', () => {
+  const smut = 'Summary: Need around 5000 chars. We can write detailed summary of the AI\'s reasoning plus story. Must be past-tense prose. Let\'s outline: ' +
+    'Jacek joined the members in a Seoul penthouse suite after their encore concert. Karina asked for a shoulder massage, and he fingered her to orgasm on the velvet sofa. ' +
+    'Winter was bent over an armchair while Giselle watched.';
+  const c = lib.cleanSummary(smut);
+  assert.strictEqual(c.text, 'Jacek joined the members in a Seoul penthouse suite after their encore concert. Karina asked for a shoulder massage, and he fingered her to orgasm on the velvet sofa. Winter was bent over an armchair while Giselle watched.');
+  assert(!c.bad);
+  const er8 = '.. STORY AI: ... (a line) USER: ... (the request) Then [R2] with a long story. And [R3] with another story part. Therefore, the story replies are [R2] and [R3]. [R1] is the setup. But the instruction says "each [R...]" in the messages.';
+  assert(lib.cleanSummary(er8).bad, 'er-8\'s R1 is all working-out');
+  const greet = 'The STORY AI greeted the user in a Southern drawl, saying "Evenin\', darlin\'." FACTS: none. But summary target about 1200 chars impossible. Maybe include that the assistant adopted a persona.';
+  assert.strictEqual(lib.cleanSummary(greet).text, 'The STORY AI greeted the user in a Southern drawl, saying "Evenin\', darlin\'."');
+  // Quoted dialogue that sounds like planning stays.
+  assert(!lib.cleanSummary('Karina said "We need to rest" and lay down beside Jacek on the bed.').bad);
+});
+
+test('regression: an entry copied from the template is thrown away; "None stated" and empty headings go', () => {
+  const p = lib.parseKeeperAnswer('=== ENTRY: Name | kind | aliases: other names, nicknames, titles ===\nFor characters, kind: character.\n=== ENTRY: Karina | character | aliases: Karina-unnie ===\n### Basics\n- Karina is a member of aespa.\n### Abilities & Skills\n- None stated.\n### Likes, Dislikes & Boundaries\n- None stated.\n### Key Moments\n- Asked for a shoulder massage.', []);
+  assert.deepStrictEqual(p.updates.map((u) => u.name), ['Karina']);
+  assert.strictEqual(p.updates[0].text, '### Basics\n- Karina is a member of aespa.\n### Key Moments\n- Asked for a shoulder massage.');
+});
+
+test('the bot\'s greeting (an AI message before the user\'s first one) is found', () => {
+  assert.strictEqual(lib.greetingOf([{ id: 'g', role: 'assistant' }, { id: 'u', role: 'user' }, { id: 'r', role: 'assistant' }]), 'g');
+  assert.strictEqual(lib.greetingOf([{ id: 'u', role: 'user' }, { id: 'r', role: 'assistant' }]), null);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

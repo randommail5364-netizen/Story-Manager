@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.14.0
+// @version      3.15.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1895,12 +1895,13 @@
   }
 
   // Job 3: a run of summaries becomes a chapter of the story's history.
-  async function makeChapter(chat, items, at) {
+  async function makeChapter(chat, items, at, notes) {
     const idx = at == null ? chat.chapters.length : at;
     const prev = chat.chapters[idx - 1];
     const n = idx + 1;
     const user = (prev ? 'PREVIOUS CHAPTER (' + prev.title + '):\n<<<\n' + prev.text + '\n>>>\n\n' : '') +
       'EVENTS (oldest first):\n<<<\n' + formatEvents(items) + '\n>>>\n\n' +
+      (notes ? 'A REVIEW OF THE PREVIOUS VERSION OF THIS CHAPTER FOUND THESE PROBLEMS (avoid them; follow the EVENTS exactly):\n<<<\n' + notes + '\n>>>\n\n' : '') +
       'JOB: CHAPTER. Write chapter ' + n + ' now.';
     const out = cleanOutput(await callLLM(chapterSystem(), user));
     checkStop();
@@ -2643,6 +2644,204 @@
       setStatus();
       renderPanel(true);
     }
+  }
+
+
+  // Runs a user-started job on a chat: marks it busy (so updates wait),
+  // keeps the screen on, shows progress, and always cleans up.
+  async function withBusy(id, total, fn) {
+    if (busy[id]) return 'skipped';
+    busy[id] = true;
+    keepAwake(true);
+    stopRequested[id] = false;
+    activeChatId = id;
+    setStatus();
+    progress[id] = { done: 0, total, step: 'Starting…' };
+    renderPanel();
+    try {
+      return await fn();
+    } finally {
+      busy[id] = false;
+      if (!anyBusy()) keepAwake(false);
+      stopRequested[id] = false;
+      if (activeChatId === id) activeChatId = null;
+      delete progress[id];
+      setStatus();
+      renderPanel(true);
+    }
+  }
+
+  // "Check summaries": each summary is compared with the actual reply. A wrong
+  // one is replaced by a corrected summary; if its facts were already in the
+  // story & characters, the correction step takes the wrong ones out and the
+  // new ones are folded in; its chapter is marked for a check.
+  const SUMMARY_CHECK_LATEST = 30;
+  async function runCheckSummaries(id, all) {
+    const chat = await getChat(id, true);
+    if (busy[id]) return 'skipped';
+    let msgs;
+    try { msgs = await fetchMessages(id, { mode: 'full' }); } catch (e) { toast('Could not read the chat: ' + (e.message || e), true); return 'failed'; }
+    const byId = new Map(msgs.map((m) => [m.id, m]));
+    let todo = chat.log.filter((e) => !e.inherited && byId.has(e.id) && (all || !e.verified));
+    if (!all) todo = todo.slice(-SUMMARY_CHECK_LATEST);
+    if (!todo.length) return 'nothing';
+    const per = Math.max(1, detail().perChunk);
+    const batches = [];
+    for (let i = 0; i < todo.length; i += per) batches.push(todo.slice(i, i + per));
+    let fine = 0;
+    const fixed = [];
+    let factsAdded = 0;
+    const status = await withBusy(id, batches.length, async () => {
+      const before = snapshot(chat);
+      try {
+        for (const batch of batches) {
+          checkStop();
+          const label = 'Checked the summaries of ' + replyRange(chat, batch);
+          setStep(id, label + '…');
+          const t0 = Date.now();
+          const replies = batch.map((e) => byId.get(e.id));
+          const part = withPrompts(msgs, replies);
+          const user = 'MESSAGES (oldest first):\n<<<\n' + formatMessages(part, chat.title) + '\n>>>\n\n' +
+            'SUMMARIES TO CHECK:\n<<<\n' + batch.map((e, i) => '[R' + (i + 1) + '] ' + e.text + (e.facts ? '\nFACTS: ' + e.facts : '')).join('\n\n') + '\n>>>\n\n' +
+            'JOB: VERIFY. Compare each summary [R…] with its reply in MESSAGES. Check: the events and their order, WHO said and did each thing, ' +
+            'names, details that were left out, and anything the summary says that the reply does not. ' +
+            'For a correct summary write "[R#] OK". For a wrong or incomplete one write "[R#]" followed by the corrected, complete summary, and on the next line ' +
+            'FACTS: with its complete facts list. Answer in this format only, one line per correct summary.';
+          const out = cleanOutput(await callLLM(summarySystem(), user));
+          checkStop();
+          const got = parseKeeperAnswer(/^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out, replies).entries;
+          let n = 0;
+          for (const e of batch) {
+            const g = got.find((x) => x.id === e.id);
+            e.verified = Date.now();
+            if (!g || /^ok\b/i.test(g.text) || g.text.length < 40) { fine++; continue; }
+            if (e.folded) markStale(chat, e);
+            if (!e.facts && g.facts) factsAdded++;
+            e.text = g.text;
+            if (g.facts) { e.facts = g.facts; delete e.nofacts; } else if (g.nofacts === 'none') e.nofacts = 'none';
+            delete e.checked;
+            if (e.folded) e.folded = false;
+            if (e.chapter != null && chat.chapters[e.chapter]) chat.chapters[e.chapter].needsCheck = true;
+            fixed.push(chat.log.indexOf(e) + 1);
+            n++;
+          }
+          logJob(chat, { kind: 'check', label: label + (n ? ': corrected ' + n : ': all correct'), ok: true, ms: Date.now() - t0 });
+          progress[id].done++;
+          await saveChat(chat);
+          renderPanel();
+        }
+        if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) chat.history = [before].concat(chat.history).slice(0, 5);
+        await saveChat(chat);
+        return 'done';
+      } catch (e) {
+        await saveChat(chat);
+        if (e.stopped) { toast('Stopped. What was checked is kept.'); return 'stopped'; }
+        toast('Checking the summaries failed: ' + (e.message || e), true);
+        return 'failed';
+      }
+    });
+    if (status === 'done' || status === 'stopped') {
+      const checked = fine + fixed.length;
+      toast('Checked ' + checked + ' summaries: ' + fine + ' correct' + (fixed.length ? ', ' + fixed.length + ' corrected (repl' + (fixed.length === 1 ? 'y ' : 'ies ') + fixed.join(', ') + ')' : '') +
+        (factsAdded ? ', ' + factsAdded + ' facts list' + (factsAdded === 1 ? '' : 's') + ' added' : '') + '.' +
+        (fixed.length ? ' Updating the story & characters…' : ''));
+      // The corrected summaries go into the story & characters (and what only
+      // the wrong ones said comes out).
+      if (fixed.length) await updateMemory(id, msgs, { force: true });
+    }
+    return status;
+  }
+
+  // "Check chapters": each chapter is compared with the summaries it was
+  // written from, and graded; problems are listed, and a flagged chapter can
+  // be rewritten from its summaries with the problems pointed out.
+  const CHAPTERS_PER_CHECK = 3;
+  function chapterFlagged(c) {
+    return !!(c.check && (c.check.score < 8 || c.check.wrong || c.check.missing));
+  }
+  async function runCheckChapters(id, all) {
+    const chat = await getChat(id, true);
+    if (busy[id]) return 'skipped';
+    const idxs = chat.chapters.map((c, i) => i).filter((i) => all || !chat.chapters[i].check || chat.chapters[i].needsCheck)
+      .filter((i) => chat.log.some((e) => e.chapter === i));
+    if (!idxs.length) return 'nothing';
+    const batches = [];
+    for (let i = 0; i < idxs.length; i += CHAPTERS_PER_CHECK) batches.push(idxs.slice(i, i + CHAPTERS_PER_CHECK));
+    return withBusy(id, batches.length, async () => {
+      try {
+        for (const batch of batches) {
+          checkStop();
+          const label = 'Checked chapter' + (batch.length === 1 ? ' ' + (batch[0] + 1) : 's ' + (batch[0] + 1) + '–' + (batch[batch.length - 1] + 1));
+          setStep(id, label + '…');
+          const t0 = Date.now();
+          const user = batch.map((i) => '=== CHAPTER ' + (i + 1) + ': ' + chat.chapters[i].title + ' ===\n' + chat.chapters[i].text +
+            '\n\nWHAT HAPPENED (the summaries this chapter was written from, oldest first):\n<<<\n' + formatEvents(chat.log.filter((e) => e.chapter === i)) + '\n>>>').join('\n\n') +
+            '\n\nJOB: GRADE. For each chapter, compare it with WHAT HAPPENED. Answer for each, in this format only:\n' +
+            '=== CHAPTER n ===\nSCORE: (0–10: how accurate and complete it is)\nWRONG: (events, people, who said or did what, or order that differ from what happened; or none)\n' +
+            'MISSING: (important events, reveals, promises or changes left out; or none)\nPADDING: (repeated phrases, recurring metaphors or filler; or none)';
+          const out = cleanOutput(await callLLM(chapterSystem(), user));
+          checkStop();
+          const parts = out.split(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*CHAPTER[^\S\n]*(\d+)[^\n]*$/im);
+          const field = (t, k) => { const m = t.match(new RegExp('^\\W*' + k + '\\W*:\\s*([\\s\\S]*?)(?=^\\W*(SCORE|WRONG|MISSING|PADDING)\\W*:|$(?![\\s\\S]))', 'im')); const v = m ? m[1].trim() : ''; return /^(none|n\/?a|nothing|-)\.?$/i.test(v) ? '' : v; };
+          const flagged = [];
+          for (let k = 1; k < parts.length; k += 2) {
+            const i = Number(parts[k]) - 1;
+            if (!batch.includes(i)) continue;
+            const t = parts[k + 1] || '';
+            const score = Number((t.match(/SCORE\W*:\s*(\d+(?:\.\d+)?)/i) || [])[1]);
+            if (!(score >= 0)) continue;
+            const c = chat.chapters[i];
+            c.check = { score: Math.min(10, score), wrong: field(t, 'WRONG'), missing: field(t, 'MISSING'), padding: field(t, 'PADDING'), at: Date.now() };
+            delete c.needsCheck;
+            if (chapterFlagged(c)) flagged.push(i + 1);
+          }
+          logJob(chat, { kind: 'check', label: label + (flagged.length ? ': chapter' + (flagged.length === 1 ? ' ' : 's ') + flagged.join(', ') + ' need' + (flagged.length === 1 ? 's' : '') + ' work' : ': all good'), ok: true, ms: Date.now() - t0 });
+          progress[id].done++;
+          await saveChat(chat);
+          renderPanel();
+        }
+        const checked = chat.chapters.filter((c) => c.check);
+        const bad = chat.chapters.map((c, i) => (chapterFlagged(c) ? i + 1 : 0)).filter(Boolean);
+        toast('Checked ' + idxs.length + ' chapter' + (idxs.length === 1 ? '' : 's') + '. Average score ' +
+          (checked.reduce((n, c) => n + c.check.score, 0) / Math.max(1, checked.length)).toFixed(1) + '/10' +
+          (bad.length ? '; chapter' + (bad.length === 1 ? ' ' : 's ') + bad.join(', ') + ' could be rewritten (see Chapters).' : '; none need rewriting.'));
+        return 'done';
+      } catch (e) {
+        await saveChat(chat);
+        if (e.stopped) { toast('Stopped. What was checked is kept.'); return 'stopped'; }
+        toast('Checking the chapters failed: ' + (e.message || e), true);
+        return 'failed';
+      }
+    });
+  }
+
+  // Rewrites one chapter from its summaries, with its check's problems.
+  async function rewriteChapter(id, i) {
+    const chat = await getChat(id, true);
+    const c = chat.chapters[i];
+    const items = chat.log.filter((e) => e.chapter === i);
+    if (!c || !items.length || busy[id]) return 'skipped';
+    return withBusy(id, 1, async () => {
+      const t0 = Date.now();
+      const label = 'Rewrote chapter ' + (i + 1) + ' from its summaries';
+      setStep(id, label + '…');
+      try {
+        const notes = c.check ? ['wrong: ' + (c.check.wrong || 'none'), 'missing: ' + (c.check.missing || 'none'), 'padding: ' + (c.check.padding || 'none')].join('\n') : '';
+        const before = snapshot(chat);
+        const ch = await makeChapter(chat, items, i, notes);
+        chat.chapters[i] = Object.assign(ch, { needsCheck: true });
+        chat.history = [before].concat(chat.history).slice(0, 5);
+        logJob(chat, { kind: 'chapter', label, ok: true, ms: Date.now() - t0 });
+        await saveChat(chat);
+        toast('Chapter ' + (i + 1) + ' rewritten. "Check chapters" grades it again.');
+        return 'done';
+      } catch (e) {
+        if (!e.stopped) logJob(chat, { kind: 'chapter', label, ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) });
+        await saveChat(chat);
+        toast(e.stopped ? 'Stopped.' : 'Could not rewrite chapter ' + (i + 1) + ': ' + (e.message || e), !e.stopped);
+        return e.stopped ? 'stopped' : 'failed';
+      }
+    });
   }
 
   async function runFactCheck(id, all) {
@@ -3874,7 +4073,12 @@
     if (!force && active && /TEXTAREA|INPUT|SELECT/.test(active.tagName)) return;
     ui.tabs.memory.classList.toggle('on', tab === 'memory');
     ui.tabs.settings.classList.toggle('on', tab === 'settings');
+    // Sections the user opened stay open when the panel is redrawn (updates
+    // and background checks redraw it often).
+    const keyOf = (d) => { const sm = d.querySelector(':scope > summary'); return sm ? sm.textContent.split(' · ')[0].replace(/^★ /, '') : ''; };
+    const opened = new Set([...ui.body.querySelectorAll('details[open]')].map(keyOf).filter(Boolean));
     ui.body.replaceChildren(tab === 'memory' ? memoryView() : settingsView());
+    if (opened.size) for (const d of ui.body.querySelectorAll('details')) if (opened.has(keyOf(d))) d.open = true;
   }
 
   function memoryView() {
@@ -3931,7 +4135,7 @@
     });
 
     const editors = chat.entries.map((e) => entryEditor(chat, e));
-    const chapterEds = chat.chapters.map((c, i) => chapterEditor(c, i));
+    const chapterEds = chat.chapters.map((c, i) => chapterEditor(c, i, chat));
 
     const save = async (quiet) => {
       const snap = snapshot(chat);
@@ -4194,6 +4398,28 @@
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(false) }, 'Update now'),
         el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')),
       el('div', { class: 'btns' },
+        el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          const left = chat.log.filter((e) => !e.inherited && !e.verified).length;
+          const n = Math.min(left, SUMMARY_CHECK_LATEST);
+          const all = !n;
+          if (all && !confirm('Every summary has been checked. Check all ' + chat.log.filter((e) => !e.inherited).length + ' again against their replies? This takes about ' + Math.ceil(chat.log.length / Math.max(1, detail().perChunk)) + ' requests.')) return;
+          if (!all && !confirm('Check the latest ' + n + ' unchecked summaries against the actual replies, and correct wrong ones? This takes about ' + Math.ceil(n / Math.max(1, detail().perChunk)) + ' requests.' + (left > n ? ' (' + (left - n) + ' older ones stay unchecked; tap again to do the next ' + SUMMARY_CHECK_LATEST + '.)' : ''))) return;
+          await save(true);
+          const status = await runCheckSummaries(chat.id, all);
+          if (status === 'nothing') toast('There are no summaries of replies in this chat to check.');
+        } }, 'Check summaries'),
+        el('button', { class: 'btn', disabled: isBusy || !chat.chapters.length, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          const left = chat.chapters.filter((c) => !c.check || c.needsCheck).length;
+          const all = !left;
+          const n = all ? chat.chapters.length : left;
+          if (!confirm((all ? 'Every chapter has been checked. Check all ' + n + ' again' : 'Check ' + n + ' chapter' + (n === 1 ? '' : 's')) +
+            ' against the summaries they were written from, and grade them? This takes about ' + Math.ceil(n / CHAPTERS_PER_CHECK) + ' requests. (Tip: "Check summaries" first.)')) return;
+          await save(true);
+          const status = await runCheckChapters(chat.id, all);
+          if (status === 'nothing') toast('No chapters with summaries to check.');
+        } }, 'Check chapters'),
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: factCheck }, 'Check for missing facts'),
         chat.log.some((e) => !e.facts && e.nofacts !== 'none') ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
@@ -4288,14 +4514,26 @@
   }
 
   // One collapsible chapter in the panel. apply() copies the edits into it.
-  function chapterEditor(c, i) {
+  function chapterEditor(c, i, chat) {
     const title = el('input', { value: c.title });
     const text = el('textarea', { class: 'entry' });
     text.value = c.text;
+    const k = c.check;
+    const grade = k ? ' · ' + (chapterFlagged(c) ? '⚠ ' : '✓ ') + k.score + '/10' : c.needsCheck ? ' · to check' : '';
     const node = el('details', { class: 'entrybox' },
-      el('summary', {}, 'Chapter ' + (i + 1) + ': ' + c.title + ' · ' + (c.ids ? c.ids.length + ' replies · ' : '') + c.text.length + ' chars'),
+      el('summary', {}, 'Chapter ' + (i + 1) + ': ' + c.title + ' · ' + (c.ids ? c.ids.length + ' replies · ' : '') + c.text.length + ' chars' + grade),
+      k ? el('div', { class: chapterFlagged(c) ? 'error' : 'hint' },
+        el('div', {}, 'Check: ' + k.score + '/10 (' + ago(k.at) + ')' + (c.needsCheck ? ' — changed since, check again' : '')),
+        k.wrong ? el('div', {}, 'Wrong: ' + k.wrong) : null,
+        k.missing ? el('div', {}, 'Missing: ' + k.missing) : null,
+        k.padding ? el('div', {}, 'Padding: ' + k.padding) : null) : null,
       el('label', {}, 'Title'), title,
-      el('label', {}, 'Summary'), text);
+      el('label', {}, 'Summary'), text,
+      chat && chat.log.some((e) => e.chapter === i) ? el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+        if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+        if (!confirm('Rewrite chapter ' + (i + 1) + ' from its reply summaries' + (k ? ', avoiding the problems the check found' : '') + '? (Undo last change brings the old one back.)')) return;
+        await rewriteChapter(chat.id, i);
+      } }, 'Rewrite')) : null);
     return {
       node,
       apply() {

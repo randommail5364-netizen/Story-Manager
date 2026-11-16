@@ -141,6 +141,16 @@ async function main() {
     if (/ENTRIES ONLY/.test(input) && asked) {
       return asked[1].split(',').map((name) => '=== ENTRY: ' + name.trim() + ' | character ===\n- ' + name.trim() + ' is a member of the group.').join('\n');
     }
+    if (/JOB: VERIFY/.test(input)) {
+      const list = (input.split('SUMMARIES TO CHECK:\n<<<\n')[1] || '').split('\n>>>')[0];
+      return [...list.matchAll(/^\[R(\d+)\] (.*)$/gm)].map((m) => (/NONSENSE/.test(m[2])
+        ? '[R' + m[1] + '] Corrected summary: Mira and Ash crossed the bridge together, as the reply says.\nFACTS: Mira is a healer | Ash crossed the bridge'
+        : '[R' + m[1] + '] OK')).join('\n');
+    }
+    if (/JOB: GRADE/.test(input)) {
+      return [...input.matchAll(/^=== CHAPTER (\d+): /gm)].map((m, k) => '=== CHAPTER ' + m[1] + ' ===\nSCORE: ' + (k === 0 ? 5 : 9) +
+        '\nWRONG: ' + (k === 0 ? 'It was Ash, not Mira, who lit the fire.' : 'none') + '\nMISSING: none\nPADDING: none').join('\n');
+    }
     if (/JOB: CONSOLIDATE/.test(input)) {
       const m = input.match(/THE ENTRY:\n<<<\n=== ENTRY: ([^|=\n]+?) \| (\w+)[^\n]*\n([\s\S]*?)\n>>>/);
       if (!m) return 'OK';
@@ -995,6 +1005,9 @@ async function main() {
   console.log('34b) "Write in full detail" rewrites one entry from every reply that mentions it, keeping what it had');
   const callsBefore34b = llmCalls.length;
   await page.locator('#story-manager-root >> summary', { hasText: /^Mira · / }).click();
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await page.waitForTimeout(300);
+  check(await page.locator('#story-manager-root >> details[open] > summary', { hasText: /^Mira · / }).count() === 1, 'an entry the user opened stays open when the panel is redrawn');
   page.once('dialog', (d) => d.accept());
   await page.locator('#story-manager-root >> details[open] >> text=Write in full detail').click();
   await waitFor(async () => /Rewritten in full detail/.test(((await keyNow()).entries.find((e) => e.name === 'Mira') || {}).text || ''), 60000, 'entry rewrite');
@@ -1314,6 +1327,57 @@ async function main() {
   check(/- Consolidated\.$/.test(ash39e.text) && (ash39e.text.match(/Ash is a dragon/g) || []).length === 1 && ash39e.consolidated >= ash39e.updated - 5,
     'Ash was rewritten in full: duplicates merged, marked as consolidated');
   check((await keyNow()).jobs.some((j) => /Consolidated Ash/.test(j.label)), 'recorded in Activity');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+
+  console.log('39f) "Check summaries" compares summaries with the replies and corrects wrong ones');
+  await settle();
+  const here39f = newConv.messages.map((x) => x.id);
+  const wrong39f = (await keyNow()).log.filter((e) => here39f.includes(e.id) && e.folded).slice(-2)[0];
+  await page.evaluate((id) => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    const e = c.log.find((x) => x.id === id);
+    e.text = 'NONSENSE: Winter flew to the moon.';
+    for (const x of c.log) delete x.verified;
+    localStorage.setItem(key, JSON.stringify(c));
+  }, wrong39f.id);
+  await page.reload();
+  await page.waitForTimeout(800);
+  await page.locator('#story-manager-root >> .fab').click();
+  const calls39f = llmCalls.length;
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Check summaries').click();
+  await waitFor(async () => /Corrected summary/.test(((await keyNow()).log.find((e) => e.id === wrong39f.id) || {}).text || ''), 60000, 'summary corrected');
+  await settle();
+  const after39f = await keyNow();
+  const verify39f = llmCalls.slice(calls39f).filter((c) => /JOB: VERIFY/.test(c));
+  check(verify39f.length >= 1 && verify39f.some((c) => /NONSENSE: Winter flew to the moon/.test(c) && /MESSAGES \(oldest first\)/.test(c)), 'each summary is sent with its actual reply');
+  check(after39f.log.filter((e) => here39f.includes(e.id)).slice(-30).every((e) => e.verified) && after39f.log.find((e) => e.id === wrong39f.id).facts === 'Mira is a healer | Ash crossed the bridge',
+    'the wrong summary and its facts were corrected; the checked ones are remembered');
+  check(llmCalls.slice(calls39f).some((c) => /JOB: CORRECT/.test(c) && /NONSENSE: Winter flew to the moon/.test(c)) && after39f.log.find((e) => e.id === wrong39f.id).folded,
+    'what only the wrong summary said is corrected in the story & characters, and the corrected one folded in');
+  check(after39f.jobs.some((j) => /Checked the summaries of [^:]*: corrected 1/.test(j.label)), 'recorded in Activity');
+
+  console.log('39g) "Check chapters" grades each chapter against its summaries; a flagged one can be rewritten');
+  const calls39g = llmCalls.length;
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Check chapters').click();
+  await waitFor(async () => { const k = await keyNow(); return k.chapters.every((c, i) => c.check || !k.log.some((e) => e.chapter === i)); }, 60000, 'chapters graded');
+  await settle();
+  const after39g = await keyNow();
+  const graded = after39g.chapters.map((c, i) => [c, i]).filter(([c]) => c.check);
+  const flaggedCh = graded.find(([c]) => c.check.score === 5);
+  check(llmCalls.slice(calls39g).some((c) => /JOB: GRADE/.test(c) && /WHAT HAPPENED/.test(c)) && graded.length >= 1 && flaggedCh && /Ash, not Mira/.test(flaggedCh[0].check.wrong) && !flaggedCh[0].check.missing,
+    'chapters graded with their problems listed');
+  await page.locator('#story-manager-root >> summary', { hasText: new RegExp('^Chapter ' + (flaggedCh[1] + 1) + ':.*⚠ 5/10') }).click();
+  const panel39g = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/Wrong: It was Ash, not Mira, who lit the fire\./.test(panel39g), 'the panel shows the grade and what is wrong');
+  const calls39h = llmCalls.length;
+  page.once('dialog', (d) => d.accept());
+  await page.locator('#story-manager-root >> details[open] >> button', { hasText: 'Rewrite' }).click();
+  await waitFor(async () => (await keyNow()).jobs.some((j) => new RegExp('Rewrote chapter ' + (flaggedCh[1] + 1) + ' from its summaries').test(j.label)), 60000, 'chapter rewritten');
+  const re39 = llmCalls.slice(calls39h).find((c) => /JOB: CHAPTER/.test(c));
+  check(re39 && /FOUND THESE PROBLEMS[\s\S]*Ash, not Mira/.test(re39) && (await keyNow()).chapters[flaggedCh[1]].needsCheck, 'rewritten with the problems pointed out, and marked to be checked again');
   await page.locator('#story-manager-root >> .x').click().catch(() => {});
 
   console.log('40) Pins wait for the story AI to finish; the newest replies are held back until newer ones follow');

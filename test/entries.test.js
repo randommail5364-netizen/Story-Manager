@@ -19,9 +19,9 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0];
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries };')();
+const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0];
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -209,6 +209,13 @@ test('messages that only share a number (it can start again) are all kept', () =
   const m = (id, index, version, t, role) => ({ id, index, version, t, role, text: id });
   const out = lib.latestVersions([m('u1', 0, 0, 1, 'user'), m('a1', 1, 0, 2, 'assistant'), m('u2', 0, 0, 3, 'user'), m('a2', 1, 0, 4, 'assistant'), m('a2b', 1, 1, 5, 'assistant')]);
   assert.deepStrictEqual(out.map((x) => x.id), ['u1', 'a1', 'u2', 'a2b']);
+});
+
+test('the bot\'s own thinking is kept out of entries', () => {
+  const t = 'Looking at the example in the initial knowledge base: they updated Karina\'s condition with an "add" and changed it from "trembling" to "sore". But they didn\'t rewrite the entire entry.\nThey used "add" for the new condition.\nSo I think we can do:\n- Whereabouts: Winter\'s bedroom\n- Mood: I think she is calm (Winter said so)';
+  assert.strictEqual(lib.dropReasoning(t), '- Whereabouts: Winter\'s bedroom\n- Mood: I think she is calm (Winter said so)');
+  const r = lib.applyUpdates([{ name: 'Winter', kind: 'character', aliases: [], text: '- Age 24' }], [{ name: 'Winter', aliases: [], add: true, text: t }], []);
+  assert.strictEqual(r.entries[0].text, '- Age 24\n- Whereabouts: Winter\'s bedroom\n- Mood: I think she is calm (Winter said so)');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

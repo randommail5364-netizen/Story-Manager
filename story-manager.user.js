@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.7
+// @version      3.10.8
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -645,12 +645,12 @@
       if (chat.version < 3) await migrate(chat);
       if (tidy(chat).length) await saveChat(chat);
       // Older versions could save a looping answer; clean it up once.
-      if ((chat.repaired || 0) < 1) {
+      if ((chat.repaired || 0) < 2) {
         const before = JSON.stringify([chat.memory, chat.entries, chat.log]).length;
         const changed = repairChat(chat);
-        chat.repaired = 1;
+        chat.repaired = 2;
         await saveChat(chat);
-        if (changed) toast('Removed ' + Math.round((before - JSON.stringify([chat.memory, chat.entries, chat.log]).length) / 1000) + 'k characters of repeated text from this chat\'s memory.');
+        if (changed) toast('Removed ' + Math.round((before - JSON.stringify([chat.memory, chat.entries, chat.log]).length) / 1000) + 'k characters of repeated text and bot notes from this chat\'s memory.');
       }
       return chats[id];
     }
@@ -1451,6 +1451,7 @@
       '- EVERY named character gets an entry, including the user\'s character and side characters, even if they only appear briefly. List them all in CAST.',
       '- Places, groups and lore get an entry when the story keeps coming back to them. Items get an entry only when they are important to the plot over several scenes (e.g. a weapon, a gift, an heirloom, a key); never for props, clothing or objects used within a scene.',
       '- A character entry covers: who they are; appearance, clothing and distinguishing features; personality, mannerisms and how they talk; abilities; likes, dislikes and boundaries; backstory; their relationship with each other character and the moments that shaped it; feelings; current condition, injuries and whereabouts; what they carry or own; goals, promises and secrets (and who knows them); nicknames and running jokes. Be detailed and specific, with bullet points.',
+      CHARACTER_LAYOUT,
       '- Length: main characters ' + detail().mainChar + ' characters each, growing as the story reveals more; side characters and places as long as their facts need. Record specifics, not general impressions.',
       '- Every FACT in the new events must end up in the right entry or story section.',
       '- Header format: === ENTRY: Name | kind | aliases: other names, nicknames, titles === where kind is character, place, item, group or lore. Aliases are every other way the story refers to it.',
@@ -1523,10 +1524,19 @@
   }
 
   // Longer summaries mean longer answers, so fewer replies fit in one request.
+  // How a character entry is laid out, so it stays organised and detailed.
+  const CHARACTER_LAYOUT = '- Lay out a COMPLETE character entry under these headings, in this order, leaving out headings with nothing known: ' +
+    '### Basics (full name, age, role, what they are) · ### Appearance (body, face, hair, eyes, height, build, scars, tattoos, usual and current clothing) · ' +
+    '### Personality & Voice (traits, habits, mannerisms, how they talk, typical phrases) · ### Abilities & Skills · ### Likes, Dislikes & Boundaries · ' +
+    '### Backstory · ### Relationships (one bullet per other character: what they are to each other, how they feel, the key moments between them, in order) · ' +
+    '### Key Moments (the important things that happened to or because of them, in order, with specifics) · ### Current State (mood, condition, injuries, clothing, whereabouts, what they hold) · ' +
+    '### Goals, Promises & Secrets (and who knows each secret). In "add" updates, start each bullet with its topic, e.g. "- Relationships – Karina: …" or "- Current State: …". ' +
+    'Be concrete: exact names, numbers, words said, places and objects, not vague impressions like "they grew closer".';
+
   const DETAIL = {
     standard: { label: 'Standard', logMin: 300, logShare: 0.15, logMax: 1500, perChunk: 8, mainChar: '800–1,500' },
-    detailed: { label: 'Detailed', logMin: 700, logShare: 0.3, logMax: 3000, perChunk: 5, mainChar: '1,500–3,000' },
-    maximum: { label: 'Maximum', logMin: 1200, logShare: 0.5, logMax: 5000, perChunk: 3, mainChar: '3,000–5,000' },
+    detailed: { label: 'Detailed', logMin: 700, logShare: 0.3, logMax: 3000, perChunk: 5, mainChar: '2,000–4,000' },
+    maximum: { label: 'Maximum', logMin: 1200, logShare: 0.5, logMax: 5000, perChunk: 3, mainChar: '4,000–8,000' },
   };
   function detail() {
     return DETAIL[settings.detail] || DETAIL.detailed;
@@ -1578,16 +1588,26 @@
 
   // Cleans repeated text out of a chat's saved memory. Returns true if anything changed.
   function repairChat(chat) {
-    let changed = false;
-    const fix = (t) => { const c = squashRepeats(t); if (c !== t) changed = true; return c; };
+    const was = JSON.stringify([chat.memory, chat.entries, chat.log]);
+    const fix = (t) => squashRepeats(t);
     chat.memory = fix(chat.memory);
-    for (const e of chat.entries) e.text = fix(e.text);
+    for (const e of chat.entries) e.text = fix(dropReasoning(e.text));
+    chat.memory = fix(chat.memory.split('\n').some((l) => REASONING_RE.test(l) || REASONING_WORDS_RE.test(l)) ? dropReasoning(chat.memory) : chat.memory);
     for (const e of chat.log) e.text = fix(e.text);
-    return changed;
+    return JSON.stringify([chat.memory, chat.entries, chat.log]) !== was;
+  }
+
+  // Some bots write their thinking into the answer ("Looking at the example…
+  // So I think we can do:"). Those lines are not facts about the story.
+  const REASONING_RE = /^\s*(looking at|so,? i think|i think we|i think i|let me|let's|wait[,.]|hmm|okay,? so|ok,? so|alright,? so|now,? i|we (need|should|can|could|must)\b|i('ll| will| need| should| can| must)\b|first,? i|the (user|instructions?|example|task|knowledge base|entry format|format)\b|they (used|didn't|did not|updated|changed|want)|but they|this (means|entry|update)|actually,|note:? (that )?(the|i|we))/i;
+  const REASONING_WORDS_RE = /knowledge base|the example|"add"|\badd mode\b|=== ?entry|rewrite the (entire|whole) entry|the instructions/i;
+  function dropReasoning(t) {
+    const text = String(t || '').replace(/<think(ing)?>[\s\S]*?<\/think(ing)?>/gi, '');
+    return text.split('\n').filter((l) => !(REASONING_RE.test(l) || REASONING_WORDS_RE.test(l))).join('\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
   function cleanOutput(t) {
-    return String(t || '').replace(/^```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/i, '').replace(MEM_BLOCK_RE, '').trim();
+    return String(t || '').replace(/<think(ing)?>[\s\S]*?<\/think(ing)?>/gi, '').replace(/^```[a-z]*\s*\n?/i, '').replace(/\n?```\s*$/i, '').replace(MEM_BLOCK_RE, '').trim();
   }
 
   function formatEntries(entries) {
@@ -1797,6 +1817,8 @@
     const refused = [];
     const skip = new Set((ignored || []).map((n) => n.toLowerCase()));
     for (const u of updates) {
+      u.text = dropReasoning(u.text);
+      if (!u.text) continue;
       // Entries the user deleted stay deleted.
       if ([u.name].concat(u.aliases).some((n) => skip.has(n.toLowerCase()))) continue;
       const e = findEntry(entries, u.name) || u.aliases.map((a) => findEntry(entries, a)).find(Boolean);
@@ -2276,6 +2298,81 @@
   // "Check for missing facts": every summary's facts not checked yet, in
   // batches, against the entries and story.
   const CHECK_CHARS = 8000;
+  // Writes one entry again, complete and organised, from everything the
+  // summaries say about it (in parts, if there is a lot). Nothing the entry
+  // already says is dropped: an answer that is clearly shorter is not used.
+  async function rewriteEntry(id, name) {
+    const chat = await getChat(id, true);
+    const entry = findEntry(chat.entries, name);
+    if (!entry || busy[id]) return 'skipped';
+    const keys = entryKeys(entry).map((k) => k.toLowerCase()).filter((k) => k.length > 1);
+    const mentions = chat.log.filter((e) => keys.some((k) => (e.text + '\n' + (e.facts || '')).toLowerCase().includes(k)));
+    const parts = [];
+    let cur = '';
+    for (const e of mentions) {
+      const t = '[R' + (chat.log.indexOf(e) + 1) + '] ' + e.text + (e.facts ? '\nFACTS: ' + e.facts : '');
+      if (cur && cur.length + t.length > CHUNK_CHARS) { parts.push(cur); cur = ''; }
+      cur += (cur ? '\n\n' : '') + t;
+    }
+    if (cur || !parts.length) parts.push(cur || '(no summaries mention them)');
+    busy[id] = true;
+    keepAwake(true);
+    stopRequested[id] = false;
+    activeChatId = id;
+    setStatus();
+    const before = snapshot(chat);
+    progress[id] = { done: 0, total: parts.length, step: 'Starting…' };
+    renderPanel();
+    const t0 = Date.now();
+    try {
+      const kind = entry.kind || 'character';
+      for (let i = 0; i < parts.length; i++) {
+        checkStop();
+        setStep(id, 'Writing ' + entry.name + ' in full detail (part ' + (i + 1) + ' of ' + parts.length + ')…');
+        const user = 'STORY:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
+          'THE ENTRY SO FAR:\n<<<\n' + formatEntries([entry]) + '\n>>>\n\n' +
+          'STORY EVENTS THAT MENTION ' + entry.name.toUpperCase() + ' (part ' + (i + 1) + ' of ' + parts.length + '):\n<<<\n' + parts[i] + '\n>>>\n\n' +
+          'ONE ENTRY ONLY: write the entry for ' + entry.name + ' again, COMPLETE, as "=== ENTRY: ' + entry.name + ' | ' + kind + ' | aliases: … ===". ' +
+          'Keep every fact the entry already has (reword and reorganise it, but drop nothing that is still true), fix anything the events show is out of date, ' +
+          'remove anything that is not a fact about ' + entry.name + ' (notes, reasoning, instructions), and add every new detail about ' + entry.name + ' from the events. ' +
+          (kind === 'character' ? 'Main characters can be long: detail matters more than length.' : '') + ' Output only that one entry.';
+        const out = cleanOutput(await callLLM(updateSystem(), user));
+        const u = parseKeeperAnswer(out, []).updates.find((x) => keys.includes(x.name.toLowerCase()) || x.aliases.some((a) => keys.includes(a.toLowerCase())));
+        const text = u && dropReasoning(u.text);
+        if (text && text.length >= dropReasoning(entry.text).length * 0.8) {
+          entry.text = text;
+          for (const a of u.aliases) if (!entryKeys(entry).some((k) => k.toLowerCase() === a.toLowerCase())) entry.aliases.push(a);
+          entry.updated = Date.now();
+        }
+        progress[id].done++;
+        await saveChat(chat);
+        renderPanel();
+      }
+      const grew = entry.text.length - before.entries.find((e) => e.name === entry.name).text.length;
+      logJob(chat, { kind: 'check', label: 'Wrote ' + entry.name + ' in full detail (' + mentions.length + ' replies, ' + (grew >= 0 ? '+' : '') + grew + ' characters)', ok: true, ms: Date.now() - t0 });
+      if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) chat.history = [before].concat(chat.history).slice(0, 5);
+      await saveChat(chat);
+      await refreshMemoryMessage(chat);
+      toast('Wrote ' + entry.name + ' in full detail from ' + mentions.length + ' replies.');
+      return 'done';
+    } catch (e) {
+      if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) chat.history = [before].concat(chat.history).slice(0, 5);
+      await saveChat(chat);
+      if (e.stopped) { toast('Stopped. What was written is kept.'); return 'stopped'; }
+      logJob(chat, { kind: 'check', label: 'Writing ' + entry.name + ' in full detail', ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) });
+      toast('Could not write ' + entry.name + ' in full: ' + (e.message || e), true);
+      return 'failed';
+    } finally {
+      busy[id] = false;
+      if (!anyBusy()) keepAwake(false);
+      stopRequested[id] = false;
+      if (activeChatId === id) activeChatId = null;
+      delete progress[id];
+      setStatus();
+      renderPanel(true);
+    }
+  }
+
   async function runFactCheck(id, all) {
     const chat = await getChat(id, true);
     if (busy[id]) return 'skipped';
@@ -3588,7 +3685,12 @@
       el('label', {}, 'Also known as (comma-separated)'), aliases,
       el('label', {}, 'Details'), text,
       el('div', { class: 'row' }, always, el('label', {}, 'Always send (and keep on Rebuild)')),
-      el('div', { class: 'btns' }, del));
+      el('div', { class: 'btns' }, del, chat ? el('button', { class: 'btn', onclick: async () => {
+        if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+        if (!confirm('Write "' + e.name + '" again in full detail, from every reply that mentions them? Nothing it already says is dropped. This takes a few memory-keeper requests. (Unsaved edits to this entry are lost.)')) return;
+        e.open = true;
+        rewriteEntry(chat.id, e.name);
+      } }, 'Write in full detail') : null));
     return {
       node,
       apply() {

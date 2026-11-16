@@ -133,6 +133,10 @@ async function main() {
     if (/ENTRIES ONLY/.test(input) && asked) {
       return asked[1].split(',').map((name) => '=== ENTRY: ' + name.trim() + ' | character ===\n- ' + name.trim() + ' is a member of the group.').join('\n');
     }
+    if (/ONE ENTRY ONLY/.test(input)) {
+      const old = (input.match(/THE ENTRY SO FAR:\n<<<\n=== ENTRY: Mira[^\n]*\n([\s\S]*?)\n>>>/) || [])[1] || '';
+      return 'Looking at the example, I think we can do:\n=== ENTRY: Mira | character | aliases: the healer ===\n### Basics\n' + old + '\n### Key Moments\n- Rewritten in full detail.';
+    }
     if (/JOB: CHAPTER/.test(input)) {
       return '=== CHAPTER: Chapter ' + n + ' by the river ===\nMira and Ash travelled on together' + tag + ', faced the hunters and grew closer; written in update ' + n + '.';
     }
@@ -966,6 +970,21 @@ async function main() {
   check(checked.log.filter((e) => e.checked).length === withFacts && /Checked the facts of replies 1–/.test(checked.jobs.find((j) => j.kind === 'check').label + checked.jobs.map((j) => j.label).join()),
     'all ' + withFacts + ' summaries marked as checked; recorded in Activity');
   check(/Facts checked: \d+ of \d+/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel shows how many facts are checked');
+
+  console.log('34b) "Write in full detail" rewrites one entry from every reply that mentions it, keeping what it had');
+  const callsBefore34b = llmCalls.length;
+  await page.locator('#story-manager-root >> summary', { hasText: /^Mira · / }).click();
+  page.once('dialog', (d) => d.accept());
+  await page.locator('#story-manager-root >> details[open] >> text=Write in full detail').click();
+  await waitFor(async () => /Rewritten in full detail/.test(((await keyNow()).entries.find((e) => e.name === 'Mira') || {}).text || ''), 60000, 'entry rewrite');
+  await settle();
+  const after34b = await keyNow();
+  const mira34b = after34b.entries.find((e) => e.name === 'Mira');
+  const asks = llmCalls.slice(callsBefore34b).filter((c) => /ONE ENTRY ONLY/.test(c));
+  check(asks.length >= 1 && asks.every((c) => /\[R1\] /.test(c)), asks.length + ' request(s) with the replies that mention Mira');
+  check(mira34b.text.includes(mira34) && /^### Basics/.test(mira34b.text) && !/Looking at|I think we/.test(mira34b.text) && mira34b.aliases.includes('the healer'),
+    'entry rewritten and organised, old facts kept, no bot notes');
+  check(after34b.jobs.some((j) => /Wrote Mira in full detail/.test(j.label)), 'recorded in Activity');
 
   console.log('35) A chat that got too long for the AI carries on in a new chat, with its memory');
   await page.evaluate(() => {

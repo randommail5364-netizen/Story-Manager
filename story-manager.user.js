@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.16.0
+// @version      3.17.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1939,7 +1939,34 @@
     if (lines.length) chat.memory = applySections(chat.memory, [{ title: 'Current Scene', add: true, text: lines.join('\n') }]);
   }
 
+  // A block inside an entry that is headed by another entry's name
+  // ("Ningning:", "**Ningning**", "### Ningning") belongs to that entry: the
+  // keeper left out its header. Returns the updates with such blocks split off.
+  function splitMisplaced(entries, updates) {
+    const names = new Map();
+    for (const e of entries) for (const k of entryKeys(e)) if (k.length > 2) names.set(k.toLowerCase(), e.name);
+    for (const u of updates) names.set(u.name.toLowerCase(), u.name);
+    const out = [];
+    for (const u of updates) {
+      const own = new Set([u.name].concat(u.aliases || []).map((n) => n.toLowerCase()));
+      let cur = { u, lines: [] };
+      const parts = [cur];
+      for (const l of String(u.text || '').split('\n')) {
+        const h = l.trim().replace(/^#{1,4}\s*/, '').replace(/^\*\*|\*\*$/g, '').replace(/\*\*/g, '').replace(/[:\s]+$/, '').trim().toLowerCase();
+        const target = h && h.length <= 40 && !own.has(h) ? names.get(h) : null;
+        if (target) { cur = { u: { name: target, aliases: [], add: true, text: '', states: [] }, lines: [] }; parts.push(cur); continue; }
+        cur.lines.push(l);
+      }
+      for (const p of parts) {
+        p.u.text = p.lines.join('\n').trim();
+        if (p.u === u || p.u.text) out.push(p.u);
+      }
+    }
+    return out;
+  }
+
   function applyUpdates(entries, updates, ignored) {
+    updates = splitMisplaced(entries, updates);
     const refused = [];
     const skip = new Set((ignored || []).map((n) => n.toLowerCase()));
     for (const u of updates) {
@@ -2958,6 +2985,46 @@
     });
   }
 
+  // "Consolidate now": every entry that changed since it was last
+  // consolidated (or all of them), instead of 2 every few updates.
+  async function runConsolidate(id, all) {
+    const chat = await getChat(id, true);
+    const n = chat.entries.filter((e) => (all ? e.text.length > 80 : needsConsolidation(e))).length;
+    if (!n) return 'nothing';
+    let result = null;
+    const status = await withBusy(id, n, async () => {
+      const before = snapshot(chat);
+      const job = async (kind, label, fn) => {
+        const t0 = Date.now();
+        setStep(id, label + '…');
+        try {
+          const r = await fn();
+          logJob(chat, { kind, label, ok: true, ms: Date.now() - t0 });
+          progress[id].done++;
+          renderPanel();
+          return r;
+        } catch (e) {
+          if (!e.stopped) logJob(chat, { kind, label, ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) });
+          throw e;
+        }
+      };
+      try {
+        result = await consolidateEntries(chat, job, Infinity, all);
+        return 'done';
+      } catch (e) {
+        if (e.stopped) { toast('Stopped. What was consolidated is kept.'); return 'stopped'; }
+        toast('Consolidating failed: ' + (e.message || e), true);
+        return 'failed';
+      } finally {
+        tidy(chat);
+        if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) chat.history = [before].concat(chat.history).slice(0, 5);
+        await saveChat(chat);
+      }
+    });
+    if (status === 'done' && result) toast('Consolidated ' + result.done + ' entr' + (result.done === 1 ? 'y' : 'ies') + (result.moved ? '; moved ' + result.moved + ' facts to the characters they are about' : '') + '.');
+    return status;
+  }
+
   async function runFactCheck(id, all) {
     const chat = await getChat(id, true);
     if (busy[id]) return 'skipped';
@@ -3084,36 +3151,76 @@
   function needsConsolidation(e) {
     return (e.updated || 0) > (e.consolidated || 0) && e.text.length > 400;
   }
-  async function consolidateEntries(chat, job, max = CONSOLIDATE_MAX) {
-    const todo = chat.entries.filter(needsConsolidation).sort((a, b) => (a.consolidated || 0) - (b.consolidated || 0)).slice(0, max);
+  // The summaries that mention an entry, newest last, as evidence for who did
+  // what (at most `size` characters, the newest first in).
+  function evidenceFor(chat, e, size) {
+    const keys = entryKeys(e).filter((k) => k.length > 2);
+    const hits = chat.log.filter((x) => keys.some((k) => mentions(x.text + '\n' + (x.facts || ''), k)));
+    const out = [];
+    let n = 0;
+    for (let i = hits.length - 1; i >= 0; i--) {
+      const t = '[S' + (chat.log.indexOf(hits[i]) + 1) + '] ' + hits[i].text + (hits[i].facts ? '\nFACTS: ' + hits[i].facts : '');
+      if (n + t.length > size) break;
+      out.unshift(t);
+      n += t.length;
+    }
+    return out.join('\n\n');
+  }
+
+  async function consolidateEntries(chat, job, max = CONSOLIDATE_MAX, all) {
+    const todo = chat.entries.filter((e) => (all ? e.text.length > 80 : needsConsolidation(e)))
+      .sort((a, b) => (a.consolidated || 0) - (b.consolidated || 0)).slice(0, max);
+    let moved = 0;
     for (const e of todo) {
       checkStop();
-      const r = await job('update', 'Consolidated ' + e.name + ' (contradictions settled, duplicates merged)', async () => {
+      const others = chat.entries.filter((x) => x !== e && (x.kind || 'character') === 'character').map((x) => x.name);
+      const r = await job('update', 'Consolidated ' + e.name + ' (contradictions settled, duplicates merged, misplaced facts moved)', async () => {
+        const evidence = evidenceFor(chat, e, 14000);
         const user = 'STORY NOW:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
+          (evidence ? 'WHAT HAPPENED (summaries of the replies that mention ' + e.name + ', oldest first; use them to tell who did what, and which version is the latest):\n<<<\n' + evidence + '\n>>>\n\n' : '') +
           'THE ENTRY:\n<<<\n' + formatEntries([e]) + '\n>>>\n\n' +
+          (others.length ? 'OTHER CHARACTERS: ' + others.join(', ') + '\n\n' : '') +
           'JOB: CONSOLIDATE. Write this one entry again, COMPLETE, with its normal header (kind: character, place, item, group or lore — correct it if it is wrong). ' +
-          'Its lines were added over time, so it may contradict itself or repeat itself. Keep EVERY fact that is still true. Where two lines disagree, the later one is true now: ' +
-          'keep it, and keep the older one only as history if it matters ("was …, until …"). Merge repeated facts into one line. Put each fact under the right heading. ' +
+          'Its lines were added over time, so it may contradict itself, repeat itself, or hold facts about someone else. Keep EVERY fact that is still true. ' +
+          'Where two lines disagree, the later one is true now (WHAT HAPPENED shows the order): keep it, and keep the older one only as history if it matters ("was …, until …"). ' +
+          'Merge repeated facts into one line. Put each fact under the right heading (including any under "Recovered facts"). ' +
           'Do not describe the current moment (where they are, what they are doing or wearing right now): that belongs in the Current Scene. ' +
-          'Remove anything that is not a fact about ' + e.name + '. Output only that one entry.';
+          'A line about what ANOTHER character did, owns, chose or said (check WHAT HAPPENED) does not belong here: after the entry, write it under "=== MOVE: Their Name ===", one block per character. ' +
+          'Remove anything that is not a fact. Output only that one entry and any MOVE blocks.';
         const out = cleanOutput(await callLLM(updateSystem(), user));
         checkStop();
+        // MOVE blocks: facts for other entries.
+        const moves = [];
+        const body = out.replace(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*MOVE[^\S\n]*:[^\S\n]*([^\n=]+?)[^\S\n]*=+[^\n]*\n([\s\S]*?)(?=^[^\S\n]*[*#_]*[^\S\n]*=+|(?![\s\S]))/gim, (m, name, text) => { moves.push({ name: name.trim(), text: text.trim() }); return ''; });
         const keys = entryKeys(e).map((k) => k.toLowerCase());
-        return parseKeeperAnswer(out, []).updates.find((u) => !u.add && (keys.includes(u.name.toLowerCase()) || u.aliases.some((a) => keys.includes(a.toLowerCase()))));
+        const u = parseKeeperAnswer(body, []).updates.find((x) => !x.add && (keys.includes(x.name.toLowerCase()) || x.aliases.some((a) => keys.includes(a.toLowerCase()))));
+        return u ? Object.assign(u, { moves }) : null;
       });
       e.consolidated = Date.now();
-      // Consolidating removes repeats, but it must not lose facts.
-      const was = splitStates(dropJunk(e.text)).text.length;
-      if (r && r.text && r.text.length >= was * 0.7) {
+      // Consolidating removes repeats, but it must not lose facts (moved ones count).
+      const was = splitStates(dropJunk(e.text, true)).text.length;
+      const moves = (r && r.moves || []).map((m) => ({ m, to: findEntry(chat.entries, m.name) })).filter((x) => x.to && x.to !== e && structuredOnly(x.m.text));
+      const movedLen = moves.reduce((k, x) => k + x.m.text.length, 0);
+      // MOVE blocks for someone without an entry stay here.
+      const unplaced = (r && r.moves || []).filter((m) => !moves.some((x) => x.m === m)).map((m) => structuredOnly(m.text)).filter(Boolean);
+      if (r && unplaced.length) r.text = r.text.replace(/\s+$/, '') + '\n' + unplaced.join('\n');
+      if (r && r.text && r.text.length + movedLen >= was * 0.7) {
         e.text = r.text;
         if (KIND_ORDER.includes(String(r.kind || '').toLowerCase())) e.kind = r.kind.toLowerCase();
         for (const a of r.aliases) if (!entryKeys(e).some((k) => k.toLowerCase() === a.toLowerCase())) e.aliases.push(a);
         e.consolidated = e.updated = Date.now() + 1;
+        for (const { m, to } of moves) {
+          to.text = to.text.replace(/\s+$/, '') + '\n### Moved here from ' + e.name + '\n' + structuredOnly(m.text);
+          to.updated = Date.now();
+          moved += m.text.split('\n').filter((l) => l.trim()).length;
+        }
+        if (moves.length) logJob(chat, { kind: 'update', label: 'Moved facts from ' + e.name + ' to ' + moves.map((x) => x.to.name).join(', ') + ' (they were about them)', ok: true, ms: 0 });
       } else if (r && r.text) {
         logJob(chat, { kind: 'update', label: 'Kept ' + e.name + ' as it was: the consolidated version was much shorter (' + r.text.length + ' of ' + was + ' characters)', ok: true, ms: 0 });
       }
       await saveChat(chat);
     }
+    return { done: todo.length, moved };
   }
 
   async function writeChapters(chat, job) {
@@ -4535,6 +4642,16 @@
           if (status === 'nothing') toast('No chapters with summaries to check.');
         } }, 'Check chapters'),
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: factCheck }, 'Check for missing facts'),
+        el('button', { class: 'btn', disabled: isBusy || !chat.entries.length, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          await save(true);
+          const n = chat.entries.filter(needsConsolidation).length;
+          const all = !n;
+          const m = all ? chat.entries.filter((e) => e.text.length > 80).length : n;
+          if (!confirm((all ? 'Every entry is consolidated. Consolidate all ' + m + ' again' : 'Consolidate ' + m + ' entr' + (m === 1 ? 'y' : 'ies') + ' now') +
+            ': settle contradictions, merge repeats, file "Recovered facts", and move facts that are about someone else to them? One request per entry (about ' + m + ').')) return;
+          await runConsolidate(chat.id, all);
+        } }, 'Consolidate now'),
         settings.githubToken && settings.githubToken.trim() ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => { await save(true); await runRecover(chat); } }, 'Recover lost facts') : null,
         chat.log.some((e) => !e.facts && e.nofacts !== 'none') ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }

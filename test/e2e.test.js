@@ -155,7 +155,10 @@ async function main() {
       const m = input.match(/THE ENTRY:\n<<<\n=== ENTRY: ([^|=\n]+?) \| (\w+)[^\n]*\n([\s\S]*?)\n>>>/);
       if (!m) return 'OK';
       const lines = [...new Set(m[3].split('\n').filter((l) => l.trim()))];
-      return '=== ENTRY: ' + m[1] + ' | ' + m[2] + ' ===\n' + lines.join('\n') + '\n- Consolidated.';
+      // "MISPLACED Name:" lines are about someone else: moved to them.
+      const moves = lines.filter((l) => /MISPLACED \w+:/.test(l));
+      return '=== ENTRY: ' + m[1] + ' | ' + m[2] + ' ===\n' + lines.filter((l) => !moves.includes(l)).join('\n') + '\n- Consolidated.' +
+        moves.map((l) => { const x = l.match(/MISPLACED (\w+): (.*)/); return '\n=== MOVE: ' + x[1] + ' ===\n- ' + x[2]; }).join('');
     }
     if (/JOB: CORRECT/.test(input)) {
       return '=== ENTRY: Ash | character ===\n- Ash is a dragon. Corrected after redo.';
@@ -1390,6 +1393,29 @@ async function main() {
   await waitFor(async () => (await keyNow()).jobs.some((j) => new RegExp('Rewrote chapter ' + (flaggedCh[1] + 1) + ' from its summaries').test(j.label)), 60000, 'chapter rewritten');
   const re39 = llmCalls.slice(calls39h).find((c) => /JOB: CHAPTER/.test(c));
   check(re39 && /FOUND THESE PROBLEMS[\s\S]*Ash, not Mira/.test(re39) && (await keyNow()).chapters[flaggedCh[1]].needsCheck, 'rewritten with the problems pointed out, and marked to be checked again');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+
+  console.log('39e2) "Consolidate now" files every changed entry, and moves facts about someone else to them');
+  await page.evaluate(() => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    const e = c.entries.find((x) => x.name === 'Ash');
+    e.text += '\n- MISPLACED Mira: Packed her herb satchel for the trip.';
+    e.updated = Date.now() + 5000;
+    localStorage.setItem(key, JSON.stringify(c));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Consolidate now').click();
+  await waitFor(async () => /Packed her herb satchel/.test((await keyNow()).entries.find((x) => x.name === 'Mira').text), 60000, 'fact moved to Mira');
+  await settle();
+  const k39e2 = await keyNow();
+  check(!/herb satchel/.test(k39e2.entries.find((x) => x.name === 'Ash').text) && /### Moved here from Ash\n- Packed her herb satchel for the trip\./.test(k39e2.entries.find((x) => x.name === 'Mira').text),
+    'the fact left Ash and went to Mira');
+  check(k39e2.jobs.some((j) => /Moved facts from Ash to Mira/.test(j.label)) && llmCalls.some((c) => /JOB: CONSOLIDATE/.test(c) && /WHAT HAPPENED \(summaries/.test(c) && /OTHER CHARACTERS: /.test(c)),
+    'the keeper got the summaries as evidence; recorded in Activity');
   await page.locator('#story-manager-root >> .x').click().catch(() => {});
 
   console.log('40) Pins wait for the story AI to finish; the newest replies are held back until newer ones follow');

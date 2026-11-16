@@ -863,7 +863,6 @@ async function main() {
     c.memory = '## Story So Far\n- update 1 (via MiniApps bot)\n- She moaned his name again and again. ' + 'She moaned his name again and again. '.repeat(3000) + '\n## Current Scene\n- Mira and Ash rest by the river.';
     c.entries.push({ name: 'Archive', kind: 'place', aliases: [], always: false, updated: 1,
       text: Array.from({ length: 600 }, (_, i) => '- Fact ' + i + ' about shelf ' + (i * 7919 % 1000) + ' of the archive.').join('\n') });
-    delete c.repaired;
     localStorage.setItem(key, JSON.stringify(c));
   });
   await page.reload();
@@ -1128,6 +1127,9 @@ async function main() {
   check(cut37 && /too long/.test(cut37.error) && cut37.size === 120000 && !cut37.left.length && (await keyNow()).jobs.some((j) => /MiniApps refused the pinned memory message/.test(j.label)),
     'what MiniApps said is recorded, with what the smaller message holds; in Activity');
   // A message that had to leave things out: the panel says what was kept and what was not.
+  // (Updates still running would rewrite the pinned message, and this state with it.)
+  await settle();
+  await page.waitForTimeout(3000);
   await page.evaluate(() => {
     const key = 'smx:chat:' + location.pathname.split('/c/')[1];
     const c = JSON.parse(localStorage.getItem(key));
@@ -1145,6 +1147,28 @@ async function main() {
   await page.getByText('Try the full size again').click();
   await waitFor(() => edits.length > edits37c, 30000, 'retried at full size');
   check(await page.evaluate(() => localStorage.getItem('smx:memoryMsgSize')) === '0' && !(await keyNow()).memoryMsgCut, '"Try the full size again" pins everything again');
+  await page.locator('#story-manager-root >> .x').click();
+
+  console.log('37c) Any change to the memory reaches the pinned message on its own; keeper notes are cleaned whenever the memory is tidied');
+  await waitFor(async () => !(await keyNow()).memoryMsgCut && (await keyNow()).memoryMsgSynced, 15000, 'pinned message synced');
+  const edits37d = edits.length;
+  await page.evaluate(() => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    const e = c.entries.find((x) => x.name === 'Mira');
+    e.text += '\n- Current State: By the river.\nBut note: we don\'t have her appearance. So we output only the new entry.\n- Current State: Asleep in the tent (presumed).\n- Current State: Cooking by the fire.';
+    localStorage.setItem(key, JSON.stringify(c));
+  });
+  await page.reload();
+  await waitFor(() => edits.length > edits37d, 30000, 'the pinned message updated with no update or Save');
+  const mira37d = (await keyNow()).entries.find((x) => x.name === 'Mira').text;
+  const pinned37d = newConv.messages.find((x) => x.id === carrier).elements[0].text;
+  check(!/But note|presumed|By the river/.test(mira37d) && /Current State: Cooking by the fire\.$/.test(mira37d), 'notes, guesses and old Current State lines cleaned when the story was opened');
+  check(pinned37d.includes('Current State: Cooking by the fire.') && !/But note|presumed/.test(pinned37d), 'the pinned message followed the cleaned memory on its own');
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Diagnostics', { exact: true }).click();
+  await waitFor(async () => /Pinned memory message: [^\n]*up to date/.test(await page.locator('#story-manager-root >> textarea.diag').inputValue()), 15000, 'Diagnostics: up to date');
+  check(true, 'Diagnostics says the pinned message is up to date');
   await page.locator('#story-manager-root >> .x').click();
 
   console.log('38) A pinned memory message that was deleted or regenerated is replaced by the next one');

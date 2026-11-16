@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.11.1
+// @version      3.12.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -656,15 +656,8 @@
     if (saved) {
       const chat = chats[id] = Object.assign(newChat(id), { version: 0 }, saved);
       if (chat.version < 3) await migrate(chat);
+      // Stories saved by older versions get the current cleaning rules too.
       if (tidy(chat).length) await saveChat(chat);
-      // Older versions could save a looping answer; clean it up once.
-      if ((chat.repaired || 0) < 3) {
-        const before = JSON.stringify([chat.memory, chat.entries, chat.log]).length;
-        const changed = repairChat(chat);
-        chat.repaired = 3;
-        await saveChat(chat);
-        if (changed) toast('Removed ' + Math.round((before - JSON.stringify([chat.memory, chat.entries, chat.log]).length) / 1000) + 'k characters of repeated text, bot notes, guesses and out-of-date "Current State" lines from this chat\'s memory.');
-      }
       return chats[id];
     }
     if (!create) return null;
@@ -709,6 +702,20 @@
     await Store.set('chat:' + chat.id, chat);
     publishInjectMap();
     if (!fromSync) scheduleSync();
+    schedulePinned(chat);
+  }
+
+  // The pinned memory message always follows the memory: whatever changed it
+  // (an update, a tidy-up, an edit, Undo, a sync from another device), the
+  // message is rewritten soon after, once no update is running.
+  const pinnedTimers = {};
+  function schedulePinned(chat, delay = 4000) {
+    if (!chat.pinnedMemoryId || !settings.memoryMessage || !settings.pinMemory) return;
+    clearTimeout(pinnedTimers[chat.id]);
+    pinnedTimers[chat.id] = setTimeout(() => {
+      if (busy[chat.id]) { schedulePinned(chat, 10000); return; }
+      refreshMemoryMessage(chat).catch(() => {});
+    }, delay * TIME_SCALE);
   }
 
   // ---------------------------------------------------------------------------
@@ -1618,15 +1625,22 @@
   }
 
   // Cleans repeated text out of a chat's saved memory. Returns true if anything changed.
-  function repairChat(chat) {
-    const was = JSON.stringify([chat.memory, chat.entries, chat.log]);
-    const fix = (t) => squashRepeats(t);
-    chat.memory = fix(chat.memory);
-    for (const e of chat.entries) e.text = fix(latestState(dropReasoning(e.text)));
-    for (const c of chat.chapters || []) c.text = dropReasoning(c.text);
-    chat.memory = fix(chat.memory.split('\n').some((l) => REASONING_RE.test(l) || REASONING_WORDS_RE.test(l)) ? dropReasoning(chat.memory) : chat.memory);
-    for (const e of chat.log) e.text = fix(e.text);
-    return JSON.stringify([chat.memory, chat.entries, chat.log]) !== was;
+  // The cleaning rules, applied every time the memory is tidied (cleaning
+  // twice changes nothing): the keeper's own notes and guesses go, an entry
+  // keeps only its newest "Current State", and looping text is squashed.
+  // Returns what it fixed.
+  function cleanChat(chat) {
+    const size = () => chat.memory.length + chat.entries.reduce((n, e) => n + e.text.length, 0) +
+      (chat.chapters || []).reduce((n, c) => n + c.text.length, 0) + chat.log.reduce((n, e) => n + e.text.length, 0);
+    const was = size();
+    const noted = (t) => t.split('\n').some((l) => REASONING_RE.test(l) || REASONING_WORDS_RE.test(l)) || ASIDE_RE.test(t) || GUESS_RE.test(t);
+    const clean = (t) => { ASIDE_RE.lastIndex = 0; GUESS_RE.lastIndex = 0; const n = noted(t); ASIDE_RE.lastIndex = 0; GUESS_RE.lastIndex = 0; return n ? dropReasoning(t) : t; };
+    chat.memory = squashRepeats(clean(chat.memory));
+    for (const e of chat.entries) e.text = squashRepeats(latestState(clean(e.text)));
+    for (const c of chat.chapters || []) c.text = squashRepeats(clean(c.text));
+    for (const e of chat.log) e.text = squashRepeats(e.text);
+    const gone = was - size();
+    return gone > 0 ? ['removed ' + gone.toLocaleString() + ' characters of keeper notes, guesses, old "Current State" lines or repeated text'] : [];
   }
 
   // Some bots write their thinking into the answer ("Looking at the example…
@@ -2213,7 +2227,7 @@
 
   // Runs organize() and records what it fixed in the Activity list.
   function tidy(chat) {
-    const fixes = organize(chat);
+    const fixes = cleanChat(chat).concat(organize(chat));
     chat.checked = Date.now();
     if (fixes.length) logJob(chat, { kind: 'check', label: 'Tidied the memory: ' + fixes.slice(0, 8).join('; ') + (fixes.length > 8 ? '; …' : ''), ok: true, ms: 0 });
     return fixes;
@@ -3312,8 +3326,25 @@
     return { full, shortened, left, chapters: chat.chapters.length, chFull, logs: logs.length, logIn };
   }
 
+  const refreshing = {};
   async function refreshMemoryMessage(chat) {
     if (!settings.memoryMessage || !settings.pinMemory || !chat.pinnedMemoryId) return;
+    // One at a time per chat; a change meanwhile is picked up right after.
+    if (refreshing[chat.id]) { refreshing[chat.id].again = true; return; }
+    refreshing[chat.id] = {};
+    try {
+      await refreshMemoryMessageNow(chat);
+    } finally {
+      const again = refreshing[chat.id].again;
+      delete refreshing[chat.id];
+      if (again) schedulePinned(chat, 1000);
+    }
+  }
+  function pinnedUpToDate(chat) {
+    const text = memoryMessageText(chat);
+    return !text || (chat.memoryMsgHash === hashText(text) && chat.memoryMsgSynced);
+  }
+  async function refreshMemoryMessageNow(chat) {
     let text = memoryMessageText(chat);
     if (!text) return;
     if (chat.memoryMsgHash === hashText(text) && chat.memoryMsgSynced) return;
@@ -3874,7 +3905,8 @@
         chatErrors[chat.id] && TOO_LONG_RE.test(chatErrors[chat.id].error)
           ? el('div', { class: 'error' }, '⚠ This chat has become too long for the AI (MiniApps sends the whole chat every time). Tap "Continue in a new chat" below to carry the story on in a fresh chat.') : null,
         memoryInMessage(chat)
-          ? el('div', {}, '📌 The memory lives in one pinned message, updated in place' + (chat.memoryMsgAt ? ' (' + ago(chat.memoryMsgAt) + ')' : '') + '. The AI keeps it however long the chat gets, and new messages carry no memory.')
+          ? el('div', {}, '📌 The memory lives in one pinned message, updated in place' + (chat.memoryMsgAt ? ' (' + ago(chat.memoryMsgAt) + ')' : '') +
+            (pinnedUpToDate(chat) ? '' : ' — it is behind the memory and will be updated as soon as the story AI is idle') + '. The AI keeps it however long the chat gets, and new messages carry no memory.')
           : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
         chat.memoryMsgError && settings.memoryMessage && !memoryInMessage(chat) ? el('div', { class: 'error' }, '⚠ Could not update the pinned memory message (' + chat.memoryMsgError + '); the memory is attached to your messages instead.') : null,
         chat.pinError && settings.pinMemory ? el('div', { class: 'error' }, '⚠ Could not pin the memory message: ' + chat.pinError) : null,
@@ -4088,6 +4120,7 @@
         ', ' + parallel() + ' at once, detail ' + settings.detail; })() : 'no chat'),
       'Pinned memory message: ' + (!settings.pinMemory ? 'off' : chat && chat.pinnedMemoryId ? chat.pinnedMemoryId.slice(0, 8) : 'none yet') +
         (chat && memoryInMessage(chat) ? ' · holds the memory (updated ' + ago(chat.memoryMsgAt || 0) + ')' : '') +
+        (chat && memoryInMessage(chat) ? (pinnedUpToDate(chat) ? ' · up to date' : ' · out of date, updates when the story AI is idle') : '') +
         (chat && chat.memoryMsgError ? ' · last update error: ' + chat.memoryMsgError : '') +
         (chat && chat.pinError ? ' · last pin error: ' + chat.pinError : ''),
       'Sync: ' + (sync.state === 'ok' ? 'last synced ' + ago(sync.at) : sync.state === 'error' ? 'error: ' + sync.error : 'off') +

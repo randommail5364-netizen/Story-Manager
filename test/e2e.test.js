@@ -141,6 +141,12 @@ async function main() {
     if (/ENTRIES ONLY/.test(input) && asked) {
       return asked[1].split(',').map((name) => '=== ENTRY: ' + name.trim() + ' | character ===\n- ' + name.trim() + ' is a member of the group.').join('\n');
     }
+    if (/JOB: CONSOLIDATE/.test(input)) {
+      const m = input.match(/THE ENTRY:\n<<<\n=== ENTRY: ([^|=\n]+?) \| (\w+)[^\n]*\n([\s\S]*?)\n>>>/);
+      if (!m) return 'OK';
+      const lines = [...new Set(m[3].split('\n').filter((l) => l.trim()))];
+      return '=== ENTRY: ' + m[1] + ' | ' + m[2] + ' ===\n' + lines.join('\n') + '\n- Consolidated.';
+    }
     if (/JOB: CORRECT/.test(input)) {
       return '=== ENTRY: Ash | character ===\n- Ash is a dragon. Corrected after redo.';
     }
@@ -1156,15 +1162,15 @@ async function main() {
     const key = 'smx:chat:' + location.pathname.split('/c/')[1];
     const c = JSON.parse(localStorage.getItem(key));
     const e = c.entries.find((x) => x.name === 'Mira');
-    e.text += '\n- Current State: By the river.\nBut note: we don\'t have her appearance. So we output only the new entry.\n- Current State: Asleep in the tent (presumed).\n- Current State: Cooking by the fire.';
+    e.text += '\n- Current State: By the river.\nBut note: we don\'t have her appearance. So we output only the new entry.\n- Current State: Asleep in the tent (presumed).\n- Loves plums.\n- Current State: Cooking by the fire.';
     localStorage.setItem(key, JSON.stringify(c));
   });
   await page.reload();
   await waitFor(() => edits.length > edits37d, 30000, 'the pinned message updated with no update or Save');
   const mira37d = (await keyNow()).entries.find((x) => x.name === 'Mira').text;
   const pinned37d = newConv.messages.find((x) => x.id === carrier).elements[0].text;
-  check(!/But note|presumed|By the river/.test(mira37d) && /Current State: Cooking by the fire\.$/.test(mira37d), 'notes, guesses and old Current State lines cleaned when the story was opened');
-  check(pinned37d.includes('Current State: Cooking by the fire.') && !/But note|presumed/.test(pinned37d), 'the pinned message followed the cleaned memory on its own');
+  check(!/But note|presumed|Current State/.test(mira37d) && /- Loves plums\.$/.test(mira37d), 'notes and guesses cleaned when the story was opened; the state left the entry, the new fact stayed');
+  check(pinned37d.includes('- Loves plums.') && !/But note|presumed|Current State/.test(pinned37d), 'the pinned message followed the cleaned memory on its own');
   await page.locator('#story-manager-root >> .fab').click();
   await page.getByText('Diagnostics', { exact: true }).click();
   await waitFor(async () => /Pinned memory message: [^\n]*up to date/.test(await page.locator('#story-manager-root >> textarea.diag').inputValue()), 15000, 'Diagnostics: up to date');
@@ -1220,7 +1226,9 @@ async function main() {
   check(!(redone39.stale || []).length && !redone39.staleFacts && /Corrected after redo/.test(redone39.entries.find((e) => e.name === 'Ash').text) &&
     redone39.jobs.some((j) => /Corrected the memory after/.test(j.label)), 'what only the old replies said is corrected; recorded in Activity');
   await page.getByText('Diagnostics', { exact: true }).click();
-  check(/summaries \(\d+ with facts, \d+ none/.test(await page.locator('#story-manager-root >> textarea.diag').inputValue()), 'Diagnostics shows which summaries have facts');
+  const diag39 = await page.locator('#story-manager-root >> textarea.diag').inputValue();
+  check(/summaries \(\d+ with facts, \d+ none/.test(diag39), 'Diagnostics shows which summaries have facts');
+  check(/Memory health: OK · \d+ entr(y|ies) waiting to be consolidated/.test(diag39), 'Diagnostics shows the memory is healthy after tidying');
 
   console.log('39b) A deleted reply inside a chapter: the chapter is written again without it');
   const inCh = redone39.log.find((e) => e.chapter != null && newConv.messages.some((x) => x.id === e.id));
@@ -1277,6 +1285,36 @@ async function main() {
   check(after39d.jobs.some((j) => /Checked the whole chat: removed 1 summary of replies that are no longer in it/.test(j.label)) &&
     llmCalls.slice(calls39d).some((c) => /JOB: CORRECT/.test(c) && c.includes(victim.text.slice(0, 50))), 'recorded in Activity, and the memory corrected for it');
   check(after39d.knownReplies === newConv.messages.filter((x) => x.origin === 'assistant').length && after39d.knownMessages === newConv.messages.length, 'reply and message counts come from the whole chat');
+
+  console.log('39e) Every few updates, entries that grew by additions are consolidated in full');
+  await page.evaluate(() => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    const e = c.entries.find((x) => x.name === 'Ash');
+    e.text = '### Basics\n- Ash is a dragon.\n- Role: messenger of the king.\n' + Array.from({ length: 24 }, (_, i) => '- Key Moments: Flew over valley number ' + i + ' at dusk.').join('\n') +
+      '\n- Ash is a dragon.\n- Role: guard of the old mill.';
+    e.updated = Date.now();
+    delete e.consolidated;
+    c.foldsSinceConsolidate = 2;
+    localStorage.setItem(key, JSON.stringify(c));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  const calls39e = llmCalls.length;
+  await waitFor(() => !newConv.generating, 8000, 'idle');
+  await page.evaluate(() => window.sendMsg('We fly on.'));
+  await waitFor(() => !newConv.generating && newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.evaluate(() => window.sendMsg('And land.'));
+  await waitFor(() => !newConv.generating && newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
+  await waitFor(() => llmCalls.slice(calls39e).some((c) => /JOB: CONSOLIDATE/.test(c) && /=== ENTRY: Ash/.test(c)), 60000, 'consolidation of Ash');
+  await settle();
+  const ash39e = (await keyNow()).entries.find((x) => x.name === 'Ash');
+  check(/- Consolidated\.$/.test(ash39e.text) && (ash39e.text.match(/Ash is a dragon/g) || []).length === 1 && ash39e.consolidated >= ash39e.updated - 5,
+    'Ash was rewritten in full: duplicates merged, marked as consolidated');
+  check((await keyNow()).jobs.some((j) => /Consolidated Ash/.test(j.label)), 'recorded in Activity');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
 
   console.log('40) Pins wait for the story AI to finish; the newest replies are held back until newer ones follow');
   await page.evaluate(() => {

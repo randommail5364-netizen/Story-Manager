@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.13.0
+// @version      3.14.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1473,6 +1473,7 @@
       'The knowledge base has STORY sections (the situation now) and ENTRIES (one per character, and per important place, item, group or piece of lore). The history of events is kept separately, in chapters; do not write it here.',
       '',
       'STORY rules:',
+      '- Every line of every entry must be a fact in the entry format ("### Heading", "- bullet", or "Label: value"). Never write your working-out (which fact goes where, what is already covered, what you will output).',
       '- ## Current Scene must describe the situation after the NEWEST event (later events override earlier ones, e.g. a punishment that was changed). Rewrite it fully each time it changes; never keep outdated parts.',
       '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries, things that must be followed up), ## World & Timeline (world rules, the date and time, how much time has passed, important background).',
       '- Output only the sections that change, each as === SECTION: Name === followed by its complete new text, keeping every fact that is still true. Leave out sections that did not change. If a section is empty, write it in full.',
@@ -1494,11 +1495,13 @@
       '- Never remove a fact unless the story changed it; then update it. When something changes, update every entry it affects (e.g. both sides of a relationship).',
       '- Never invent anything. Only record what actually happened or was stated. Never write guesses ("assumed", "presumed", "probably"): if something is not known, leave it out.',
       '- Write ONLY facts about the story. Never write notes about your task, the request, the events list, the timeline or what you will output: no "But note", "We have", "So we output".',
-      '- "Current State" (and whereabouts, mood, clothing) is what is true NOW: when it changes, write ONE new "- Current State: …" line; it replaces the old one. Never keep several.',
+      '- Where everyone is NOW lives only in ## Current Scene, never in entries: its "Where everyone is" list has one line per main character (and anyone else in the scene): "- Name: place — what they are doing, mood, what they wear". Characters not in the scene get their last known place and when. Rewrite the whole list each time; never keep old states.',
       '- Personality & Voice describes who the character is NOW, including how they have changed: when the story deepens or changes a trait, rewrite that line instead of only adding events.',
       '- For secrets, private moments, cover stories and hidden relationships, say WHO KNOWS (and who must not find out).',
       '- Use plain words for feelings and motives. Do not repeat the story\'s pet metaphors (e.g. "anchor", "sanctuary", "storm", "spark") as labels.',
       '- One person, one entry: "Ms. Choi" and "Choi" are the same entry; give a person one role and correct it when the story changes it.',
+      '- Give every NEW entry its kind in the header: character (people and animals only), place, item, group or lore. Objects such as plushies, clothes, jewellery, vehicles are items; venues and rooms are places.',
+      '- When something changes (a role, an item delivered, a plan cancelled), rewrite that line: the old version may stay only as history ("was …, until …"), never as a second current fact.',
       '',
     ].concat(RECAP_RULES, [
       '',
@@ -1567,8 +1570,9 @@
     '### Basics (full name, age, role, what they are) · ### Appearance (body, face, hair, eyes, height, build, scars, tattoos, usual and current clothing) · ' +
     '### Personality & Voice (traits, habits, mannerisms, how they talk, typical phrases) · ### Abilities & Skills · ### Likes, Dislikes & Boundaries · ' +
     '### Backstory · ### Relationships (one bullet per other character: what they are to each other, how they feel, the key moments between them, in order) · ' +
-    '### Key Moments (the important things that happened to or because of them, in order, with specifics) · ### Current State (mood, condition, injuries, clothing, whereabouts, what they hold) · ' +
-    '### Goals, Promises & Secrets (and who knows each secret). In "add" updates, start each bullet with its topic, e.g. "- Relationships – Karina: …" or "- Current State: …". ' +
+    '### Key Moments (the important things that happened to or because of them, in order, with specifics) · ' +
+    '### Goals, Promises & Secrets (and who knows each secret). In "add" updates, start each bullet with its topic, e.g. "- Relationships – Karina: …" or "- Key Moments: …". ' +
+    'Entries hold LASTING facts only: never where someone is, what they are doing, wearing or feeling at this moment — that is written once, in the Current Scene. ' +
     'Be concrete: exact names, numbers, words said, places and objects, not vague impressions like "they grew closer".';
 
   const DETAIL = {
@@ -1635,12 +1639,23 @@
     const was = size();
     const noted = (t) => t.split('\n').some((l) => REASONING_RE.test(l) || REASONING_WORDS_RE.test(l)) || ASIDE_RE.test(t) || GUESS_RE.test(t);
     const clean = (t) => { ASIDE_RE.lastIndex = 0; GUESS_RE.lastIndex = 0; const n = noted(t); ASIDE_RE.lastIndex = 0; GUESS_RE.lastIndex = 0; return n ? dropReasoning(t) : t; };
-    chat.memory = squashRepeats(clean(chat.memory));
-    for (const e of chat.entries) e.text = squashRepeats(latestState(clean(e.text)));
-    for (const c of chat.chapters || []) c.text = squashRepeats(clean(c.text));
+    chat.memory = squashRepeats(dropJunk(clean(chat.memory)));
+    let kinds = 0;
+    const moved = [];
+    for (const e of chat.entries) {
+      const split = splitStates(dropJunk(clean(e.text), true));
+      if (split.states.length && (e.kind || 'character') === 'character') moved.push({ name: e.name, states: ['last known — ' + split.states[split.states.length - 1]] });
+      e.text = squashRepeats(split.text);
+      // Objects and places filed as characters.
+      if ((e.kind || 'character') === 'character') { const k = guessKind(e.name); if (k && k !== 'character') { e.kind = k; kinds++; } }
+    }
+    for (const c of chat.chapters || []) c.text = squashRepeats(dropJunk(clean(c.text)));
+    if (moved.length) placeStates(chat, moved);
     for (const e of chat.log) e.text = squashRepeats(e.text);
     const gone = was - size();
-    return gone > 0 ? ['removed ' + gone.toLocaleString() + ' characters of keeper notes, guesses, old "Current State" lines or repeated text'] : [];
+    const fixes = gone > 0 ? ['removed ' + gone.toLocaleString() + ' characters of keeper notes, guesses, out-of-date states or repeated text'] : [];
+    if (kinds) fixes.push('corrected the kind of ' + kinds + ' entr' + (kinds === 1 ? 'y' : 'ies') + ' (objects or places filed as characters)');
+    return fixes;
   }
 
   // Some bots write their thinking into the answer ("Looking at the example…
@@ -1908,6 +1923,19 @@
   // Apply the keeper's new or changed entries. An "add" update appends its new
   // lines (ones the entry already has are skipped). A rewrite that is much
   // shorter than a long existing entry probably lost details, so it is not applied.
+  // State lines the keeper put in entries go to the Current Scene's
+  // "Where everyone is" list, for anyone the scene does not mention yet.
+  function placeStates(chat, updates) {
+    const scene = sectionOf(chat.memory, 'Current Scene');
+    const lines = [];
+    for (const u of updates) {
+      if (!u.states || !u.states.length) continue;
+      if (mentions(scene, u.name)) continue;
+      lines.push('- ' + u.name + ': ' + u.states[u.states.length - 1]);
+    }
+    if (lines.length) chat.memory = applySections(chat.memory, [{ title: 'Current Scene', add: true, text: lines.join('\n') }]);
+  }
+
   function applyUpdates(entries, updates, ignored) {
     const refused = [];
     const skip = new Set((ignored || []).map((n) => n.toLowerCase()));
@@ -1918,9 +1946,11 @@
       if ([u.name].concat(u.aliases).some((n) => skip.has(n.toLowerCase()))) continue;
       const e = findEntry(entries, u.name) || u.aliases.map((a) => findEntry(entries, a)).find(Boolean);
       if (!e) {
-        entries.push({ name: u.name, kind: (u.add ? '' : u.kind) || 'character', aliases: u.aliases, text: latestState(u.text), always: false, updated: Date.now() });
+        if (!u.text) continue;
+        entries.push({ name: u.name, kind: (u.add ? u.newKind : u.kind) || guessKind(u.name) || 'lore', aliases: u.aliases, text: latestState(u.text), always: false, updated: Date.now() });
         continue;
       }
+      if (!u.text) continue;
       if (u.add) {
         const have = new Set(e.text.split('\n').map((l) => l.trim().toLowerCase()).filter(Boolean));
         const lines = u.text.split('\n').filter((l) => l.trim() && !have.has(l.trim().toLowerCase()));
@@ -1949,6 +1979,71 @@
   //  - entries the user deleted that came back are removed
   //  - entries are sorted: characters, places, items, groups, lore
   //  - a reply has one summary (the longer one), with a valid chapter link
+  // Lines that are the keeper's working-out, not story facts: references to
+  // its input ("F9:", "S3", "[R12]"), notes on where facts are filed
+  // ("already in Karina's entry", "-> covered"), plans ("we can add…"),
+  // and questions. Quoted speech is ignored when checking.
+  const JUNK_RE = /(^|[\s(])(F|S)\d+\s*[:|\]\-–)]|\[R\d+|\balready (in|covered|recorded|reflected|has|have|listed|noted|captured)\b|\bin (his|her|their|its|the [\w'’ ]{1,40}?|[A-Z][\w-]*(?: [A-Z][\w-]*)?['’]s?|[\w-]+['’]s) entr(y|ies)\b|\b(the )?entry for\b|(->|→)\s*(in|covered|skip|temporary|same|already|not)\b|\b(we|i) (can|should|must|need|will|could|might|have to|do not|don't|already)\b|\bwe['’](ll|ve|d)\b|\bfor brevity\b|^\s*[-*•]?\s*similarly,? (for|with) (the )?(others|rest|remaining)\b|\b(headings?|sections?) (with nothing|that (are|is) empty)\b|\btoken limit\b|\b(output|write) (only|the|this|that|these)\b.*\bentr(y|ies)\b|^\s*[-*•]?\s*(implementation|correction|after review|summary of changes|changes|plan|reasoning|analysis)\s*:\s*$|\b(the )?(new events|events list|this request|previous request|previous update|knowledge base|the instructions)\b|[:\-–]\s*(temporary|skip|none)\s*\.?$|\bnot recorded\b|\bremains? unchanged\b/i;
+  const unquoted = (l) => l.replace(/"[^"]*"|“[^”]*”/g, '""');
+  const isJunk = (l, questions) => { const u = unquoted(l); return JUNK_RE.test(u) || (questions && u.trim().length < 300 && /\?\s*$/.test(u.trim())); };
+  // Removes the keeper's working-out from any text. Once two such lines are
+  // found in a part, the plain lines after them (up to the next "###"
+  // heading) are working-out too and go as well; bullet points stay.
+  // questions: also drop lines that end in a question (only in entries; an
+  // Open Thread or a chapter may rightly ask one).
+  function dropJunk(t, questions) {
+    const out = [];
+    let bad = 0;
+    let skipping = false;
+    for (const l of String(t || '').split('\n')) {
+      if (/^\s*#{1,4}\s/.test(l)) { skipping = false; bad = 0; out.push(l); continue; }
+      if (isJunk(l, questions)) { bad++; if (bad >= 2) skipping = true; continue; }
+      // In a run of working-out, plain lines are part of it; bullets are facts
+      // the keeper added after it, each judged on its own.
+      if (skipping && !/^\s*[-*•]\s+\S/.test(l)) continue;
+      out.push(l);
+    }
+    return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  // An entry written by the keeper: its working-out is dropped (see
+  // dropJunk), and so are bare labels with nothing after them
+  // ("Implementation:", "Correction: the takeoff ritual:").
+  function structuredOnly(t) {
+    return dropJunk(t, true).split('\n').filter((l) => {
+      const s = l.trim().replace(/^[-*•]\s*/, '');
+      if (!s || /^#{1,4}\s/.test(l.trim())) return true;
+      return !/:\s*$/.test(s) || /^\*{0,2}[A-Z][\w'’ &/,()-]{0,40}\*{0,2}:\s*$/.test(s) && false;
+    }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  // Takes the "right now" state out of an entry ("Current State:" lines and
+  // a "### Current State" part): it belongs in the Current Scene, so there
+  // is one "now" for everyone. Returns the entry text and the state lines.
+  function splitStates(t) {
+    const keep = [];
+    const states = [];
+    let inState = false;
+    for (const l of String(t || '').split('\n')) {
+      if (/^\s*#{1,4}\s/.test(l)) { inState = /^\s*#{1,4}\s*(current state|right now|currently|whereabouts)\b/i.test(l); if (!inState) keep.push(l); continue; }
+      if (inState) { if (l.trim()) states.push(l.trim().replace(/^[-*•]\s*/, '')); continue; }
+      if (STATE_RE.test(l)) { states.push(l.trim().replace(STATE_RE, '').trim()); continue; }
+      keep.push(l);
+    }
+    return { text: keep.join('\n').replace(/\n{3,}/g, '\n\n').trim(), states: states.filter(Boolean) };
+  }
+  // What an entry is when the keeper did not say: a name in its CAST list is
+  // a character; otherwise its words decide; anything else is lore.
+  const PLACE_WORDS = /\b(villa|house|home|penthouse|apartment|flat|room|bedroom|suite|pavilion|alcove|garage|bar|club|speakeasy|lounge|beach|city|town|village|island|studio|office|building|tower|street|park|hotel|resort|restaurant|cafe|café|terrace|pool|forest|jungle|cove|dorm|dormitory|school|hospital|kitchen|bathroom|garden|lake|river|mountain|castle|palace|church|temple|mansion|cabin|yacht club|airport|hangar|stage|arena|venue)\b/i;
+  const ITEM_WORDS = /\b(plushie|plush|toy|doll|hammock|jacket|coat|dress|gown|necklace|choker|bracelet|anklet|earrings?|ring|watch|car|motorcycle|ducati|jet|plane|boeing|helicopter|sikorsky|yacht|boat|van|phone|notebook|diary|letter|photo|key|keys|sword|gun|book|gift|box|collar|blanket|pillow|snow ?globe|perfume|bag|scarf)\b/i;
+  const GROUP_WORDS = /\b(team|crew|band|family|company|agency|entertainment|members|group|gang|club members|staff|board)\b/i;
+  function guessKind(name, cast) {
+    const n = String(name || '');
+    if ((cast || []).some((c) => c.toLowerCase() === n.toLowerCase())) return 'character';
+    if (ITEM_WORDS.test(n)) return 'item';
+    if (PLACE_WORDS.test(n)) return 'place';
+    if (GROUP_WORDS.test(n)) return 'group';
+    return '';
+  }
+
   // "Choi" and "Ms. Choi" are the same person; "Mr. Kim" and "Ms. Kim" may not be.
   const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|president)\.?\s+/i;
   function sameButTitle(a, b) {
@@ -2077,8 +2172,15 @@
         if (name && body) updates.push(add ? { name, kind, aliases, text: body, add } : { name, kind, aliases, text: body });
       }
     });
-    sections.forEach((x) => { x.text = squashRepeats(x.text); });
-    updates.forEach((u) => { u.text = squashRepeats(u.text); });
+    sections.forEach((x) => { x.text = dropJunk(squashRepeats(x.text)); });
+    updates.forEach((u) => {
+      const split = splitStates(structuredOnly(squashRepeats(u.text)));
+      u.text = split.text;
+      u.states = split.states;
+      if (!u.kind && !u.add) u.kind = guessKind(u.name, cast);
+      if (!u.kind && u.add) u.newKind = guessKind(u.name, cast);
+    });
+    for (let i = updates.length - 1; i >= 0; i--) if (!updates[i].text && !updates[i].states.length) updates.splice(i, 1);
     entries.forEach((e) => { e.text = squashRepeats(e.text); if (e.facts) e.facts = squashRepeats(e.facts); });
     return { memory: squashRepeats(cleanOutput(memory)), sections, updates, entries: dedupeEntries(entries), cast };
   }
@@ -2394,8 +2496,12 @@
       const r = await job('update', 'Updated story & characters from ' + replyRange(chat, items), () => fold(chat, items));
       chat.memory = r.memory;
       const applied = applyUpdates(chat.entries, r.updates, chat.ignored);
+      placeStates(chat, r.updates);
       if (applied.refused.length) toast('Kept the fuller version of: ' + applied.refused.join(', '));
       for (const e of items) e.folded = true;
+      // Every few updates, entries that changed are consolidated.
+      chat.foldsSinceConsolidate = (chat.foldsSinceConsolidate || 0) + 1;
+      if (chat.foldsSinceConsolidate >= CONSOLIDATE_EVERY) { await consolidateEntries(chat, job); chat.foldsSinceConsolidate = 0; }
       chat.lastUpdate = Date.now();
       chat.lastError = '';
       await saveChat(chat);
@@ -2653,6 +2759,48 @@
     chat.stale = (chat.stale || []).filter((x) => !stale.some((y) => y.id === x.id));
     if (!chat.stale.length) chat.staleFacts = false;
     await saveChat(chat);
+  }
+
+  // Consolidation: an entry that grew by adding lines is rewritten once in
+  // full, so contradictions are settled (the newest is true; an older
+  // version stays only as labelled history), duplicates are merged and facts
+  // sit under the right headings. Up to CONSOLIDATE_MAX entries a time, the
+  // ones changed longest ago first, so every entry gets its turn.
+  const CONSOLIDATE_EVERY = 3;
+  const CONSOLIDATE_MAX = 2;
+  function needsConsolidation(e) {
+    return (e.updated || 0) > (e.consolidated || 0) && e.text.length > 400;
+  }
+  async function consolidateEntries(chat, job, max = CONSOLIDATE_MAX) {
+    const todo = chat.entries.filter(needsConsolidation).sort((a, b) => (a.consolidated || 0) - (b.consolidated || 0)).slice(0, max);
+    for (const e of todo) {
+      checkStop();
+      const r = await job('update', 'Consolidated ' + e.name + ' (contradictions settled, duplicates merged)', async () => {
+        const user = 'STORY NOW:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
+          'THE ENTRY:\n<<<\n' + formatEntries([e]) + '\n>>>\n\n' +
+          'JOB: CONSOLIDATE. Write this one entry again, COMPLETE, with its normal header (kind: character, place, item, group or lore — correct it if it is wrong). ' +
+          'Its lines were added over time, so it may contradict itself or repeat itself. Keep EVERY fact that is still true. Where two lines disagree, the later one is true now: ' +
+          'keep it, and keep the older one only as history if it matters ("was …, until …"). Merge repeated facts into one line. Put each fact under the right heading. ' +
+          'Do not describe the current moment (where they are, what they are doing or wearing right now): that belongs in the Current Scene. ' +
+          'Remove anything that is not a fact about ' + e.name + '. Output only that one entry.';
+        const out = cleanOutput(await callLLM(updateSystem(), user));
+        checkStop();
+        const keys = entryKeys(e).map((k) => k.toLowerCase());
+        return parseKeeperAnswer(out, []).updates.find((u) => !u.add && (keys.includes(u.name.toLowerCase()) || u.aliases.some((a) => keys.includes(a.toLowerCase()))));
+      });
+      e.consolidated = Date.now();
+      // Consolidating removes repeats, but it must not lose facts.
+      const was = splitStates(dropJunk(e.text)).text.length;
+      if (r && r.text && r.text.length >= was * 0.7) {
+        e.text = r.text;
+        if (KIND_ORDER.includes(String(r.kind || '').toLowerCase())) e.kind = r.kind.toLowerCase();
+        for (const a of r.aliases) if (!entryKeys(e).some((k) => k.toLowerCase() === a.toLowerCase())) e.aliases.push(a);
+        e.consolidated = e.updated = Date.now() + 1;
+      } else if (r && r.text) {
+        logJob(chat, { kind: 'update', label: 'Kept ' + e.name + ' as it was: the consolidated version was much shorter (' + r.text.length + ' of ' + was + ' characters)', ok: true, ms: 0 });
+      }
+      await saveChat(chat);
+    }
   }
 
   async function writeChapters(chat, job) {
@@ -4067,6 +4215,23 @@
     return n.facts + ' with facts, ' + n.none + ' none' + (n.missing ? ', ' + n.missing + ' FACTS line missing' : '') + (n.unknown ? ', ' + n.unknown + ' unknown (older)' : '');
   }
 
+  // What is still wrong in a memory, by the same rules the cleaning uses (it
+  // should all read 0 after a tidy-up; anything else means a rule is missing).
+  function memoryHealth(chat) {
+    const junk = chat.entries.reduce((n, e) => n + e.text.split('\n').filter((l) => isJunk(l, true)).length, 0) +
+      chat.memory.split('\n').filter((l) => isJunk(l)).length;
+    const states = chat.entries.filter((e) => splitStates(e.text).states.length).length;
+    const kinds = chat.entries.filter((e) => (e.kind || 'character') === 'character' && /^(item|place|group)$/.test(guessKind(e.name))).length;
+    const twins = chat.entries.filter((e, i) => chat.entries.some((x, j) => j < i && sameButTitle(x.name, e.name))).length;
+    const waiting = chat.entries.filter(needsConsolidation).length;
+    const bad = [];
+    if (junk) bad.push(junk + ' lines of keeper working-out');
+    if (states) bad.push(states + ' entries with a "Current State"');
+    if (kinds) bad.push(kinds + ' objects or places filed as characters');
+    if (twins) bad.push(twins + ' duplicate people');
+    return (bad.length ? '⚠ ' + bad.join(', ') : 'OK') + ' · ' + waiting + ' entr' + (waiting === 1 ? 'y' : 'ies') + ' waiting to be consolidated';
+  }
+
   // Which versions of Story Manager made this story's memory.
   function versionLine(chat) {
     const vs = chat.smVersions || [];
@@ -4191,6 +4356,7 @@
           (helperWait.readOk ? '' : ', last read failed') + ', answer ' + helperWait.answerChars + ' chars' +
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
+      'Memory health: ' + (chat ? memoryHealth(chat) : 'no chat') + '\n' +
       'Made with: ' + (chat && chat.smVersions && chat.smVersions.length ? chat.smVersions.map((x) => 'v' + x.v).join(' → ') : 'unknown (before v3.10.12)') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
       'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + factsSplit(chat) + '), ' +
         chat.log.filter((e) => e.checked).length + ' facts-checked, ' + st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +

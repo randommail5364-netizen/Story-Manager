@@ -19,9 +19,9 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0];
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile };')();
+const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -275,6 +275,61 @@ test('comparing with the whole chat removes vanished replies, but not when the r
   const c = Object.assign(mk(), { continuedFrom: 'old' });
   assert.strictEqual(lib.reconcile(c, msgs(c.log.slice(20).map((e) => e.id))), 0);
   assert.strictEqual(c.log.filter((e) => e.inherited).length, 20);
+});
+
+// Real lines from the user's pinned memory messages (keeper working-out that
+// got into entries). These must never come back.
+test('regression: the keeper\'s working-out from real memories is dropped, real facts are kept', () => {
+  const entry = [
+    '### Basics',
+    '- Head of PR at SM.',
+    'She delivered the official statement.',
+    'F9: Jacek\'s full name is Jacek Kowalski | Park Ji-won is SM\'s PR head',
+    'Jacek\'s full name, billionaire status, SM ownership: in Jacek\'s entry.',
+    'Park Ji-won: already has an entry and her role is stated.',
+    'Ducati: mentioned in Giselle\'s entry (she polished the keys) but not in Jacek\'s. We can add to Jacek\'s entry.',
+    'Holiday: already in the timeline? The duration (1 month) is not specified in the timeline. We should add it to the timeline?',
+    'F24: None -> skip.',
+    'Implementation:',
+    'However, the response has a token limit. We must be concise.',
+    '### Key Moments',
+    '- Called Winter "our deepest water." and asked "Trouble already?"',
+    'Similarly, for others.',
+    'For brevity, we\'ll omit headings with nothing known.',
+    '- Packed hiking boots for Costa Rica.',
+  ].join('\n');
+  assert.strictEqual(lib.structuredOnly(entry), '### Basics\n- Head of PR at SM.\nShe delivered the official statement.\n### Key Moments\n- Called Winter "our deepest water." and asked "Trouble already?"\n- Packed hiking boots for Costa Rica.');
+  // Open Threads may ask questions; they stay.
+  assert.strictEqual(lib.dropJunk('## Open Threads\n- Will Karina forgive him?'), '## Open Threads\n- Will Karina forgive him?');
+});
+
+test('one "now": Current State goes from entries to the Current Scene', () => {
+  const sp = lib.splitStates('### Basics\n- Manager\n### Current State\n- Loading bay alcove.\n### Key Moments\n- Bought SM\nCurrent State: In the van.');
+  assert.strictEqual(sp.text, '### Basics\n- Manager\n### Key Moments\n- Bought SM');
+  assert.deepStrictEqual(sp.states, ['Loading bay alcove.', 'In the van.']);
+  const p = lib.parseKeeperAnswer('=== ENTRY: Jacek | add ===\n- Key Moments: Fixed the car.\n- Current State: In the garage.', []);
+  assert.strictEqual(p.updates[0].text, '- Key Moments: Fixed the car.');
+  assert.deepStrictEqual(p.updates[0].states, ['In the garage.']);
+  const chat = { memory: '## Current Scene\n- Winter\'s bedroom, dawn.', entries: [{ name: 'Jacek', kind: 'character', aliases: [], text: '- Manager\n### Current State\n- In the van.' }], chapters: [], log: [] };
+  lib.cleanChat(chat);
+  assert.strictEqual(chat.entries[0].text, '- Manager');
+  assert(/## Current Scene[\s\S]*- Jacek: last known — In the van\./.test(chat.memory));
+  lib.cleanChat(chat);
+  assert.strictEqual((chat.memory.match(/Jacek/g) || []).length, 1, 'cleaning twice changes nothing');
+});
+
+test('objects and places are not filed as characters', () => {
+  assert.strictEqual(lib.guessKind('"Mango" Sloth Plushie'), 'item');
+  assert.strictEqual(lib.guessKind('Green Jungle Hammock'), 'item');
+  assert.strictEqual(lib.guessKind('Chanel Métiers d\'Art Jacket'), 'item');
+  assert.strictEqual(lib.guessKind('Villa Casa de la Sombra Verde'), 'place');
+  assert.strictEqual(lib.guessKind('Karina', ['Karina']), 'character');
+  const p = lib.parseKeeperAnswer('=== CAST ===\nJinho\n=== ENTRY: Jinho | add ===\n- Driver.\n=== ENTRY: Green Jungle Hammock | add ===\n- Strung between palms.', []);
+  const r = lib.applyUpdates([], p.updates, []);
+  assert.deepStrictEqual(r.entries.map((e) => e.kind), ['character', 'item']);
+  const chat = { memory: '', entries: [{ name: 'Green Jungle Hammock', kind: 'character', aliases: [], text: '- Strung between palms.' }], chapters: [], log: [] };
+  lib.cleanChat(chat);
+  assert.strictEqual(chat.entries[0].kind, 'item');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

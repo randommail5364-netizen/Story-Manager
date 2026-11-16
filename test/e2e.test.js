@@ -206,7 +206,7 @@ async function main() {
     const json = (obj, status = 200) => route.fulfill({ status, headers: cors, contentType: 'application/json', body: JSON.stringify(obj) });
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     if (url.pathname === '/auth/csrf') return json({ csrfToken: 'csrf-123' });
-    if (url.pathname.startsWith('/tools/s/')) return json({ id: 'tool-helper', revision: 1, modelId: 'm-helper' });
+    if (url.pathname.startsWith('/tools/s/')) return json({ id: /sloppy-bot/.test(url.pathname) ? 'tool-helper-sloppy' : 'tool-helper', revision: 1, modelId: 'm-helper' });
     let m;
     if (req.method() === 'GET' && url.pathname === '/conversations/quickAccess') {
       const items = Object.keys(convs).map((id) => ({ id, toolId: convs[id].toolId }));
@@ -231,7 +231,7 @@ async function main() {
         if (end < 0) return json({ message: 'Invalid message cursor' }, 400);
       }
       const start = Math.max(0, end - limit);
-      const items = c.messages.slice(start, end).map((x, i) => Object.assign({ conversationId: m[1], index: start + i + (c.toolId === 'tool-helper' ? 7 : 0) }, x));
+      const items = c.messages.slice(start, end).map((x, i) => Object.assign({ conversationId: m[1], index: start + i + (String(c.toolId).startsWith('tool-helper') ? 7 : 0) }, x));
       const hasMore = end - limit > 0;
       return json({ items, hasMore, nextBeforeMessageId: hasMore ? items[0].id : null });
     }
@@ -269,27 +269,27 @@ async function main() {
         edits.push(body);
         return json({ conversationId: body.conversationId, chatMessageId: target.id, requestId: body.requestId, addedMessages: [] });
       }
-      if (body.toolId === 'tool-helper' && helperBroken) return json({ message: 'Insufficient credits' }, 412);
+      if (String(body.toolId).startsWith('tool-helper') && helperBroken) return json({ message: 'Insufficient credits' }, 412);
       const id = body.conversationId || uuid();
       const isNew = !convs[id];
       const conv = convs[id] || (convs[id] = { toolId: body.toolId, messages: [] });
       const text = body.elements[0].text;
       const added = [];
       // Like the real bot: a new helper chat starts with a greeting.
-      if (isNew && body.toolId === 'tool-helper') {
+      if (isNew && String(body.toolId).startsWith('tool-helper')) {
         const greet = { id: uuid(), origin: 'assistant', createdAt: new Date().toISOString(), elements: [{ type: 'text', text: 'Hi! Tell me what to write.' }] };
         conv.messages.push(greet);
         added.push(greet);
       }
       // Long requests to the helper are stored as a file, so their text can't be read back.
-      const userMsg = body.toolId === 'tool-helper'
+      const userMsg = String(body.toolId).startsWith('tool-helper')
         ? { id: uuid(), origin: 'user', createdAt: new Date().toISOString(), text: '', elements: [{ type: 'file', name: 'message.txt' }] }
         : { id: uuid(), origin: 'user', createdAt: new Date().toISOString(), elements: [{ type: 'text', text }] };
       conv.messages.push(userMsg);
       added.push(userMsg);
-      if (body.toolId === 'tool-helper' && helperMaxChars && text.length > helperMaxChars) {
+      if (String(body.toolId).startsWith('tool-helper') && helperMaxChars && text.length > helperMaxChars) {
         setTimeout(() => liveWs && liveWs.send('42["ce",' + JSON.stringify({ conversationId: id, requestId: body.requestId, messageId: userMsg.id, replyToMessageId: null, error: "This endpoint's maximum context length is 163840 tokens. However, you requested about 170117 tokens. Please reduce the length of either one", code: 'error' }) + ']'), 300);
-      } else if (body.toolId === 'tool-helper' && helperRunaway) {
+      } else if (String(body.toolId).startsWith('tool-helper') && helperRunaway) {
         llmCalls.push(text);
         const full = keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)');
         const pieces = full.match(/[\s\S]{1,40}/g);
@@ -301,18 +301,20 @@ async function main() {
           const piece = k < pieces.length ? pieces[k] : loop;
           if (liveWs) liveWs.send('42["pcm",' + JSON.stringify({ cId: id, requestId: body.requestId, tmpId: 'run', tmpO: 0, payload: { type: 'text', text: piece, i: k++ } }) + ']');
         }, 5);
-      } else if (body.toolId === 'tool-helper' && helperChatError && !isNew) {
+      } else if (String(body.toolId).startsWith('tool-helper') && helperChatError && !isNew) {
         setTimeout(() => liveWs && liveWs.send('42["ce",' + JSON.stringify({ conversationId: id, requestId: body.requestId, messageId: userMsg.id, replyToMessageId: null, error: 'Context too long', code: 'CONTEXT_LIMIT' }) + ']'), 300);
-      } else if (body.toolId === 'tool-helper') {
+      } else if (String(body.toolId).startsWith('tool-helper')) {
         llmCalls.push(text);
-        reply(conv, keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)'), helperDelay, id);
+        // A sloppy bot writes its working-out into the answer.
+        const sloppy = body.toolId === 'tool-helper-sloppy' ? 'We can add these to the entries.\nImplementation:\nF1: covered -> skip.\n' : '';
+        reply(conv, sloppy + keeperAnswer(text, llmCalls.length, ' (via MiniApps bot)'), helperDelay, id);
       } else {
         const n = conv.messages.filter((x) => x.origin === 'user').length;
         reply(conv, 'Story reply #' + n + ': the dragon Ash watches Mira.', 1500, id);
       }
       return json({ conversationId: id, chatMessageId: userMsg.id, requestId: body.requestId,
         // Like the real site, numbers need not start at 0 (they can start again in a chat).
-        addedMessages: added.map((x) => Object.assign({ index: conv.messages.indexOf(x) + (body.toolId === 'tool-helper' ? 7 : 0) }, x)) });
+        addedMessages: added.map((x) => Object.assign({ index: conv.messages.indexOf(x) + (String(body.toolId).startsWith('tool-helper') ? 7 : 0) }, x)) });
     }
     return json({});
   });
@@ -1525,6 +1527,33 @@ async function main() {
   check(/Recover facts from which saved version/.test(asked42) && /### Recovered facts\n- Grew up in the river village of Elm\.$/.test(mira42now) && !/We can add/.test(mira42now),
     'the lost fact is back under "Recovered facts", without working-out');
   check((await keyNow()).jobs.some((j) => /Recovered 1 facts from the version saved on/.test(j.label)), 'recorded in Activity');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+
+  console.log('42c) "Compare bots" runs the same jobs on the first replies with each bot and makes one report');
+  const mem42c = JSON.stringify((await keyNow()).entries) + (await keyNow()).memory;
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> nav button', { hasText: 'Settings' }).click();
+  await page.locator('#story-manager-root >> input[placeholder^="e.g. er-8"]').fill('good-bot, sloppy-bot');
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Start comparison').click();
+  await waitFor(async () => !!(await page.evaluate((id) => localStorage.getItem('smx:comparison:' + id), newId)), 120000, 'comparison finished');
+  const cmp = JSON.parse(await page.evaluate((id) => localStorage.getItem('smx:comparison:' + id), newId));
+  const good = cmp.rows.find((r) => r.slug === 'good-bot');
+  const sloppy = cmp.rows.find((r) => r.slug === 'sloppy-bot');
+  const first3 = newConv.messages.filter((x) => x.origin === 'assistant').slice(0, 3);
+  check(good.ok && sloppy.ok && good.summaries === 3 && sloppy.summaries === 3 && good.junk === 0 && sloppy.junk > 0, 'both bots did both jobs; the working-out of the sloppy one is counted');
+  check(first3.every((m) => cmp.report.includes(m.elements[0].text.slice(0, 40))) && !cmp.report.includes(newConv.messages.filter((x) => x.origin === 'assistant').slice(-1)[0].elements[0].text.slice(0, 60)),
+    'the FIRST replies were used, and they are in the report');
+  check(/## Results[\s\S]*\| good-bot \| yes[\s\S]*\| sloppy-bot \| yes[\s\S]*## Bot: good-bot[\s\S]*### Summaries[\s\S]*### Story & characters[\s\S]*## Bot: sloppy-bot[\s\S]*We can add these to the entries[\s\S]*## Story Manager diagnostics\n\nStory Manager v/.test(cmp.report),
+    'one report: results table, each bot\'s summaries, story & characters and working-out, and the diagnostics');
+  check(JSON.stringify((await keyNow()).entries) + (await keyNow()).memory === mem42c, 'the real memory was not changed');
+  check(!/### Summaries[\s\S]*My earlier message from when this note was pinned/.test(cmp.report.split('## Story Manager diagnostics')[0].split('## The replies tested')[1] || 'x'),
+    'the pinned message\'s label is not shown to the keeper as something the user wrote');
+  await page.locator('#story-manager-root >> nav button', { hasText: 'Settings' }).click();
+  await waitFor(async () => (await page.locator('#story-manager-root >> button', { hasText: 'Download report' }).count()) > 0, 10000, 'results shown');
+  const dl = page.waitForEvent('download', { timeout: 10000 });
+  await page.getByText('Download report').click();
+  check(/^story-manager-bot-comparison-\d{4}-\d\d-\d\d\.md$/.test((await dl).suggestedFilename()), 'the report downloads as one file');
   await page.locator('#story-manager-root >> .x').click().catch(() => {});
 
   console.log('43) Helper chats are hidden from MiniApps\' chat lists');

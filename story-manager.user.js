@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.18.0
+// @version      3.19.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -54,6 +54,10 @@
   const MEM_START = '[[STORY-MEMORY]]';
   const MEM_END = '[[/STORY-MEMORY]]';
   const MEM_BLOCK_RE = /\[\[STORY-MEMORY\]\][\s\S]*?\[\[\/STORY-MEMORY\]\]\s*/g;
+  // The label Story Manager puts before the user's own text in the pinned
+  // memory message (see memoryMessageText): not something the user wrote.
+  const PINNED_LABEL_RE = /\(My earlier message from when this note was pinned\.[^)]*\)\s*/g;
+  const ownText = (t) => String(t || '').replace(MEM_BLOCK_RE, '').replace(PINNED_LABEL_RE, '').trim();
   const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
   // ---------------------------------------------------------------------------
@@ -1003,7 +1007,7 @@
     const out = arr.filter(looksLikeMessage).map((m) => ({
       id: String(m.id || m._id || m.chatMessageId || m.uuid || ('h-' + roleOf(m) + '-' + hashText(textOf(m)))),
       role: roleOf(m),
-      text: textOf(m).replace(MEM_BLOCK_RE, '').trim(),
+      text: ownText(textOf(m)),
       t: Date.parse(m.createdAt || m.created_at || '') || 0,
       index: typeof m.index === 'number' ? m.index : null,
       version: typeof m.version === 'number' ? m.version : 0,
@@ -1131,7 +1135,16 @@
   }
 
   // slot: which helper chat to use when several requests run at once.
+  // While bots are being compared, every keeper request goes to the bot under
+  // test (in its own helper chat), and its raw answer is kept for the report.
+  const compare = { slug: null, slot: 0, raw: null, running: false };
   async function callLLM(system, user, slot = 0) {
+    const out = compare.slug ? await callMiniApps(system + '\n\n' + user, compare.slot) : await callLLMWith(system, user, slot);
+    if (compare.raw) compare.raw.push(String(out || ''));
+    return out;
+  }
+
+  async function callLLMWith(system, user, slot = 0) {
     const s = settings;
     const model = s.model || DEFAULT_MODELS[s.provider] || '';
     if (s.provider !== 'miniapps' && !s.apiKey) throw new Error('No API key set (Story Manager → Settings)');
@@ -1245,7 +1258,7 @@
 
   async function callMiniAppsOnce(prompt, slot) {
     const helperChat = helperChats[slot];
-    const slug = (settings.miniappsSlug || 'claude-37').trim();
+    const slug = (compare.slug || settings.miniappsSlug || 'claude-37').trim();
     if (!toolCache || toolCache.slug !== slug) {
       const tool = await rpc('GET', '/tools/s/' + encodeURIComponent(slug) + '?lang=en');
       if (!tool || !tool.id) throw new Error('MiniApps bot "' + slug + '" not found');
@@ -2403,7 +2416,7 @@
   // foldEvery replies). Returns 'done', 'stopped', 'failed' or 'skipped'.
   async function updateMemory(id, msgs, { force = false } = {}) {
     const chat = await getChat(id, true);
-    if (busy[id] || (!chat.enabled && !force)) return 'skipped';
+    if (busy[id] || compare.running || (!chat.enabled && !force)) return 'skipped';
     let todo = unprocessed(chat, msgs);
     // The newest replies wait: the user often has them redone.
     const hold = Math.max(0, Number(settings.holdBack) || 0);
@@ -3024,6 +3037,221 @@
     });
     if (status === 'done' && result) toast('Consolidated ' + result.done + ' entr' + (result.done === 1 ? 'y' : 'ies') + (result.moved ? '; moved ' + result.moved + ' facts to the characters they are about' : '') + '.');
     return status;
+  }
+
+
+  // "Compare bots": each bot gets the same two jobs on the FIRST replies of
+  // the story, as if the story were just starting (a dry run: the memory is
+  // not touched): summarise them, then write the story & characters from the
+  // summaries. The result is one report with every bot's output and numbers.
+  async function runCompare(chat, slugs, count) {
+    if (busy[chat.id] || compare.running) { toast('The memory is being updated right now — try again in a moment'); return null; }
+    let msgs;
+    try { msgs = await fetchMessages(chat.id, { mode: 'full' }); } catch (e) { toast('Could not read the chat: ' + (e.message || e), true); return null; }
+    const replies = msgs.filter((m) => m.role === 'assistant').slice(0, count);
+    if (!replies.length) { toast('This chat has no AI replies yet.'); return null; }
+    const part = withPrompts(msgs, replies);
+    const results = [];
+    compare.running = true;
+    try {
+      await withBusy(chat.id, slugs.length * 2, async () => {
+        for (let i = 0; i < slugs.length; i++) {
+          const slug = slugs[i];
+          const r = { slug, ok: false, error: '', times: [], raw: [], summaries: [], memory: '', entries: [] };
+          results.push(r);
+          compare.slug = slug;
+          compare.slot = 8 + i;
+          compare.raw = r.raw;
+          toolCache = null;
+          const temp = Object.assign(newChat(chat.id), { title: chat.title });
+          try {
+            setStep(chat.id, slug + ': summarising replies 1–' + replies.length + '…');
+            let t0 = Date.now();
+            r.summaries = await summarise(temp, part);
+            r.times.push(Date.now() - t0);
+            progress[chat.id].done++;
+            checkStop();
+            setStep(chat.id, slug + ': writing the story & characters…');
+            t0 = Date.now();
+            const f = await fold(temp, r.summaries.map((e) => Object.assign({}, e, { folded: false })));
+            r.times.push(Date.now() - t0);
+            progress[chat.id].done++;
+            temp.memory = f.memory;
+            applyUpdates(temp.entries, f.updates, []);
+            placeStates(temp, f.updates);
+            r.memory = temp.memory;
+            r.entries = temp.entries;
+            r.ok = true;
+          } catch (e) {
+            if (e.stopped) throw e;
+            r.error = String(e.message || e).slice(0, 300);
+            progress[chat.id].done = (i + 1) * 2;
+          }
+        }
+      });
+    } catch (e) {
+      if (!e.stopped) toast('The comparison stopped: ' + (e.message || e), true);
+    } finally {
+      compare.slug = null;
+      compare.raw = null;
+      compare.running = false;
+      toolCache = null;
+    }
+    if (!results.length) return null;
+    const report = compareReport(chat, part, replies.length, results);
+    const saved = { at: Date.now(), slugs, count: replies.length, report, rows: results.map(compareRow) };
+    await Store.set('comparison:' + chat.id, saved);
+    renderPanel(true);
+    return saved;
+  }
+
+  // The numbers that can be measured fairly for one bot.
+  function compareRow(r) {
+    // Lines of the answer format itself ("[R1] …", "=== ENTRY … ===", "FACTS:", "### …") are not working-out.
+    const FORMAT_RE = /^\s*(\[R\d+[^\]]*\]|[*#_]*\s*=+\s*\w|\*{0,2}facts?\*{0,2}\s*:|#{1,4}\s)/i;
+    const junk = r.raw.join('\n').split('\n').filter((l) => l.trim() && !FORMAT_RE.test(l) && (isJunk(l, true) || REASONING_RE.test(l) || REASONING_WORDS_RE.test(l)));
+    const n = { facts: 0, none: 0, missing: 0 };
+    for (const e of r.summaries) n[e.facts ? 'facts' : e.nofacts === 'none' ? 'none' : 'missing']++;
+    const factCount = r.summaries.reduce((k, e) => k + (e.facts ? e.facts.split('|').filter((x) => x.trim()).length : 0), 0);
+    return {
+      slug: r.slug, ok: r.ok, error: r.error,
+      summaries: r.summaries.length,
+      facts: n, factCount,
+      avgSummary: r.summaries.length ? Math.round(r.summaries.reduce((k, e) => k + e.text.length, 0) / r.summaries.length) : 0,
+      sections: (r.memory.match(/^##\s/gm) || []).length,
+      entries: r.entries.length,
+      entryChars: r.entries.reduce((k, e) => k + e.text.length, 0),
+      junk: junk.length, junkLines: junk.slice(0, 15),
+      seconds: r.times.map((t) => Math.round(t / 1000)),
+      requests: r.raw.length,
+    };
+  }
+
+  function compareReport(chat, part, count, results) {
+    const rows = results.map(compareRow);
+    const L = [];
+    L.push('# Memory-keeper comparison: ' + (chat.title || chat.id.slice(0, 8)));
+    L.push('');
+    L.push('Made ' + new Date().toLocaleString() + ' by Story Manager v' + (SM_VERSION || '?') + '. Each bot got the same two jobs on the FIRST ' + count +
+      ' AI repl' + (count === 1 ? 'y' : 'ies') + ' of this chat, as if the story were just starting: (1) summarise each reply with its facts, ' +
+      '(2) write the story & characters from those summaries. Summary detail: ' + detail().label + '. Nothing in the real memory was changed.');
+    L.push('');
+    L.push('## Results');
+    L.push('');
+    L.push('| Bot | Worked | Summaries | Facts lists (with / none / skipped) | Facts found | Avg summary length | Story sections | Entries (characters) | Lines of working-out removed | Requests | Seconds (summaries, story) |');
+    L.push('|---|---|---|---|---|---|---|---|---|---|---|');
+    for (const r of rows) {
+      L.push('| ' + [r.slug, r.ok ? 'yes' : 'no: ' + r.error.replace(/\|/g, '/'), r.summaries + ' of ' + count, r.facts.facts + ' / ' + r.facts.none + ' / ' + r.facts.missing,
+        r.factCount, r.avgSummary, r.sections, r.entries + ' (' + r.entryChars + ')', r.junk, r.requests, r.seconds.join(', ') || '-'].join(' | ') + ' |');
+    }
+    L.push('');
+    L.push('"Lines of working-out removed": lines of the bot\'s own notes and planning that Story Manager had to throw away (fewer is better). ' +
+      '"Skipped" facts lists: the bot left out the FACTS line and was asked again. Accuracy is not scored: compare each bot\'s summaries with the replies below.');
+    L.push('');
+    L.push('## The replies tested');
+    L.push('');
+    L.push(formatMessages(part, chat.title));
+    for (const r of results) {
+      const row = rows.find((x) => x.slug === r.slug);
+      L.push('');
+      L.push('---');
+      L.push('');
+      L.push('## Bot: ' + r.slug);
+      L.push('');
+      L.push('### Diagnostics');
+      L.push('- Worked: ' + (r.ok ? 'yes' : 'no — ' + r.error));
+      L.push('- Requests: ' + row.requests + ' · seconds: ' + (row.seconds.join(', ') || '-') + ' · raw answer sizes: ' + r.raw.map((x) => x.length).join(', '));
+      L.push('- Summaries: ' + row.summaries + ' of ' + count + ' · facts lists: ' + row.facts.facts + ' with, ' + row.facts.none + ' "none", ' + row.facts.missing + ' skipped · facts found: ' + row.factCount);
+      L.push('- Story sections: ' + row.sections + ' · entries: ' + row.entries + ' (' + row.entryChars + ' characters)');
+      L.push('- Lines of working-out removed: ' + row.junk + (row.junkLines.length ? ':' : ''));
+      for (const l of row.junkLines) L.push('  - ' + l.trim().slice(0, 200));
+      L.push('');
+      L.push('### Summaries');
+      L.push('');
+      if (!r.summaries.length) L.push('(none)');
+      r.summaries.forEach((e, k) => { L.push('[R' + (k + 1) + '] ' + e.text); L.push(e.facts ? 'FACTS: ' + e.facts : 'FACTS: ' + (e.nofacts === 'none' ? 'none' : '(skipped)')); L.push(''); });
+      L.push('### Story & characters');
+      L.push('');
+      L.push(r.memory.trim() || '(none)');
+      L.push('');
+      L.push(r.entries.length ? formatEntries(r.entries) : '(no entries)');
+    }
+    L.push('');
+    L.push('---');
+    L.push('');
+    L.push('## Story Manager diagnostics');
+    L.push('');
+    L.push(diagnosticsText());
+    return L.join('\n');
+  }
+
+  function downloadText(name, text) {
+    try {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+      a.download = name;
+      (document.body || document.documentElement).appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // Settings: the comparison panel.
+  function compareBox() {
+    const chat = currentId && chats[currentId];
+    const box = el('div', {});
+    const names = el('input', { value: [(settings.miniappsSlug || '').trim()].filter(Boolean).join(', '), placeholder: 'e.g. er-8, another-bot, third-bot' });
+    const count = el('input', { type: 'number', min: '1', max: '10', value: '3' });
+    const out = el('div', {});
+    const show = (saved) => {
+      if (!saved) { out.replaceChildren(); return; }
+      const best = (r) => (r.ok ? 1000 : 0) - r.junk * 10 + r.factCount + (r.facts.missing ? -5 : 0);
+      out.replaceChildren(
+        el('div', { class: 'hint' }, 'Last comparison: ' + ago(saved.at) + ', on replies 1–' + saved.count + '.'),
+        ...saved.rows.map((r) => el('div', { class: r.ok ? 'status' : 'error' },
+          el('b', {}, r.slug), r.ok ? '' : ' — failed: ' + r.error,
+          r.ok ? el('div', {}, r.summaries + '/' + saved.count + ' summaries · ' + r.factCount + ' facts (' + r.facts.missing + ' facts lists skipped) · ' +
+            r.entries + ' entries · ' + r.junk + ' lines of working-out · ' + r.seconds.reduce((a, b) => a + b, 0) + ' s') : null,
+          r.ok && r.slug !== (settings.miniappsSlug || '').trim() ? el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+            if (!confirm('Use "' + r.slug + '" as your memory keeper from now on?')) return;
+            settings.miniappsSlug = r.slug;
+            settings.provider = 'miniapps';
+            await Store.set('settings', settings);
+            toolCache = null;
+            toast('The memory keeper is now ' + r.slug);
+            renderPanel(true);
+          } }, 'Use this bot')) : null)),
+        el('div', { class: 'hint' }, 'Most promising by these numbers: ' + saved.rows.slice().sort((a, b) => best(b) - best(a))[0].slug + '. Read the report to judge accuracy.'),
+        el('div', { class: 'btns' },
+          el('button', { class: 'btn primary', onclick: () => {
+            const name = 'story-manager-bot-comparison-' + new Date(saved.at).toISOString().slice(0, 10) + '.md';
+            if (downloadText(name, saved.report)) toast('Report downloaded: ' + name); else toast('Could not download; use Copy report', true);
+          } }, 'Download report'),
+          el('button', { class: 'btn', onclick: async () => {
+            try { await navigator.clipboard.writeText(saved.report); toast('Report copied (' + saved.report.length.toLocaleString() + ' characters)'); } catch (e) { toast('Could not copy; use Download report', true); }
+          } }, 'Copy report')));
+    };
+    if (chat) Store.get('comparison:' + chat.id, null).then(show).catch(() => {});
+    box.append(
+      el('label', {}, 'Compare memory-keeper bots'),
+      el('div', { class: 'hint' }, 'Up to 4 MiniApps bots (slugs from their URLs, comma-separated). Each gets the same jobs on the FIRST replies of the open story — summaries, then story & characters — without changing your memory. About 2 requests per bot (MiniApps credits). The result is one report with every bot\'s output and the diagnostics.'),
+      names,
+      el('label', {}, 'How many of the first AI replies to use'), count,
+      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+        const c = currentId && chats[currentId];
+        if (!c) { toast('Open your story chat first.'); return; }
+        const slugs = [...new Set(names.value.split(/[,\s]+/).map((x) => x.trim().replace(/^https?:\/\/[^/]+\//, '').split('/')[0]).filter(Boolean))].slice(0, 4);
+        if (!slugs.length) { toast('Enter at least one bot.'); return; }
+        const n = Math.max(1, Math.min(10, parseInt(count.value, 10) || 3));
+        if (!confirm('Compare ' + slugs.join(', ') + ' on the first ' + n + ' replies of "' + (c.title || 'this story') + '"? About ' + slugs.length * 2 + ' requests; your memory is not changed. Keep this tab open until it finishes.')) return;
+        tab = 'memory';
+        renderPanel(true);
+        const saved = await runCompare(c, slugs, n);
+        if (saved) toast('Comparison done. Open Settings → Compare memory-keeper bots for the results and the report.');
+      } }, 'Start comparison')),
+      out);
+    return box;
   }
 
   async function runFactCheck(id, all) {
@@ -3771,7 +3999,7 @@
     // Events like { cId, requestId, payload: { …message… } } carry a whole message.
     if (!msgs.length && chatOf && first.payload && typeof first.payload === 'object' && !Array.isArray(first.payload)) {
       const pm = first.payload;
-      const text = textOf(pm).replace(MEM_BLOCK_RE, '').trim();
+      const text = ownText(textOf(pm));
       const role = roleOf(pm);
       if (text && role !== 'system') {
         msgs = [{ id: String(pm.id || first.tmpId || first.requestId || ('h-' + hashText(text))), role, text, t: Date.parse(pm.createdAt || '') || Date.now(),
@@ -4018,7 +4246,7 @@
   // MiniApps (PRO) keeps pinned messages in the AI's memory permanently, with
   // at most 2 pins per chat. Story Manager uses one of them for the newest
   // message that carries the memory, and never touches the user's own pins.
-  async function pinMemory(chat, mid, ownText) {
+  async function pinMemory(chat, mid, userText) {
     if (!settings.pinMemory || chat.pinnedMemoryId === mid) return;
     if (!await waitIdle(chat.id)) return;
     const old = chat.pinnedMemoryId;
@@ -4036,7 +4264,7 @@
       if (old) await unpin(old);
       chat.pinnedMemoryId = mid;
       // The text the user wrote in it (kept when the memory in it is updated).
-      chat.pinnedMemoryText = String(ownText || '').replace(MEM_BLOCK_RE, '').trim();
+      chat.pinnedMemoryText = ownText(userText);
       chat.memoryMsgSynced = true;
       chat.memoryMsgHash = '';
       chat.pinError = '';
@@ -5151,6 +5379,7 @@
       el('div', { class: 'btns' },
         el('button', { class: 'btn primary', onclick: save }, 'Save settings'),
         el('button', { class: 'btn', onclick: test }, 'Test connection')),
+      compareBox(),
       el('label', {}, 'Sync between your devices (GitHub)'), f.githubToken,
       el('div', { class: 'hint' }, 'Keeps the memory of every chat the same on your phone and PC, automatically, in a private GitHub Gist. ',
         el('a', { href: 'https://github.com/settings/tokens/new?scopes=gist&description=Story%20Manager%20sync', target: '_blank', rel: 'noopener' }, 'Make a token'),

@@ -206,6 +206,9 @@ async function main() {
     const json = (obj, status = 200) => route.fulfill({ status, headers: cors, contentType: 'application/json', body: JSON.stringify(obj) });
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     if (url.pathname === '/auth/csrf') return json({ csrfToken: 'csrf-123' });
+    // A bot without a model of its own: the site asks for its default model.
+    if (url.pathname.startsWith('/tools/s/no-model-bot')) return json({ id: 'tool-helper-nomodel', revision: 2 });
+    if (url.pathname.startsWith('/ai-models/defaults/by-tool/')) return json({ segment: 'free', model: { id: 'm-default' } });
     if (url.pathname.startsWith('/tools/s/')) return json({ id: /sloppy-bot/.test(url.pathname) ? 'tool-helper-sloppy' : 'tool-helper', revision: 1, modelId: 'm-helper' });
     let m;
     if (req.method() === 'GET' && url.pathname === '/conversations/quickAccess') {
@@ -270,6 +273,7 @@ async function main() {
         return json({ conversationId: body.conversationId, chatMessageId: target.id, requestId: body.requestId, addedMessages: [] });
       }
       if (String(body.toolId).startsWith('tool-helper') && helperBroken) return json({ message: 'Insufficient credits' }, 412);
+      if (!body.modelId) return json({ message: 'Validation failed' }, 400);
       const id = body.conversationId || uuid();
       const isNew = !convs[id];
       const conv = convs[id] || (convs[id] = { toolId: body.toolId, messages: [] });
@@ -1533,7 +1537,7 @@ async function main() {
   const mem42c = JSON.stringify((await keyNow()).entries) + (await keyNow()).memory;
   await page.locator('#story-manager-root >> .fab').click();
   await page.locator('#story-manager-root >> nav button', { hasText: 'Settings' }).click();
-  await page.locator('#story-manager-root >> input[placeholder^="e.g. er-8"]').fill('good-bot, sloppy-bot');
+  await page.locator('#story-manager-root >> input[placeholder^="e.g. er-8"]').fill('good-bot, sloppy-bot, no-model-bot');
   page.once('dialog', (d) => d.accept());
   await page.getByText('Start comparison').click();
   await waitFor(async () => !!(await page.evaluate((id) => localStorage.getItem('smx:comparison:' + id), newId)), 120000, 'comparison finished');
@@ -1542,6 +1546,9 @@ async function main() {
   const sloppy = cmp.rows.find((r) => r.slug === 'sloppy-bot');
   const first3 = newConv.messages.filter((x) => x.origin === 'assistant').slice(0, 3);
   check(good.ok && sloppy.ok && good.summaries === 3 && sloppy.summaries === 3 && good.junk === 0 && sloppy.junk > 0, 'both bots did both jobs; the working-out of the sloppy one is counted');
+  const nomodel = cmp.rows.find((r) => r.slug === 'no-model-bot');
+  check(nomodel.ok && nomodel.summaries === 3 && chatBodies.some((b) => b.toolId === 'tool-helper-nomodel' && b.modelId === 'm-default'),
+    'a bot without a model of its own works, with MiniApps\' default model for it (no "Validation failed")');
   check(first3.every((m) => cmp.report.includes(m.elements[0].text.slice(0, 40))) && !cmp.report.includes(newConv.messages.filter((x) => x.origin === 'assistant').slice(-1)[0].elements[0].text.slice(0, 60)),
     'the FIRST replies were used, and they are in the report');
   check(/## Results[\s\S]*\| good-bot \| yes[\s\S]*\| sloppy-bot \| yes[\s\S]*## Bot: good-bot[\s\S]*### Summaries[\s\S]*### Story & characters[\s\S]*## Bot: sloppy-bot[\s\S]*We can add these to the entries[\s\S]*## Story Manager diagnostics\n\nStory Manager v/.test(cmp.report),

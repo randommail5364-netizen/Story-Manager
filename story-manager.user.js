@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.20.0
+// @version      3.20.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1268,6 +1268,13 @@
         revision: tool.revision || 1,
         modelId: tool.modelId || (tool.model && tool.model.id) || tool.defaultModelId || '',
       };
+      // A bot without a model of its own uses MiniApps' default for it (as the site does).
+      if (!toolCache.modelId) {
+        try {
+          const d = await rpc('GET', '/ai-models/defaults/by-tool/' + encodeURIComponent(tool.id) + '?revision=' + encodeURIComponent(toolCache.revision));
+          toolCache.modelId = (d && d.model && (d.model.id || (typeof d.model === 'string' ? d.model : ''))) || (d && d.modelId) || '';
+        } catch (e) { /* tried below without one */ }
+      }
     }
     // A tag finds this request's answer among the earlier ones in the chat.
     const tag = 'Request ' + uuid4().slice(0, 8);
@@ -1656,7 +1663,7 @@
     const was = size();
     const noted = (t) => t.split('\n').some((l) => REASONING_RE.test(l) || REASONING_WORDS_RE.test(l)) || ASIDE_RE.test(t) || GUESS_RE.test(t);
     const clean = (t) => { ASIDE_RE.lastIndex = 0; GUESS_RE.lastIndex = 0; const n = noted(t); ASIDE_RE.lastIndex = 0; GUESS_RE.lastIndex = 0; return n ? dropReasoning(t) : t; };
-    chat.memory = squashRepeats(dropJunk(clean(chat.memory)));
+    chat.memory = dedupeSections(squashRepeats(dropJunk(clean(chat.memory))));
     let kinds = 0;
     const moved = [];
     for (const e of chat.entries) {
@@ -1866,7 +1873,7 @@
       }
       let memory = sections.length ? applySections(chat.memory, sections) : chat.memory;
       // An older-style complete STORY replaces it all, without its history part.
-      if (parsed.memory.trim() && !sections.length) memory = removeSection(parsed.memory, 'Story So Far');
+      if (parsed.memory.trim() && !sections.length) memory = dedupeSections(dropJunk(removeSection(parsed.memory, 'Story So Far')));
       result = { memory, updates: parsed.updates, cast: parsed.cast };
       // Much less knowledge than before means facts were dropped (or the answer was cut off).
       const after = knowledgeSize(memory.trim(), applyUpdates(cloneEntries(chat.entries), parsed.updates, chat.ignored).entries);
@@ -2157,6 +2164,25 @@
     return first && first.role === 'assistant' ? first.id : null;
   }
 
+  // The story's "## Title" sections: one per title (the first; a repeat is
+  // usually the keeper's planning), without "none" lines or empty sections.
+  function dedupeSections(memory) {
+    const text = String(memory || '');
+    const parts = text.split(/^(?=##\s)/m);
+    const seen = new Set();
+    const out = [];
+    for (const p of parts) {
+      const m = p.match(/^##\s*(.+?)\s*$/m);
+      if (!m || !/^##\s/.test(p)) { if (p.trim()) out.push(p.trim()); continue; }
+      const key = m[1].toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const body = p.slice(m[0].length).split('\n').filter((l) => !EMPTY_FACT_RE.test(l.replace(/^\s*\(|\)\s*$/g, ''))).join('\n').trim();
+      if (body) out.push('## ' + m[1] + '\n' + body);
+    }
+    return out.join('\n\n');
+  }
+
   // "Choi" and "Ms. Choi" are the same person; "Mr. Kim" and "Ms. Kim" may not be.
   const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|president)\.?\s+/i;
   function sameButTitle(a, b) {
@@ -2285,7 +2311,9 @@
         if (name && body) updates.push(add ? { name, kind, aliases, text: body, add } : { name, kind, aliases, text: body });
       }
     });
-    sections.forEach((x) => { x.text = dropJunk(squashRepeats(x.text)); });
+    // One section per title: a second one is usually the keeper's planning.
+    for (let i = sections.length - 1; i >= 0; i--) if (sections.findIndex((x) => x.title.toLowerCase() === sections[i].title.toLowerCase()) < i) sections.splice(i, 1);
+    sections.forEach((x) => { x.text = dropJunk(squashRepeats(x.text)).split('\n').filter((l) => !EMPTY_FACT_RE.test(l.replace(/^\(|\)$/g, ''))).join('\n').trim(); });
     for (let i = updates.length - 1; i >= 0; i--) if (TEMPLATE_NAME_RE.test(updates[i].name)) updates.splice(i, 1);
     updates.forEach((u) => {
       u.aliases = (u.aliases || []).filter((a) => !TEMPLATE_ALIAS_RE.test(a));
@@ -3121,6 +3149,9 @@
           results.push(r);
           compare.slug = slug;
           compare.slot = 8 + i;
+          // A fresh helper chat each time: the bot must not see earlier runs.
+          helperChats[compare.slot] = null;
+          await Store.set(helperKey(compare.slot), null);
           compare.raw = r.raw;
           toolCache = null;
           const temp = Object.assign(newChat(chat.id), { title: chat.title, greetingId: greetingOf(msgs) });

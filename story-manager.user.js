@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.15.0
+// @version      3.15.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1647,7 +1647,9 @@
       if (split.states.length && (e.kind || 'character') === 'character') moved.push({ name: e.name, states: ['last known — ' + split.states[split.states.length - 1]] });
       e.text = squashRepeats(split.text);
       // Objects and places filed as characters.
-      if ((e.kind || 'character') === 'character') { const k = guessKind(e.name); if (k && k !== 'character') { e.kind = k; kinds++; } }
+      if ((e.kind || 'character') === 'character') { const k = guessKind(e.name, [], e.text); if (k && k !== 'character') { e.kind = k; kinds++; } }
+      // A person filed as a place or item (e.g. "Park Ji-won" as a park).
+      else if (/^(place|item)$/.test(e.kind) && PERSON_RE.test(e.text) && !ITEM_WORDS.test(e.name)) { e.kind = 'character'; kinds++; }
     }
     for (const c of chat.chapters || []) c.text = squashRepeats(dropJunk(clean(c.text)));
     if (moved.length) placeStates(chat, moved);
@@ -1948,7 +1950,7 @@
       const e = findEntry(entries, u.name) || u.aliases.map((a) => findEntry(entries, a)).find(Boolean);
       if (!e) {
         if (!u.text) continue;
-        entries.push({ name: u.name, kind: (u.add ? u.newKind : u.kind) || guessKind(u.name) || 'lore', aliases: u.aliases, text: latestState(u.text), always: false, updated: Date.now() });
+        entries.push({ name: u.name, kind: (u.add ? u.newKind : u.kind) || guessKind(u.name, [], u.text) || 'lore', aliases: u.aliases, text: latestState(u.text), always: false, updated: Date.now() });
         continue;
       }
       if (!u.text) continue;
@@ -1984,7 +1986,7 @@
   // its input ("F9:", "S3", "[R12]"), notes on where facts are filed
   // ("already in Karina's entry", "-> covered"), plans ("we can add…"),
   // and questions. Quoted speech is ignored when checking.
-  const JUNK_RE = /(^|[\s(])(F|S)\d+\s*[:|\]\-–)]|\[R\d+|\balready (in|covered|recorded|reflected|has|have|listed|noted|captured)\b|\bin (his|her|their|its|the [\w'’ ]{1,40}?|[A-Z][\w-]*(?: [A-Z][\w-]*)?['’]s?|[\w-]+['’]s) entr(y|ies)\b|\b(the )?entry for\b|(->|→)\s*(in|covered|skip|temporary|same|already|not)\b|\b(we|i) (can|should|must|need|will|could|might|have to|do not|don't|already)\b|\bwe['’](ll|ve|d)\b|\bfor brevity\b|^\s*[-*•]?\s*similarly,? (for|with) (the )?(others|rest|remaining)\b|\b(headings?|sections?) (with nothing|that (are|is) empty)\b|\btoken limit\b|\b(output|write) (only|the|this|that|these)\b.*\bentr(y|ies)\b|^\s*[-*•]?\s*(implementation|correction|after review|summary of changes|changes|plan|reasoning|analysis)\s*:\s*$|\b(the )?(new events|events list|this request|previous request|previous update|knowledge base|the instructions)\b|[:\-–]\s*(temporary|skip|none)\s*\.?$|\bnot recorded\b|\bremains? unchanged\b/i;
+  const JUNK_RE = /(^|[\s(])(F|S)\d+\s*[:|\]\-–)]|\[R\d+|\balready (in|covered|recorded|reflected|has|have|listed|noted|captured)\b|\bin (his|her|their|its|the [\w'’ ]{1,40}?|[A-Z][\w-]*(?: [A-Z][\w-]*)?['’]s?|[\w-]+['’]s) entr(y|ies)\b|\b(the )?entry for\b|(->|→)\s*(in|covered|skip|temporary|same|already|not)\b|\b(we|i) (can|should|must|need|will|could|might|have to|do not|don't|already)\b|\bwe['’](ll|ve|d)\b|\bfor brevity\b|^\s*[-*•]?\s*similarly,? (for|with) (the )?(others|rest|remaining)\b|\b(headings?|sections?) (with nothing|that (are|is) empty)\b|\btoken limit\b|\b(output|write) (only|the|this|that|these)\b.*\bentr(y|ies)\b|^\s*[-*•]?\s*(implementation|correction|after review|summary of changes|changes|plan|reasoning|analysis)\s*:\s*$|\b(the )?(new events|events list|this request|previous request|previous update|knowledge base|the instructions)\b|[:\-–]\s*(temporary|skip|none)\s*\.?$|\bnot recorded\b|\bremains? unchanged\b|^\s*[-*•]?\s*(in )?(the )?[\w'’ ]{1,40}?['’]s? entr(y|ies)\s*[:.]|\bentry\s*:\s*(add|update|include|record)\b|^\s*[-*•]?\s*in (the )?[\w'’ ]{1,40}?(entry|entries)\.?\s*$|\bin the key moments of\b|\b(add|include) (a |the )?bullets?\b|^\s*(we update|now,? we (write|update|output|add)|let me|first,? we)\b|\b(this|that) (is|counts as|isn't|is not) a (lasting )?fact\b|\b(recorded|covered|captured|reflected|noted|listed|kept|stored|mentioned) in (the |his |her |their |its )?([\w'’ ]{1,30} )?(entr(y|ies)|sections?|timeline|key moments)\b/i;
   const unquoted = (l) => l.replace(/"[^"]*"|“[^”]*”/g, '""');
   const isJunk = (l, questions) => { const u = unquoted(l); return JUNK_RE.test(u) || (questions && u.trim().length < 300 && /\?\s*$/.test(u.trim())); };
   // Removes the keeper's working-out from any text. Once two such lines are
@@ -1999,9 +2001,9 @@
     for (const l of String(t || '').split('\n')) {
       if (/^\s*#{1,4}\s/.test(l)) { skipping = false; bad = 0; out.push(l); continue; }
       if (isJunk(l, questions)) { bad++; if (bad >= 2) skipping = true; continue; }
-      // In a run of working-out, plain lines are part of it; bullets are facts
-      // the keeper added after it, each judged on its own.
-      if (skipping && !/^\s*[-*•]\s+\S/.test(l)) continue;
+      // In a run of working-out, unlabelled plain lines are part of it;
+      // bullets and "Label: value" lines are facts, each judged on its own.
+      if (skipping && !/^\s*[-*•]\s+\S/.test(l) && !/^\s*\*{0,2}[A-Z][\w &,'’/()-]{1,40}?\*{0,2}\s*:\s*\S/.test(l)) continue;
       out.push(l);
     }
     return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -2022,25 +2024,39 @@
   function splitStates(t) {
     const keep = [];
     const states = [];
-    let inState = false;
+    // Under a "Current State" heading only the state lines right below it
+    // count (at most a few): older entries had their later facts added
+    // after it, and those are not states. A labelled line ("Key Moments:")
+    // or a blank line ends the part.
+    const LABEL = /^\s*[-*•]?\s*\*{0,2}[A-Z][\w &,'’/()-]{1,40}?\*{0,2}\s*:/;
+    let inState = 0;
     for (const l of String(t || '').split('\n')) {
-      if (/^\s*#{1,4}\s/.test(l)) { inState = /^\s*#{1,4}\s*(current state|right now|currently|whereabouts)\b/i.test(l); if (!inState) keep.push(l); continue; }
-      if (inState) { if (l.trim()) states.push(l.trim().replace(/^[-*•]\s*/, '')); continue; }
+      if (/^\s*#{1,4}\s/.test(l)) { inState = /^\s*#{1,4}\s*(current state|right now|currently|whereabouts)\b/i.test(l) ? 1 : 0; if (!inState) keep.push(l); continue; }
+      if (inState) {
+        if (!l.trim() || (LABEL.test(l) && !STATE_RE.test(l)) || inState > 4) inState = 0;
+        else { states.push(l.trim().replace(/^[-*•]\s*/, '')); inState++; continue; }
+      }
       if (STATE_RE.test(l)) { states.push(l.trim().replace(STATE_RE, '').trim()); continue; }
       keep.push(l);
     }
     return { text: keep.join('\n').replace(/\n{3,}/g, '\n\n').trim(), states: states.filter(Boolean) };
   }
+
   // What an entry is when the keeper did not say: a name in its CAST list is
   // a character; otherwise its words decide; anything else is lore.
   const PLACE_WORDS = /\b(villa|house|home|penthouse|apartment|flat|room|bedroom|suite|pavilion|alcove|garage|bar|club|speakeasy|lounge|beach|city|town|village|island|studio|office|building|tower|street|park|hotel|resort|restaurant|cafe|café|terrace|pool|forest|jungle|cove|dorm|dormitory|school|hospital|kitchen|bathroom|garden|lake|river|mountain|castle|palace|church|temple|mansion|cabin|yacht club|airport|hangar|stage|arena|venue)\b/i;
   const ITEM_WORDS = /\b(plushie|plush|toy|doll|hammock|jacket|coat|dress|gown|necklace|choker|bracelet|anklet|earrings?|ring|watch|car|motorcycle|ducati|jet|plane|boeing|helicopter|sikorsky|yacht|boat|van|phone|notebook|diary|letter|photo|key|keys|sword|gun|book|gift|box|collar|blanket|pillow|snow ?globe|perfume|bag|scarf)\b/i;
   const GROUP_WORDS = /\b(team|crew|band|family|company|agency|entertainment|members|group|gang|club members|staff|board)\b/i;
-  function guessKind(name, cast) {
+  // Signs that an entry is about a person: "She …", a full name or role.
+  const PERSON_RE = /^\s*[-*•]?\s*(she|he)\b|\b(full name|role|age|birthday|her (role|job|title)|his (role|job|title)|personality)\s*[:\-–]|\b(she|he) (is|was|has|delivered|said)\b/im;
+  function guessKind(name, cast, text) {
     const n = String(name || '');
     if ((cast || []).some((c) => c.toLowerCase() === n.toLowerCase())) return 'character';
+    if (text && PERSON_RE.test(text)) return 'character';
     if (ITEM_WORDS.test(n)) return 'item';
-    if (PLACE_WORDS.test(n)) return 'place';
+    // A place or group word as the first word of a name may be a surname ("Park Ji-won").
+    const rest = n.replace(/^\S+\s*/, '');
+    if (PLACE_WORDS.test(rest) || (PLACE_WORDS.test(n) && !/^[A-Z][a-z]+ [A-Z][a-z]+(-[a-z]+)?$/.test(n))) return 'place';
     if (GROUP_WORDS.test(n)) return 'group';
     return '';
   }
@@ -2178,8 +2194,8 @@
       const split = splitStates(structuredOnly(squashRepeats(u.text)));
       u.text = split.text;
       u.states = split.states;
-      if (!u.kind && !u.add) u.kind = guessKind(u.name, cast);
-      if (!u.kind && u.add) u.newKind = guessKind(u.name, cast);
+      if (!u.kind && !u.add) u.kind = guessKind(u.name, cast, u.text);
+      if (!u.kind && u.add) u.newKind = guessKind(u.name, cast, u.text);
     });
     for (let i = updates.length - 1; i >= 0; i--) if (!updates[i].text && !updates[i].states.length) updates.splice(i, 1);
     entries.forEach((e) => { e.text = squashRepeats(e.text); if (e.facts) e.facts = squashRepeats(e.facts); });
@@ -4447,7 +4463,8 @@
     const junk = chat.entries.reduce((n, e) => n + e.text.split('\n').filter((l) => isJunk(l, true)).length, 0) +
       chat.memory.split('\n').filter((l) => isJunk(l)).length;
     const states = chat.entries.filter((e) => splitStates(e.text).states.length).length;
-    const kinds = chat.entries.filter((e) => (e.kind || 'character') === 'character' && /^(item|place|group)$/.test(guessKind(e.name))).length;
+    const kinds = chat.entries.filter((e) => ((e.kind || 'character') === 'character' && /^(item|place|group)$/.test(guessKind(e.name, [], e.text))) ||
+      (/^(place|item)$/.test(e.kind) && PERSON_RE.test(e.text) && !ITEM_WORDS.test(e.name))).length;
     const twins = chat.entries.filter((e, i) => chat.entries.some((x, j) => j < i && sameButTitle(x.name, e.name))).length;
     const waiting = chat.entries.filter(needsConsolidation).length;
     const bad = [];

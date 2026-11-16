@@ -19,7 +19,7 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
+const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat']
   .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat };')();
 
@@ -330,6 +330,39 @@ test('objects and places are not filed as characters', () => {
   const chat = { memory: '', entries: [{ name: 'Green Jungle Hammock', kind: 'character', aliases: [], text: '- Strung between palms.' }], chapters: [], log: [] };
   lib.cleanChat(chat);
   assert.strictEqual(chat.entries[0].kind, 'item');
+});
+
+// Real entry layout that v3.14 damaged: later facts were added below an old
+// "Current State" heading, and the cleaning removed them all.
+test('regression: facts added below an old Current State heading are kept', () => {
+  const winter = [
+    '### Basics', 'Full name: Kim Minjeong. Role: aespa member.',
+    '### Key Moments', 'Spanked by Jacek in the penthouse.',
+    '### Current State', 'Loading bay alcove, stroking Yujin\'s hair.',
+    'Key Moments:', 'Took Winter on a date to a bookstore and the Han River.',
+    'Appearance: Platinum anklet ("My Quiet").',
+    'Goals, Promises & Secrets: Secured Jacek\'s commitment to exclusive "stillness" moments.',
+    'Personality & Voice: Packing style is sentimental (Han River snow globe).',
+  ].join('\n');
+  const sp = lib.splitStates(winter);
+  assert.deepStrictEqual(sp.states, ['Loading bay alcove, stroking Yujin\'s hair.']);
+  assert(/bookstore/.test(sp.text) && /Platinum anklet/.test(sp.text) && /stillness/.test(sp.text) && /snow globe/.test(sp.text));
+  const chat = { memory: '## Current Scene\n- Winter in her bedroom.', entries: [{ name: 'Winter', kind: 'character', aliases: [], text: winter }], chapters: [], log: [] };
+  lib.cleanChat(chat);
+  assert(/bookstore/.test(chat.entries[0].text) && /stillness/.test(chat.entries[0].text) && !/Loading bay/.test(chat.entries[0].text));
+});
+
+test('regression: Park Ji-won is a person, and her entry\'s working-out goes', () => {
+  assert.notStrictEqual(lib.guessKind('Park Ji-won'), 'place');
+  assert.strictEqual(lib.guessKind('Central Park'), 'place');
+  const park = ['She delivered the official statement.', '"Ours" creed: in the group dynamic, recorded in entries.', 'In villa entry.', 'In the key moments of the members.',
+    'Ningning: chaotic', 'Winter: sentimental', 'Park Ji-won\'s entry: add the official narrative.', 'Karina\'s entry: add phone shutdown during takeoff and packing style.',
+    'Personality & Voice: Add bullet for packing style.', 'We update:', '- Head of PR at SM.'].join('\n');
+  const chat = { memory: '', entries: [{ name: 'Park Ji-won', kind: 'place', aliases: [], text: park }], chapters: [], log: [] };
+  lib.cleanChat(chat);
+  assert.strictEqual(chat.entries[0].kind, 'character');
+  // Real facts in the wrong entry are not deleted (they are moved by consolidation).
+  assert.strictEqual(chat.entries[0].text, 'She delivered the official statement.\nNingning: chaotic\nWinter: sentimental\n- Head of PR at SM.');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

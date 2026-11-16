@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.10
+// @version      3.10.12
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -41,6 +41,8 @@
 
 (function () {
   'use strict';
+  // This script's version, recorded on each story it works on.
+  const SM_VERSION = typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version ? String(GM_info.script.version) : '';
 
   // If anything stops the script from starting, say where instead of failing silently.
   let stage = 'starting';
@@ -695,7 +697,15 @@
 
   // fromSync: the chat was just loaded from the sync gist (not a local change).
   async function saveChat(chat, fromSync) {
-    if (!fromSync) chat.changedAt = Date.now();
+    if (!fromSync) {
+      chat.changedAt = Date.now();
+      // Which versions of Story Manager worked on this story, oldest first.
+      const vs = chat.smVersions || (chat.smVersions = []);
+      if (SM_VERSION && (!vs.length || vs[vs.length - 1].v !== SM_VERSION)) {
+        vs.push({ v: SM_VERSION, at: Date.now() });
+        if (vs.length > 30) vs.splice(0, vs.length - 30);
+      }
+    }
     await Store.set('chat:' + chat.id, chat);
     publishInjectMap();
     if (!fromSync) scheduleSync();
@@ -739,7 +749,7 @@
   function scheduleSync() {
     if (!settings.githubToken || !settings.githubToken.trim()) return;
     clearTimeout(sync.timer);
-    sync.timer = setTimeout(() => runSync().catch(() => {}), 8000);
+    sync.timer = setTimeout(() => runSync().catch(() => {}), 8000 * TIME_SCALE);
   }
 
   // Loads newer chats from the gist, then saves chats changed here.
@@ -1061,7 +1071,9 @@
     });
   }
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Tests can make every wait shorter (smx:timeScale in the page's storage).
+  const TIME_SCALE = (() => { try { return Math.min(1, Math.max(0.05, Number(localStorage.getItem('smx:timeScale')) || 1)); } catch (e) { return 1; } })();
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms * TIME_SCALE));
 
   function uuid4() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -2237,7 +2249,7 @@
         let failure = null;
         for (let k = 0; k < wave.length; k++) {
           if (results[k].status === 'rejected') { failure = results[k].reason; break; }
-          const got = results[k].value.map((e) => Object.assign(e, { folded: false }));
+          const got = results[k].value.map((e) => Object.assign(e, { folded: false }, SM_VERSION ? { v: SM_VERSION } : {}));
           const ids = new Set(got.map((e) => e.id));
           // A regenerated or re-read reply replaces its old summary.
           chat.log = sortLog(chat.log.filter((e) => !ids.has(e.id)).concat(got), msgs);
@@ -3094,7 +3106,7 @@
     for (let i = 0; i < 200; i++) {
       let writing = false;
       try { const r = await rpc('GET', '/chat/' + cid + '/run-state'); writing = !!(r && r.isGenerating); } catch (e) { /* unknown: rely on activity */ }
-      if (!writing && Date.now() - (lastActivity[cid] || 0) > 8000) return true;
+      if (!writing && Date.now() - (lastActivity[cid] || 0) > 8000 * TIME_SCALE) return true;
       await sleep(3000);
     }
     return false;
@@ -3115,6 +3127,20 @@
     plan.fillAll = true;
     return composeMemory(plan, '').text + (chat.pinnedMemoryText ? '\n\n' + chat.pinnedMemoryText : '');
   }
+  // What a smaller pinned message keeps and leaves out, compared with all of it.
+  function describeCut(chat, text) {
+    const full = [], shortened = [], left = [];
+    for (const e of chat.entries) {
+      if (text.includes(e.text)) full.push(e.name);
+      else if (text.includes('### ' + e.name + ' (') || text.includes('### ' + e.name + '\n')) shortened.push(e.name);
+      else left.push(e.name);
+    }
+    const chFull = chat.chapters.filter((c) => text.includes(c.text)).length;
+    const logs = chat.log.slice(-Math.max(Math.max(0, Number(settings.logAttach) || 0), chat.log.filter((e) => e.chapter == null).length));
+    const logIn = logs.filter((e) => text.includes(e.text)).length;
+    return { full, shortened, left, chapters: chat.chapters.length, chFull, logs: logs.length, logIn };
+  }
+
   async function refreshMemoryMessage(chat) {
     if (!settings.memoryMessage || !settings.pinMemory || !chat.pinnedMemoryId) return;
     let text = memoryMessageText(chat);
@@ -3165,11 +3191,21 @@
           memoryMsgSize = smaller;
           await Store.set('memoryMsgSize', memoryMsgSize);
           text = memoryMessageText(chat);
+          chat.memoryMsgRefused = { at: Date.now(), error: m.slice(0, 200), fullChars: chat.memoryMsgRefused && chat.memoryMsgRefused.fullChars || (attempt === 1 ? body.elements[0].text.length : 0) };
+          logJob(chat, { kind: 'pin', label: 'MiniApps refused the pinned memory message (' + body.elements[0].text.length.toLocaleString() + ' characters); trying a smaller one (' + smaller.toLocaleString() + ')', ok: false, ms: 0, error: m.slice(0, 200) });
         }
       }
       chat.memoryMsgHash = hashText(text);
       chat.memoryMsgSynced = true;
       chat.memoryMsgAt = Date.now();
+      chat.memoryMsgChars = text.length;
+      // Smaller than everything: say what was kept and what was left out.
+      chat.memoryMsgCut = memoryMsgSize === Infinity ? null : Object.assign(describeCut(chat, text), { size: memoryMsgSize, chars: text.length,
+        error: chat.memoryMsgRefused ? chat.memoryMsgRefused.error : '', at: chat.memoryMsgRefused ? chat.memoryMsgRefused.at : 0 });
+      if (memoryMsgSize === Infinity) chat.memoryMsgRefused = null;
+      if (chat.memoryMsgCut && chat.memoryMsgCut.left.length + chat.memoryMsgCut.shortened.length + (chat.memoryMsgCut.chapters - chat.memoryMsgCut.chFull) > 0 && chat.memoryMsgRefused && Date.now() - chat.memoryMsgRefused.at < 120000) {
+        toast('MiniApps refused the full memory message, so a smaller one is pinned. Open 📖 to see what was left out.', true);
+      }
       chat.memoryMsgError = '';
       logJob(chat, { kind: 'pin', label: 'Updated the pinned memory message (' + text.length.toLocaleString() + ' characters)', ok: true, ms: Date.now() - t0 });
     } catch (e) {
@@ -3528,6 +3564,7 @@
           chat.log = [];
           chat.processedIds = [];
           chat.processedCount = 0;
+          chat.rebuiltWith = SM_VERSION;
           await saveChat(chat);
           renderPanel(true);
           chat.readCount = 0;
@@ -3635,6 +3672,7 @@
     return el('div', {},
       el('div', { class: 'status' },
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
+        versionLine(chat),
         (() => {
           const inMem = Math.min(chat.readCount || chat.processedCount, total || Infinity);
           const hold = Math.max(0, Number(settings.holdBack) || 0);
@@ -3667,6 +3705,30 @@
           : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
         chat.memoryMsgError && settings.memoryMessage && !memoryInMessage(chat) ? el('div', { class: 'error' }, '⚠ Could not update the pinned memory message (' + chat.memoryMsgError + '); the memory is attached to your messages instead.') : null,
         chat.pinError && settings.pinMemory ? el('div', { class: 'error' }, '⚠ Could not pin the memory message: ' + chat.pinError) : null,
+        chat.memoryMsgCut && memoryInMessage(chat) && (chat.memoryMsgCut.left.length || chat.memoryMsgCut.shortened.length ||
+          chat.memoryMsgCut.chFull < chat.memoryMsgCut.chapters || chat.memoryMsgCut.logIn < chat.memoryMsgCut.logs) ? (() => {
+          const c = chat.memoryMsgCut;
+          const list = (a) => a.length ? a.join(', ') : 'none';
+          return el('div', { class: 'error' },
+            el('div', {}, el('b', {}, '⚠ The pinned memory message is not complete. '),
+              c.error ? 'MiniApps refused the full message (' + c.error + '), so a smaller one (' + c.chars.toLocaleString() + ' characters, limit ' + c.size.toLocaleString() + ') is pinned instead.'
+                : 'A smaller one (' + c.chars.toLocaleString() + ' characters, limit ' + c.size.toLocaleString() + ') is pinned, because MiniApps refused a bigger one before.'),
+            el('div', {}, 'Characters & details in full: ' + list(c.full)),
+            c.shortened.length ? el('div', {}, 'Shortened (start and newest facts kept): ' + list(c.shortened)) : null,
+            c.left.length ? el('div', {}, 'Left out: ' + list(c.left)) : null,
+            el('div', {}, 'Chapters: ' + c.chFull + ' of ' + c.chapters + ' in full' + (c.chapters > c.chFull ? ', the older ' + (c.chapters - c.chFull) + ' by title only' : '') +
+              ' · Recent reply summaries: ' + c.logIn + ' of ' + c.logs),
+            el('div', {}, 'Tick "Always send" on a character to keep them in, or put must-know facts in Pinned facts.'),
+            el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+              memoryMsgSize = MEMORY_MESSAGE_SIZES[0];
+              await Store.set('memoryMsgSize', 0);
+              chat.memoryMsgHash = '';
+              chat.memoryMsgRefused = null;
+              toast('Trying the full memory message again…');
+              await refreshMemoryMessage(chat);
+              renderPanel(true);
+            } }, 'Try the full size again')));
+        })() : null,
         settings.provider === 'miniapps' && toolCache && chat.tool && toolCache.id === chat.tool.toolId
           ? el('div', { class: 'error' }, '⚠ The memory keeper is the same bot as this story. MiniApps may then open Story Manager\'s helper chats instead of your story. Pick a different bot in Settings → MiniApps bot.') : null,
         chat.staleFacts ? el('div', {}, 'ℹ Some replies were deleted or rewritten after their facts went into the story & characters. Tap "Redo story & characters from summaries" to remove anything from the old versions.') : null,
@@ -3679,12 +3741,16 @@
       mem,
       el('div', { class: 'hint' }, mem.value.length + ' characters.'),
       el('label', {}, '📚 Chapters (' + chat.chapters.length + ')'),
-      el('div', { class: 'hint' }, chat.chapters.length
+      el('div', { class: 'hint' }, chat.chapters.length && memoryInMessage(chat) && !chat.memoryMsgCut
+        ? 'The story\'s history. Every chapter is in the pinned memory message in full.'
+        : chat.chapters.length
         ? 'The story\'s history. The newest chapters are sent in full, older ones by title once they no longer fit.'
         : 'Every ' + chapterSize() + ' AI replies become a chapter of the story\'s history.'),
       chapterEds.map((ed) => ed.node),
       el('label', {}, '👥 Entries (' + chat.entries.length + ')'),
-      el('div', { class: 'hint' }, inPlay.length
+      el('div', { class: 'hint' }, chat.entries.length && memoryInMessage(chat) && !chat.memoryMsgCut
+        ? 'Every entry is in the pinned memory message in full.' + (inPlay.length ? ' In the current scene: ' + inPlay.join(', ') + '.' : '')
+        : inPlay.length
         ? 'In play right now (sent with every message): ' + inPlay.join(', ') + '. Others are sent when your message mentions them.'
         : 'Characters, places and items get their own entries as the story goes on. Each is sent when it is in the current scene or your message mentions it.'),
       editors.map((ed) => ed.node),
@@ -3703,6 +3769,20 @@
         el('button', { class: 'btn', disabled: isBusy, onclick: continueNew }, 'Continue in a new chat')),
       activityView(chat),
       diagnosticsBox());
+  }
+
+  // Which versions of Story Manager made this story's memory.
+  function versionLine(chat) {
+    const vs = chat.smVersions || [];
+    if (!vs.length && !chat.log.length) return null;
+    const by = {};
+    for (const e of chat.log) by[e.v || 'older'] = (by[e.v || 'older'] || 0) + 1;
+    const parts = Object.keys(by).sort((a, b) => (a === 'older') - (b === 'older')).map((v) => by[v] + ' from ' + (v === 'older' ? 'before v3.10.12' : 'v' + v));
+    const latest = vs.length ? vs[vs.length - 1].v : '';
+    return el('div', {}, 'Made with Story Manager: ', el('b', {}, latest ? 'v' + latest : 'an older version'),
+      vs.length > 1 ? ' (earlier: ' + vs.slice(0, -1).slice(-4).map((x) => 'v' + x.v).join(', ') + ')' : '',
+      chat.rebuiltWith ? ' · rebuilt with v' + chat.rebuiltWith : '',
+      parts.length ? ' · reply summaries: ' + parts.join(', ') : '');
   }
 
   // One collapsible entry in the panel. apply() copies the edits into it.
@@ -3814,6 +3894,7 @@
           (helperWait.readOk ? '' : ', last read failed') + ', answer ' + helperWait.answerChars + ' chars' +
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
+      'Made with: ' + (chat && chat.smVersions && chat.smVersions.length ? chat.smVersions.map((x) => 'v' + x.v).join(' → ') : 'unknown (before v3.10.12)') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
       'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + chat.log.filter((e) => e.facts).length + ' with facts), ' +
         chat.log.filter((e) => e.checked).length + ' facts-checked, ' + st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +
         ' · settings: summaries every ' + settings.updateEvery + ', story & characters every ' + foldEvery() + ', chapter every ' + chapterSize() +

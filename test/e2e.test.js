@@ -354,6 +354,8 @@ async function main() {
       return l;
     } } });
   });
+  // Shorter waits inside Story Manager (E2E_SLOW=1 runs at real speed), and a version like the userscript manager's.
+  await ctx.addInitScript((scale) => { localStorage.setItem('smx:timeScale', scale); window.GM_info = { script: { version: '9.9.9' } }; }, process.env.E2E_SLOW ? '1' : '0.25');
   await ctx.addInitScript((s) => { if (!localStorage.getItem('smx:settings')) localStorage.setItem('smx:settings', JSON.stringify(s)); }, settings);
   // 'lateStart' simulates a userscript manager that starts the script only
   // after the site has already loaded the chat (seen on Firefox for Android).
@@ -472,7 +474,7 @@ async function main() {
     let rounds = 0;
     do {
       n = llmCalls.length;
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(process.env.E2E_SLOW ? 3000 : 1200);
       if (process.env.DEBUG_SETTLE && ++rounds % 10 === 0) {
         const last = llmCalls[llmCalls.length - 1] || '';
         if (rounds % 20 === 0) {
@@ -828,6 +830,7 @@ async function main() {
   await page.getByText('Diagnostics', { exact: true }).click();
   const diagCe = await page.locator('#story-manager-root >> textarea.diag').inputValue();
   check(/Last chat error from MiniApps: helper chat, \d+s ago: Context too long · code CONTEXT_LIMIT/.test(diagCe), 'chat error shown in Diagnostics');
+  if (!/Last chat error from MiniApps: helper/.test(diagCe)) console.log((diagCe.match(/Last chat error[^\n]*/) || [''])[0]);
 
   console.log('29) A bot answer stuck repeating itself is cut off and used');
   await page.locator('#story-manager-root >> .x').click();
@@ -861,7 +864,7 @@ async function main() {
   check(repaired.entries.find((e) => e.name === 'Archive').text.split('\n').length === 600, 'normal long entries left alone');
   await page.evaluate(() => window.wsLoad());
   // Let an update that started on load finish first.
-  for (let n = -1; n !== llmCalls.length;) { n = llmCalls.length; await page.waitForTimeout(15000); }
+  for (let n = -1; n !== llmCalls.length;) { n = llmCalls.length; await page.waitForTimeout(process.env.E2E_SLOW ? 15000 : 5000); }
   const callsBeforeBig = llmCalls.length;
   const bodiesBeforeBig = chatBodies.length;
   const beforeBig = await keyNow();
@@ -1112,6 +1115,27 @@ async function main() {
   check(editBusy === 0 && editTooBig === 0 && /Mira hums when nervous/.test(newConv.messages.find((x) => x.id === carrier).elements[0].text), 'updated after waiting and after the refusal');
   await waitFor(async () => /Updated the pinned memory message/.test((await keyNow()).jobs[0].label), 15000, 'job recorded');
   check(!(await keyNow()).memoryMsgError && await page.evaluate(() => localStorage.getItem('smx:memoryMsgSize')) === '120000', 'no error shown; the smaller size is remembered');
+  const cut37 = (await keyNow()).memoryMsgCut;
+  check(cut37 && /too long/.test(cut37.error) && cut37.size === 120000 && !cut37.left.length && (await keyNow()).jobs.some((j) => /MiniApps refused the pinned memory message/.test(j.label)),
+    'what MiniApps said is recorded, with what the smaller message holds; in Activity');
+  // A message that had to leave things out: the panel says what was kept and what was not.
+  await page.evaluate(() => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    c.memoryMsgCut = Object.assign(c.memoryMsgCut, { left: ['Ash'], shortened: ['Mira'], full: ['Old Mill'], chapters: 3, chFull: 1 });
+    localStorage.setItem(key, JSON.stringify(c));
+  });
+  await page.reload();
+  await page.waitForTimeout(800);
+  await page.locator('#story-manager-root >> .fab').click();
+  const cutText = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/not complete/.test(cutText) && /MiniApps refused the full message \([^)]*Message is too long\)/.test(cutText) && /Left out: Ash/.test(cutText) &&
+    /Shortened[^\n]*: Mira/.test(cutText) && /Chapters: 1 of 3 in full, the older 2 by title only/.test(cutText), 'the panel says what MiniApps said, what was kept and what was left out');
+  check(/Made with Story Manager: v9\.9\.9[^\n]*reply summaries: \d+ from v9\.9\.9/.test(cutText), 'the panel shows which Story Manager version made the memory');
+  const edits37c = edits.length;
+  await page.getByText('Try the full size again').click();
+  await waitFor(() => edits.length > edits37c, 30000, 'retried at full size');
+  check(await page.evaluate(() => localStorage.getItem('smx:memoryMsgSize')) === '0' && !(await keyNow()).memoryMsgCut, '"Try the full size again" pins everything again');
   await page.locator('#story-manager-root >> .x').click();
 
   console.log('38) A pinned memory message that was deleted or regenerated is replaced by the next one');

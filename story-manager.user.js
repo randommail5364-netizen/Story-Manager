@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.15.1
+// @version      3.16.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2860,6 +2860,104 @@
     });
   }
 
+
+  // "Recover lost facts": GitHub keeps every saved version of the sync gist.
+  // Facts an entry had in an earlier version but no longer has are added back
+  // (cleaned by today's rules, so working-out and old states stay out), under
+  // "### Recovered facts"; consolidation then files them in place.
+  async function gistVersions() {
+    const id = await syncGist();
+    const all = [];
+    for (let page = 1; page <= 5; page++) {
+      const list = await gh('GET', '/gists/' + id + '/commits?per_page=100&page=' + page);
+      if (!Array.isArray(list) || !list.length) break;
+      for (const c of list) if (c && c.version && c.committed_at) all.push({ version: c.version, at: Date.parse(c.committed_at) });
+      if (list.length < 100) break;
+    }
+    return { id, versions: all.sort((a, b) => b.at - a.at) };
+  }
+
+  async function chatAtVersion(gistId, version, chatId) {
+    const g = await gh('GET', '/gists/' + gistId + '/' + version);
+    const f = g && g.files && g.files['chat-' + chatId + '.json'];
+    if (!f) return null;
+    return f.truncated && f.raw_url ? requestJSON('GET', f.raw_url, {}, undefined) : JSON.parse(f.content);
+  }
+
+  const factKey = (l) => l.toLowerCase().replace(/^[\s\-*•]+/, '').replace(/^[\w &,'’/()-]{1,40}?:\s*/, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  // Adds back what old entries had and the current ones lack. Returns
+  // [{ name, count, added }] for what was recovered.
+  function recoverFacts(chat, old) {
+    const report = [];
+    const skip = new Set((chat.ignored || []).map((n) => n.toLowerCase()));
+    for (const oe of (old && old.entries) || []) {
+      if (!oe || !oe.name || [oe.name].concat(oe.aliases || []).some((n) => skip.has(String(n).toLowerCase()))) continue;
+      const cleaned = splitStates(dropJunk(dropReasoning(oe.text || ''), true)).text;
+      const lines = cleaned.split('\n').filter((l) => l.trim() && !/^\s*#{1,4}\s/.test(l) && factKey(l).length >= 12);
+      if (!lines.length) continue;
+      const cur = findEntry(chat.entries, oe.name) || (oe.aliases || []).map((a) => findEntry(chat.entries, a)).find(Boolean);
+      if (!cur) {
+        chat.entries.push({ name: oe.name, kind: oe.kind || guessKind(oe.name, [], cleaned) || 'lore', aliases: (oe.aliases || []).slice(), text: cleaned, always: !!oe.always, updated: Date.now() });
+        report.push({ name: oe.name, count: lines.length, added: true });
+        continue;
+      }
+      const have = cur.text.split('\n').map(factKey).filter(Boolean);
+      const haveAll = have.join(' | ');
+      const seen = new Set();
+      const missing = lines.filter((l) => { const k = factKey(l); if (seen.has(k) || have.includes(k) || haveAll.includes(k)) return false; seen.add(k); return true; });
+      if (!missing.length) continue;
+      cur.text = cur.text.replace(/\s+$/, '') + '\n### Recovered facts\n' + missing.join('\n');
+      cur.updated = Date.now();
+      report.push({ name: cur.name, count: missing.length });
+    }
+    return report;
+  }
+
+  async function runRecover(chat) {
+    if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return 'skipped'; }
+    if (!settings.githubToken || !settings.githubToken.trim()) { toast('Recovering needs sync with GitHub (Settings → Sync), which keeps the earlier versions.', true); return 'failed'; }
+    let id;
+    let versions;
+    try { ({ id, versions } = await gistVersions()); } catch (e) { toast('Could not read the saved versions from GitHub: ' + (e.message || e), true); return 'failed'; }
+    if (versions.length < 2) { toast('GitHub has no earlier saved versions yet.'); return 'nothing'; }
+    // One choice per day (its last version), newest first; the suggestion is
+    // the last one saved before a version the user names, or the oldest.
+    const days = [];
+    for (const v of versions) { const d = new Date(v.at).toDateString(); if (!days.some((x) => x.day === d)) days.push({ day: d, v }); }
+    const fmt = (t) => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const firstBad = ((chat.smVersions || []).find((x) => /^3\.1[45]\./.test(x.v)) || {}).at;
+    let pick = firstBad ? versions.find((v) => v.at < firstBad) : null;
+    const choices = days.slice(0, 15).map((d) => d.v);
+    if (pick && !choices.includes(pick)) choices.unshift(pick);
+    const answer = prompt('Recover facts from which saved version? Facts that version had and the memory no longer has are added back (nothing is removed).\n\n' +
+      choices.map((v, i) => (i + 1) + ') ' + fmt(v.at) + (v === pick ? '  ← before v3.14 tidied it (suggested)' : '')).join('\n') +
+      '\n\nType a number:', String(pick ? choices.indexOf(pick) + 1 : 1));
+    const n = Number(answer);
+    if (!answer || !(n >= 1 && n <= choices.length)) return 'cancelled';
+    const chosen = choices[n - 1];
+    return withBusy(chat.id, 1, async () => {
+      const t0 = Date.now();
+      setStep(chat.id, 'Reading the version saved on ' + fmt(chosen.at) + '…');
+      try {
+        const old = await chatAtVersion(id, chosen.version, chat.id);
+        if (!old) { toast('That version has no memory for this chat.'); return 'nothing'; }
+        const before = snapshot(chat);
+        const report = recoverFacts(chat, old);
+        if (!report.length) { toast('Nothing was missing: the memory has every fact that version had.'); return 'nothing'; }
+        chat.history = [before].concat(chat.history).slice(0, 5);
+        const total = report.reduce((k, r) => k + r.count, 0);
+        logJob(chat, { kind: 'check', label: 'Recovered ' + total + ' facts from the version saved on ' + fmt(chosen.at) + ': ' +
+          report.map((r) => r.name + ' ' + r.count + (r.added ? ' (entry restored)' : '')).join(', '), ok: true, ms: Date.now() - t0 });
+        await saveChat(chat);
+        toast('Recovered ' + total + ' facts (' + report.map((r) => r.name + ' ' + r.count).join(', ') + '). They are under "Recovered facts" until consolidation files them; "Undo last change" takes them out again.');
+        return 'done';
+      } catch (e) {
+        toast('Could not recover: ' + (e.message || e), true);
+        return 'failed';
+      }
+    });
+  }
+
   async function runFactCheck(id, all) {
     const chat = await getChat(id, true);
     if (busy[id]) return 'skipped';
@@ -4437,6 +4535,7 @@
           if (status === 'nothing') toast('No chapters with summaries to check.');
         } }, 'Check chapters'),
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: factCheck }, 'Check for missing facts'),
+        settings.githubToken && settings.githubToken.trim() ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => { await save(true); await runRecover(chat); } }, 'Recover lost facts') : null,
         chat.log.some((e) => !e.facts && e.nofacts !== 'none') ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           const n = chat.log.filter((e) => !e.facts && e.nofacts !== 'none').length;

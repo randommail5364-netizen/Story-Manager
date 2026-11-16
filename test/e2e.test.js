@@ -332,10 +332,22 @@ async function main() {
       gists[g.id] = g;
       return reply(g, 201);
     }
+    // Like GitHub, every save is kept as a version.
+    if ((m = url.pathname.match(/^\/gists\/([^/]+)\/commits$/))) {
+      const g = gists[m[1]];
+      return reply(g ? (g.history || []).slice().reverse().map((h) => ({ version: h.version, committed_at: new Date(h.at).toISOString() })) : []);
+    }
+    if ((m = url.pathname.match(/^\/gists\/([^/]+)\/([^/]+)$/))) {
+      const h = ((gists[m[1]] || {}).history || []).find((x) => x.version === m[2]);
+      return h ? reply({ id: m[1], files: h.files }) : reply({ message: 'Not Found' }, 404);
+    }
     if ((m = url.pathname.match(/^\/gists\/([^/]+)$/))) {
       const g = gists[m[1]];
       if (!g) return reply({ message: 'Not Found' }, 404);
-      if (req.method() === 'PATCH') for (const [n, f] of Object.entries(JSON.parse(req.postData()).files)) g.files[n] = { content: f.content };
+      if (req.method() === 'PATCH') {
+        for (const [n, f] of Object.entries(JSON.parse(req.postData()).files)) g.files[n] = { content: f.content };
+        (g.history = g.history || []).push({ version: 'v' + ((g.history || []).length + 1), at: Date.now(), files: JSON.parse(JSON.stringify(g.files)) });
+      }
       return reply(g);
     }
     return reply({ message: 'Not Found' }, 404);
@@ -1465,6 +1477,28 @@ async function main() {
   await page.reload(); // as when the link is opened on another device
   await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:settings')).githubToken)) === 'gh-test-token', 15000, 'token from the sync link');
   check(!(await page.evaluate(() => location.href)).includes('smx-sync'), 'opening the sync link sets up sync, and the token leaves the address bar');
+
+  console.log('42b) "Recover lost facts" adds back facts an earlier saved version had');
+  // An earlier version (as GitHub keeps it) where Mira had more facts.
+  const g42 = Object.values(gists)[0];
+  const old42 = JSON.parse(g42.files['chat-' + newId + '.json'].content);
+  const mira42 = old42.entries.find((e) => e.name === 'Mira');
+  mira42.text += '\n- Grew up in the river village of Elm.\n- We can add this to her entry.';
+  const files42 = JSON.parse(JSON.stringify(g42.files));
+  files42['chat-' + newId + '.json'] = { content: JSON.stringify(old42) };
+  g42.history.unshift({ version: 'v0', at: Date.now() - 2 * 86400000, files: files42 });
+  await page.reload();
+  await page.waitForTimeout(800);
+  await page.locator('#story-manager-root >> .fab').click();
+  let asked42 = '';
+  page.once('dialog', (d) => { asked42 = d.message(); d.accept(String((d.message().match(/(\d+)\) [^\n]*\n\nType/) || [])[1] || '')); });
+  await page.getByText('Recover lost facts').click();
+  await waitFor(async () => /Grew up in the river village of Elm/.test((await keyNow()).entries.find((e) => e.name === 'Mira').text), 30000, 'fact recovered');
+  const mira42now = (await keyNow()).entries.find((e) => e.name === 'Mira').text;
+  check(/Recover facts from which saved version/.test(asked42) && /### Recovered facts\n- Grew up in the river village of Elm\.$/.test(mira42now) && !/We can add/.test(mira42now),
+    'the lost fact is back under "Recovered facts", without working-out');
+  check((await keyNow()).jobs.some((j) => /Recovered 1 facts from the version saved on/.test(j.label)), 'recorded in Activity');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
 
   console.log('43) Helper chats are hidden from MiniApps\' chat lists');
   const helperConvs = Object.keys(convs).filter((id) => convs[id].toolId === 'tool-helper');

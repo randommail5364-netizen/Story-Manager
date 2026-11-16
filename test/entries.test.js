@@ -19,9 +19,9 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat };')();
+const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const factKey = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -363,6 +363,21 @@ test('regression: Park Ji-won is a person, and her entry\'s working-out goes', (
   assert.strictEqual(chat.entries[0].kind, 'character');
   // Real facts in the wrong entry are not deleted (they are moved by consolidation).
   assert.strictEqual(chat.entries[0].text, 'She delivered the official statement.\nNingning: chaotic\nWinter: sentimental\n- Head of PR at SM.');
+});
+
+test('recovering lost facts from an earlier version adds back only what is missing', () => {
+  const oldWinter = ['### Basics', 'Full name: Kim Minjeong. Role: aespa member.', '### Current State', 'Loading bay alcove.', 'Key Moments:',
+    'Took Winter on a date to a bookstore and the Han River.', 'Appearance: Platinum anklet ("My Quiet").', 'We can add this to her entry.',
+    'Goals, Promises & Secrets: Secured Jacek\'s commitment to exclusive "stillness" moments.'].join('\n');
+  const old = { entries: [{ name: 'Winter', kind: 'character', aliases: [], text: oldWinter }, { name: 'Gone Person', kind: 'character', aliases: [], text: '- Was a driver for the group.' }, { name: 'Deleted', kind: 'item', aliases: [], text: '- A thing the user deleted on purpose.' }] };
+  const chat = { ignored: ['deleted'], entries: [{ name: 'Winter', kind: 'character', aliases: [], text: '### Basics\nFull name: Kim Minjeong. Role: aespa member.\n### Appearance\n- Platinum anklet ("My Quiet").' }] };
+  const report = lib.recoverFacts(chat, old);
+  const w = chat.entries[0].text;
+  assert(/### Recovered facts\nTook Winter on a date to a bookstore and the Han River\.\nGoals, Promises & Secrets: Secured/.test(w), w);
+  assert(!/Loading bay|We can add/.test(w) && (w.match(/Platinum anklet/g) || []).length === 1 && (w.match(/Kim Minjeong/g) || []).length === 1);
+  assert.deepStrictEqual(report.map((r) => [r.name, r.count, !!r.added]), [['Winter', 2, false], ['Gone Person', 1, true]]);
+  assert(!chat.entries.some((e) => e.name === 'Deleted'));
+  assert.strictEqual(lib.recoverFacts(chat, old).length, 0, 'recovering twice adds nothing more');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

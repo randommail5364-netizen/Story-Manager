@@ -82,6 +82,8 @@ async function main() {
   const llmCalls = [];       // prompts the memory keeper received
 
   let liveWs = null;
+  let editBusy = 0;    // the next n plain edits are refused: the AI is writing (HTTP 409)
+  let editTooBig = 0;  // the next n plain edits are refused as too big
   let helperBroken = false;  // makes the MiniApps-bot memory keeper fail
   let helperDelay = 500;
   let helperMaxChars = 0;      // longer requests get a "context length" chat error (0 = no limit)
@@ -231,6 +233,8 @@ async function main() {
       if (body.conversationId && !convs[body.conversationId]) return json({ message: 'Conversation not found' }, 404);
       // A plain edit: the message's text is replaced, no new reply.
       if (body.overrideMessageId && body.editInPlace) {
+        if (editBusy > 0) { editBusy--; return json({ message: 'Conversation is currently generating. Stop the current response first.' }, 409); }
+        if (editTooBig > 0) { editTooBig--; return json({ message: 'Message is too long' }, 400); }
         const target = convs[body.conversationId].messages.find((x) => x.id === body.overrideMessageId);
         if (!target) return json({ message: 'Message to override not found' }, 400);
         target.elements = [{ type: 'text', text: body.elements[0].text }];
@@ -1093,6 +1097,19 @@ async function main() {
   await page.locator('#story-manager-root >> .x').click();
   await page.evaluate((id) => window.editMsg(id, 'Then we rest by the fire.'), lastUser());
   check(!/STORY-MEMORY/.test(edits[edits.length - 1].elements[0].text), 'the user\'s own edits get no memory');
+
+  console.log('37b) The pinned message is updated even if the AI is writing (waits and tries again) or a big message is refused (smaller one)');
+  const edits37b = edits.length;
+  editBusy = 1;
+  editTooBig = 1;
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> textarea').first().fill('Mira hums when nervous.');
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await waitFor(() => edits.length > edits37b, 60000, 'the pinned message updated after a 409 and a size refusal');
+  check(editBusy === 0 && editTooBig === 0 && /Mira hums when nervous/.test(newConv.messages.find((x) => x.id === carrier).elements[0].text), 'updated after waiting and after the refusal');
+  await waitFor(async () => /Updated the pinned memory message/.test((await keyNow()).jobs[0].label), 15000, 'job recorded');
+  check(!(await keyNow()).memoryMsgError && await page.evaluate(() => localStorage.getItem('smx:memoryMsgSize')) === '40000', 'no error shown; the smaller size is remembered');
+  await page.locator('#story-manager-root >> .x').click();
 
   console.log('38) A pinned memory message that was deleted or regenerated is replaced by the next one');
   // Like "edit and regenerate": the pinned message is replaced by a new one.

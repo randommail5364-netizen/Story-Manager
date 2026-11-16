@@ -218,4 +218,13 @@ test('the bot\'s own thinking is kept out of entries', () => {
   assert.strictEqual(r.entries[0].text, '- Age 24\n- Whereabouts: Winter\'s bedroom\n- Mood: I think she is calm (Winter said so)');
 });
 
+test('short entries in play go in whole; long ones share what is left', () => {
+  const plan = { prefix: '', suffix: '', head: '', budget: 20000, log: [], extra: [],
+    core: [{ name: 'A', text: 'a'.repeat(500) }, { name: 'B', text: 'b'.repeat(800) }, { name: 'Big', text: Array(40).fill('- ' + 'x'.repeat(498)).join('\n') }] };
+  const out = lib.composeMemory(plan, '').text;
+  assert(out.includes('a'.repeat(500)) && out.includes('b'.repeat(800)));
+  const big = out.slice(out.indexOf('### Big'));
+  assert(big.length > 12000 && big.length < 15500 && big.includes('[…]'), 'long entry gets the rest: ' + big.length);
+});
+
 console.log('All ' + passed + ' entry checks passed.');

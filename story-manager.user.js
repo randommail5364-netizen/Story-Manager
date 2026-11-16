@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.8
+// @version      3.10.9
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -466,7 +466,16 @@
     // Entries in play are always sent, but a very long one is shortened for
     // this message (its start and its newest facts) so the notes fit.
     const room = Math.max(4000, plan.budget - size);
-    const share = Math.max(1200, Math.floor(room * 0.7 / Math.max(1, plan.core.length)));
+    // Short entries go in whole; the space left is shared by the long ones.
+    const space = Math.floor(room * 0.75);
+    const lens = plan.core.map((e) => e.text.length).sort((a, b) => a - b);
+    let share = Infinity;
+    let left = space;
+    for (let i = 0; i < lens.length; i++) {
+      const even = Math.floor(left / (lens.length - i));
+      if (lens[i] > even) { share = Math.max(1200, even); break; }
+      left -= lens[i];
+    }
     const trim = (t) => {
       if (t.length <= share) return t;
       const head = t.slice(0, Math.floor(share * 0.35));
@@ -857,9 +866,9 @@
     return lines.join('\n\n');
   }
 
-  function buildPlan(chat) {
+  function buildPlan(chat, size) {
     const head = [];
-    const budget = Math.max(2000, Number(settings.injectBudget) || DEFAULT_SETTINGS.injectBudget);
+    const budget = size || Math.max(2000, Number(settings.injectBudget) || DEFAULT_SETTINGS.injectBudget);
     if (chat.pinned.trim()) head.push('## Must remember\n' + chat.pinned.trim());
     if (chat.chapters.length) head.push('## The story so far, chapter by chapter\n' + chaptersText(chat, Math.round(budget * 0.3)));
     if (chat.memory.trim()) head.push('## The story now\n' + chat.memory.trim());
@@ -2866,6 +2875,7 @@
     // Older versions could learn e.g. the pinned messages as the message list.
     if (learned && NOT_MESSAGE_LIST.test(learned.template)) { learned = null; await Store.set('learned', null); }
     notHelpers = await Store.get('notHelpers', []);
+    memoryMsgSize = MEMORY_MESSAGE_SIZES.includes(await Store.get('memoryMsgSize', 0)) ? await Store.get('memoryMsgSize', 0) : MEMORY_MESSAGE_SIZES[0];
     helperAll = (await Store.get('helperAll', [])).filter((h) => !notHelpers.includes(h));
     helperRequests.push(...(await Store.get('helperRequests', [])));
     for (const h of helperAll) helperIds.add(h);
@@ -3089,13 +3099,20 @@
   // message (a plain edit: MiniApps' editInPlace, which writes no new reply),
   // so new messages need not carry the memory. On failure, memory goes back
   // to being attached to messages.
-  const MEMORY_MESSAGE_CHARS = 24000;
+  // How big the pinned memory message may be. It starts large so long
+  // character entries and more chapters fit; if MiniApps refuses a message
+  // that big, the next smaller size is used (and remembered).
+  const MEMORY_MESSAGE_SIZES = [60000, 40000, 24000];
+  let memoryMsgSize = MEMORY_MESSAGE_SIZES[0];
+  function memoryMessageText(chat) {
+    const plan = buildPlan(chat, memoryMsgSize);
+    if (!plan) return null;
+    return composeMemory(plan, '').text + (chat.pinnedMemoryText ? '\n\n' + chat.pinnedMemoryText : '');
+  }
   async function refreshMemoryMessage(chat) {
     if (!settings.memoryMessage || !settings.pinMemory || !chat.pinnedMemoryId) return;
-    const plan = buildPlan(chat);
-    if (!plan) return;
-    const block = composeMemory(Object.assign(plan, { budget: Math.max(plan.budget, MEMORY_MESSAGE_CHARS) }), '').text;
-    const text = block + (chat.pinnedMemoryText ? '\n\n' + chat.pinnedMemoryText : '');
+    let text = memoryMessageText(chat);
+    if (!text) return;
     if (chat.memoryMsgHash === hashText(text) && chat.memoryMsgSynced) return;
     if (!await waitIdle(chat.id)) return;
     const t0 = Date.now();
@@ -3121,10 +3138,29 @@
         if (!toolId) throw new Error('could not find which bot this chat uses');
         chat.tool = { toolId, revision: conv.toolRevision || (conv.tool && conv.tool.revision) || 1, modelId: conv.modelId || (conv.model && conv.model.id) || '' };
       }
-      const body = Object.assign({ toolId: chat.tool.toolId, revision: chat.tool.revision, modelId: chat.tool.modelId, conversationId: chat.id, requestId: uuid4() },
-        chat.personaId ? { personaId: chat.personaId } : {},
-        { overrideMessageId: chat.pinnedMemoryId, editInPlace: true, elements: [{ type: 'text', text }], language: 'en' });
-      await rpc('POST', '/chat', body);
+      for (let attempt = 1; ; attempt++) {
+        const body = Object.assign({ toolId: chat.tool.toolId, revision: chat.tool.revision, modelId: chat.tool.modelId, conversationId: chat.id, requestId: uuid4() },
+          chat.personaId ? { personaId: chat.personaId } : {},
+          { overrideMessageId: chat.pinnedMemoryId, editInPlace: true, elements: [{ type: 'text', text }], language: 'en' });
+        try {
+          await rpc('POST', '/chat', body);
+          break;
+        } catch (e) {
+          const m = String(e.message || e);
+          if (/not found|HTTP 404/i.test(m) || attempt >= 4) throw e;
+          if (/HTTP 409|generating/i.test(m)) {
+            // The story AI started writing: wait until it is done, then try again.
+            if (!await waitIdle(chat.id)) throw e;
+            continue;
+          }
+          // Anything else may mean the message is too big: try a smaller one.
+          const smaller = MEMORY_MESSAGE_SIZES.find((n) => n < memoryMsgSize);
+          if (!smaller) throw e;
+          memoryMsgSize = smaller;
+          await Store.set('memoryMsgSize', memoryMsgSize);
+          text = memoryMessageText(chat);
+        }
+      }
       chat.memoryMsgHash = hashText(text);
       chat.memoryMsgSynced = true;
       chat.memoryMsgAt = Date.now();

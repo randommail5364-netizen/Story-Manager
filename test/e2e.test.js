@@ -1135,7 +1135,8 @@ async function main() {
   const memEdit = edits[edits.length - 1];
   const pinnedText = newConv.messages.find((x) => x.id === carrier).elements[0].text;
   check(memEdit.overrideMessageId === carrier && memEdit.editInPlace === true && memEdit.toolId === 'tool-story' &&
-    /^\[\[STORY-MEMORY\]\][\s\S]*\[\[\/STORY-MEMORY\]\]\n\nPin this one\.$/.test(pinnedText), 'the pinned message was edited in place with the new memory, keeping the user\'s text');
+    /^\[\[STORY-MEMORY\]\][\s\S]*\[\[\/STORY-MEMORY\]\]\n\n\(My earlier message from when this note was pinned\. It was answered long ago; it is not what happens next\.\)\nPin this one\.$/.test(pinnedText),
+    'the pinned message was edited in place with the new memory, keeping the user\'s text, labelled as answered long ago');
   check(newConv.messages.filter((x) => x.origin === 'user').length === newConv.messages.filter((x) => x.origin === 'assistant').length, 'the edit wrote no new reply');
   const all37 = await keyNow();
   check(all37.entries.every((e) => pinnedText.includes(e.text)) && all37.chapters.every((c) => pinnedText.includes(c.text)),

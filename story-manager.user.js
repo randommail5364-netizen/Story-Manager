@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.17.0
+// @version      3.18.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1475,9 +1475,10 @@
       'STORY rules:',
       '- Every line of every entry must be a fact in the entry format ("### Heading", "- bullet", or "Label: value"). Never write your working-out (which fact goes where, what is already covered, what you will output).',
       '- ## Current Scene must describe the situation after the NEWEST event (later events override earlier ones, e.g. a punishment that was changed). Rewrite it fully each time it changes; never keep outdated parts.',
-      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (unresolved plans, promises, mysteries, things that must be followed up), ## World & Timeline (world rules, the date and time, how much time has passed, important background).',
+      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (only what is still unresolved: plans, promises, mysteries, things that must be followed up — remove a thread once it is resolved), ## World & Timeline (world rules, the date and time, how much time has passed, important background, and "Turning points:").',
+      '- "Turning points:" in ## World & Timeline is a short list of the story\'s major turning points, oldest first, one line each with when it happened and what changed because of it (a new relationship, a secret revealed, a move, a falling-out and its repair). Keep every earlier one and add new ones; this list may make the section longer than the others.',
       '- Output only the sections that change, each as === SECTION: Name === followed by its complete new text, keeping every fact that is still true. Leave out sections that did not change. If a section is empty, write it in full.',
-      '- Keep each section short, at most about 1,500 characters: it is sent with every message. What happened belongs in the history (chapters), details about characters, places and items in their entries.',
+      '- Keep each section short, at most about 1,500 characters (World & Timeline may be longer for its turning points): it is sent with every message. What happened belongs in the history (chapters), details about characters, places and items in their entries.',
       '- Details about a character, place or item belong in its entry, not here.',
       '',
       'ENTRY rules:',
@@ -1569,7 +1570,7 @@
   const CHARACTER_LAYOUT = '- Lay out a COMPLETE character entry under these headings, in this order, leaving out headings with nothing known: ' +
     '### Basics (full name, age, role, what they are) · ### Appearance (body, face, hair, eyes, height, build, scars, tattoos, usual and current clothing) · ' +
     '### Personality & Voice (traits, habits, mannerisms, how they talk, typical phrases) · ### Abilities & Skills · ### Likes, Dislikes & Boundaries · ' +
-    '### Backstory · ### Relationships (one bullet per other character: what they are to each other, how they feel, the key moments between them, in order) · ' +
+    '### Backstory · ### Relationships (one bullet per other character: what they are to each other, how they feel, the key moments between them, in order; and for each important one a "Where things stand:" line — what last happened between them, what each needs, what was promised, what is still unresolved — rewritten whenever it changes) · ' +
     '### Key Moments (the important things that happened to or because of them, in order, with specifics) · ' +
     '### Goals, Promises & Secrets (and who knows each secret). In "add" updates, start each bullet with its topic, e.g. "- Relationships – Karina: …" or "- Key Moments: …". ' +
     'Entries hold LASTING facts only: never where someone is, what they are doing, wearing or feeling at this moment — that is written once, in the Current Scene. ' +
@@ -3895,7 +3896,9 @@
     const plan = buildPlan(chat, memoryMsgSize);
     if (!plan) return null;
     plan.fillAll = true;
-    return composeMemory(plan, '').text + (chat.pinnedMemoryText ? '\n\n' + chat.pinnedMemoryText : '');
+    // The user's own text in this message is from when it was pinned: it was
+    // answered long ago, and says so, so the AI does not take it as the latest.
+    return composeMemory(plan, '').text + (chat.pinnedMemoryText ? '\n\n' + PINNED_TEXT_LABEL + '\n' + chat.pinnedMemoryText : '');
   }
   // What a smaller pinned message keeps and leaves out, compared with all of it.
   function describeCut(chat, text) {
@@ -3912,6 +3915,7 @@
   }
 
   const refreshing = {};
+  const PINNED_TEXT_LABEL = '(My earlier message from when this note was pinned. It was answered long ago; it is not what happens next.)';
   async function refreshMemoryMessage(chat) {
     if (!settings.memoryMessage || !settings.pinMemory || !chat.pinnedMemoryId) return;
     // One at a time per chat; a change meanwhile is picked up right after.

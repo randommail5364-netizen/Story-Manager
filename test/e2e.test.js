@@ -1092,6 +1092,9 @@ async function main() {
   check(memEdit.overrideMessageId === carrier && memEdit.editInPlace === true && memEdit.toolId === 'tool-story' &&
     /^\[\[STORY-MEMORY\]\][\s\S]*\[\[\/STORY-MEMORY\]\]\n\nPin this one\.$/.test(pinnedText), 'the pinned message was edited in place with the new memory, keeping the user\'s text');
   check(newConv.messages.filter((x) => x.origin === 'user').length === newConv.messages.filter((x) => x.origin === 'assistant').length, 'the edit wrote no new reply');
+  const all37 = await keyNow();
+  check(all37.entries.every((e) => pinnedText.includes(e.text)) && all37.chapters.every((c) => pinnedText.includes(c.text)),
+    'the pinned message holds every entry (' + all37.entries.length + ') and every chapter (' + all37.chapters.length + ') in full');
   await page.locator('#story-manager-root >> .fab').click();
   check(/The memory lives in one pinned message/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'the panel says where the memory lives');
   await page.locator('#story-manager-root >> .x').click();
@@ -1108,7 +1111,7 @@ async function main() {
   await waitFor(() => edits.length > edits37b, 60000, 'the pinned message updated after a 409 and a size refusal');
   check(editBusy === 0 && editTooBig === 0 && /Mira hums when nervous/.test(newConv.messages.find((x) => x.id === carrier).elements[0].text), 'updated after waiting and after the refusal');
   await waitFor(async () => /Updated the pinned memory message/.test((await keyNow()).jobs[0].label), 15000, 'job recorded');
-  check(!(await keyNow()).memoryMsgError && await page.evaluate(() => localStorage.getItem('smx:memoryMsgSize')) === '40000', 'no error shown; the smaller size is remembered');
+  check(!(await keyNow()).memoryMsgError && await page.evaluate(() => localStorage.getItem('smx:memoryMsgSize')) === '120000', 'no error shown; the smaller size is remembered');
   await page.locator('#story-manager-root >> .x').click();
 
   console.log('38) A pinned memory message that was deleted or regenerated is replaced by the next one');

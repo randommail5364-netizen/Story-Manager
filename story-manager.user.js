@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.9
+// @version      3.10.10
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -491,6 +491,8 @@
     };
     plan.core.forEach((e) => add(e, true));
     plan.extra.filter((e) => e.keys.some((k) => mentionsKey(userText, k))).forEach((e) => add(e, false));
+    // The pinned memory message (no text of its own) fits in the others too, as far as there is room.
+    if (!userText && plan.fillAll) plan.extra.filter((e) => !names.includes(e.name)).forEach((e) => add(e, false));
     const logs = [];
     for (let i = plan.log.length - 1; i >= 0; i--) {
       const t = '- ' + plan.log[i];
@@ -878,8 +880,9 @@
       prefix: MEM_START + '\n(Background notes for story continuity. Use them silently; do not quote, mention or reply to them.)\n\n',
       suffix: '\n' + MEM_END,
       head: head.join('\n\n'),
-      core: chat.entries.filter((e) => inPlay.has(e)).map(pack),
-      extra: chat.entries.filter((e) => !inPlay.has(e)).map(pack),
+      // With no size limit (the pinned memory message) every entry goes in, in full.
+      core: chat.entries.filter((e) => size === Infinity || inPlay.has(e)).map(pack),
+      extra: chat.entries.filter((e) => size !== Infinity && !inPlay.has(e)).map(pack),
       // Everything since the last chapter (or at least the newest logAttach),
       // newest first as far as the space allows.
       log: chat.log.slice(-Math.max(Math.max(0, Number(settings.logAttach) || 0), chat.log.filter((e) => e.chapter == null).length))
@@ -2875,7 +2878,9 @@
     // Older versions could learn e.g. the pinned messages as the message list.
     if (learned && NOT_MESSAGE_LIST.test(learned.template)) { learned = null; await Store.set('learned', null); }
     notHelpers = await Store.get('notHelpers', []);
-    memoryMsgSize = MEMORY_MESSAGE_SIZES.includes(await Store.get('memoryMsgSize', 0)) ? await Store.get('memoryMsgSize', 0) : MEMORY_MESSAGE_SIZES[0];
+    // Remembered as a number; "everything" (Infinity) is not stored.
+    const savedSize = await Store.get('memoryMsgSize', 0);
+    memoryMsgSize = MEMORY_MESSAGE_SIZES.includes(savedSize) ? savedSize : MEMORY_MESSAGE_SIZES[0];
     helperAll = (await Store.get('helperAll', [])).filter((h) => !notHelpers.includes(h));
     helperRequests.push(...(await Store.get('helperRequests', [])));
     for (const h of helperAll) helperIds.add(h);
@@ -3102,11 +3107,12 @@
   // How big the pinned memory message may be. It starts large so long
   // character entries and more chapters fit; if MiniApps refuses a message
   // that big, the next smaller size is used (and remembered).
-  const MEMORY_MESSAGE_SIZES = [60000, 40000, 24000];
+  const MEMORY_MESSAGE_SIZES = [Infinity, 120000, 60000, 40000, 24000]; // Infinity: everything, in full
   let memoryMsgSize = MEMORY_MESSAGE_SIZES[0];
   function memoryMessageText(chat) {
     const plan = buildPlan(chat, memoryMsgSize);
     if (!plan) return null;
+    plan.fillAll = true;
     return composeMemory(plan, '').text + (chat.pinnedMemoryText ? '\n\n' + chat.pinnedMemoryText : '');
   }
   async function refreshMemoryMessage(chat) {

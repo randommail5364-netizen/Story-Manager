@@ -141,7 +141,7 @@ test('summaries keep their FACTS line separately', () => {
   const p = lib.parseKeeperAnswer('=== LOG ===\n[R1] Jacek kissed Karina on the balcony.\nFACTS: Karina calls him "Jace" | Winter knows their secret\n[R2] They slept.\nFACTS: none', replies);
   assert.deepStrictEqual(p.entries, [
     { id: 'a', text: 'Jacek kissed Karina on the balcony.', facts: 'Karina calls him "Jace" | Winter knows their secret' },
-    { id: 'b', text: 'They slept.' },
+    { id: 'b', text: 'They slept.', nofacts: 'none' },
   ]);
   const bullets = lib.parseKeeperAnswer('=== LOG ===\n**R1:** Something happened.\n**Facts:**\n- Giselle hurt her ankle\n- The party is on Friday', replies);
   assert.strictEqual(bullets.entries[0].facts, 'Giselle hurt her ankle | The party is on Friday');
@@ -225,6 +225,11 @@ test('short entries in play go in whole; long ones share what is left', () => {
   assert(out.includes('a'.repeat(500)) && out.includes('b'.repeat(800)));
   const big = out.slice(out.indexOf('### Big'));
   assert(big.length > 12000 && big.length < 15500 && big.includes('[…]'), 'long entry gets the rest: ' + big.length);
+});
+
+test('a summary without a FACTS line is marked missing, "FACTS: none" is marked none', () => {
+  const p = lib.parseKeeperAnswer('=== LOG ===\n[R1] Jacek kissed Karina.\n[R2] They slept.\nFACTS: none', replies);
+  assert.deepStrictEqual(p.entries.map((e) => e.nofacts), ['missing', 'none']);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

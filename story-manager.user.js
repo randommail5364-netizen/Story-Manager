@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.10.12
+// @version      3.11.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1706,8 +1706,40 @@
       // A keeper that won't write them at all is not asked forever.
       if (got.length === count) break;
     }
+    got = dedupeEntries(got);
+    // Summaries without a FACTS line: ask once more, for their facts only.
+    const noLine = got.filter((e) => e.nofacts === 'missing');
+    for (let i = 0; i < noLine.length; i += 3) {
+      checkStop();
+      const batch = noLine.slice(i, i + 3);
+      let again = [];
+      try { again = (await ask(withPrompts(msgs, replies.filter((r) => batch.some((e) => e.id === r.id))))).entries; } catch (e) { if (e.stopped) throw e; }
+      mergeFacts(batch, again);
+    }
     const order = new Map(replies.map((r, i) => [r.id, i]));
-    return dedupeEntries(got).sort((a, b) => order.get(a.id) - order.get(b.id));
+    return got.sort((a, b) => order.get(a.id) - order.get(b.id));
+  }
+
+  // A summary whose facts are already in the story & characters, for a reply
+  // that was deleted or redone: kept until the memory is corrected.
+  function markStale(chat, e) {
+    if (!e || !e.folded) return;
+    chat.stale = (chat.stale || []).filter((x) => x.id !== e.id);
+    chat.stale.push({ id: e.id, text: e.text, facts: e.facts || '', chapter: e.chapter != null ? e.chapter : null, at: Date.now() });
+    if (chat.stale.length > 40) chat.stale.splice(0, chat.stale.length - 40);
+  }
+
+  // Takes only the facts from a second answer into existing summaries.
+  // Still without a FACTS line: kept as "missing" and not asked again.
+  function mergeFacts(items, again) {
+    let n = 0;
+    for (const e of items) {
+      const a = again.find((x) => x.id === e.id);
+      if (a && a.facts) { e.facts = a.facts; delete e.nofacts; n++; } else if (a && a.nofacts === 'none') e.nofacts = 'none';
+      else e.nofacts = 'missing';
+      e.factsAsked = true;
+    }
+    return n;
   }
 
   // Summaries as the keeper sees them in UPDATE and CHAPTER jobs.
@@ -1810,9 +1842,10 @@
   }
 
   // Job 3: a run of summaries becomes a chapter of the story's history.
-  async function makeChapter(chat, items) {
-    const prev = chat.chapters[chat.chapters.length - 1];
-    const n = chat.chapters.length + 1;
+  async function makeChapter(chat, items, at) {
+    const idx = at == null ? chat.chapters.length : at;
+    const prev = chat.chapters[idx - 1];
+    const n = idx + 1;
     const user = (prev ? 'PREVIOUS CHAPTER (' + prev.title + '):\n<<<\n' + prev.text + '\n>>>\n\n' : '') +
       'EVENTS (oldest first):\n<<<\n' + formatEvents(items) + '\n>>>\n\n' +
       'JOB: CHAPTER. Write chapter ' + n + ' now.';
@@ -1978,7 +2011,8 @@
           const text = (f ? raw.slice(0, f.index) : raw).replace(/\s+/g, ' ').trim();
           let facts = f ? raw.slice(f.index + f[0].length).replace(/\s*\n\s*[-*•]?\s*/g, ' | ').replace(/\s+/g, ' ').replace(/^[\s|]+|[\s|]+$/g, '').trim() : '';
           if (/^(none|n\/?a|nothing( new)?|-+|—)\.?$/i.test(facts)) facts = '';
-          if (reply && text) entries.push(facts ? { id: reply.id, text, facts } : { id: reply.id, text });
+          // No facts: the keeper said so ("none"), or left the FACTS line out ("missing").
+          if (reply && text) entries.push(facts ? { id: reply.id, text, facts } : { id: reply.id, text, nofacts: f ? 'none' : 'missing' });
         });
       } else {
         const fields = mk.head.replace(/^ENTRY\s*:\s*/i, '').split('|').map((x) => x.trim());
@@ -2193,7 +2227,8 @@
     const redo = (chat.redo || []).map((x) => msgs.find((m) => m.id === x && m.role === 'assistant')).filter(Boolean);
     const st = stages(chat);
     const foldDue = st.unfolded && (force || st.unfolded >= foldEvery() || !chat.memory.trim());
-    if (!todo.length && !redo.length && !foldDue && st.unchaptered < chapterSize()) return 'skipped';
+    const staleDue = (chat.stale || []).length && !(chat.redo || []).length;
+    if (!todo.length && !redo.length && !foldDue && !staleDue && st.unchaptered < chapterSize()) return 'skipped';
     busy[id] = true;
     keepAwake(true);
     stopRequested[id] = false;
@@ -2222,7 +2257,7 @@
         const got = await job('summarise', 'Summarised ' + redo.length + ' changed repl' + (redo.length === 1 ? 'y' : 'ies') + ' again',
           () => summarise(chat, withPrompts(msgs, redo)));
         const ids = new Set(got.map((e) => e.id));
-        if (chat.log.some((e) => ids.has(e.id) && e.folded)) chat.staleFacts = true;
+        for (const e of chat.log) if (ids.has(e.id)) markStale(chat, e);
         chat.log = chat.log.map((e) => (ids.has(e.id) ? Object.assign(got.find((g) => g.id === e.id), { folded: false }, e.chapter != null ? { chapter: e.chapter } : {}) : e));
         chat.redo = chat.redo.filter((x) => !redo.some((m) => m.id === x));
         await saveChat(chat);
@@ -2252,6 +2287,7 @@
           const got = results[k].value.map((e) => Object.assign(e, { folded: false }, SM_VERSION ? { v: SM_VERSION } : {}));
           const ids = new Set(got.map((e) => e.id));
           // A regenerated or re-read reply replaces its old summary.
+          for (const e of chat.log) if (ids.has(e.id)) markStale(chat, e);
           chat.log = sortLog(chat.log.filter((e) => !ids.has(e.id)).concat(got), msgs);
           chat.processedIds = chat.processedIds.concat(wave[k].map((m) => m.id)).slice(-300);
           chat.processedCount = msgs.indexOf(wave[k][wave[k].length - 1]) + 1;
@@ -2268,6 +2304,9 @@
       // 2 + 3. Fold what is due (all of it when asked, or for a new story),
       // then write the chapters that are complete.
       await foldAndChapter(chat, force || !chat.memory.trim() ? 1 : foldEvery(), job);
+      // 4. Replies that were deleted or redone after their facts went in:
+      // take what only they said back out, and rewrite their chapters.
+      if ((chat.stale || []).length && !(chat.redo || []).length) await correctAfterRedo(chat, job);
       tidy(chat);
       if (JSON.stringify(before) !== JSON.stringify(snapshot(chat))) {
         chat.history = [before].concat(chat.history).slice(0, 5);
@@ -2397,6 +2436,62 @@
     }
   }
 
+  // Asks again for the FACTS lines of summaries that have none and are not
+  // known to be "none" (skipped lines, and summaries from older versions).
+  async function runMissingFacts(id) {
+    const chat = await getChat(id, true);
+    if (busy[id]) return 'skipped';
+    const want = chat.log.filter((e) => !e.facts && e.nofacts !== 'none');
+    if (!want.length) return 'nothing';
+    busy[id] = true;
+    keepAwake(true);
+    stopRequested[id] = false;
+    activeChatId = id;
+    setStatus();
+    progress[id] = { done: 0, total: 1, step: 'Reading the chat…' };
+    renderPanel();
+    let got = 0;
+    let asked = 0;
+    try {
+      const msgs = await fetchMessages(id, { mode: 'full' });
+      const byId = new Map(msgs.map((m) => [m.id, m]));
+      const todo = want.filter((e) => byId.has(e.id));
+      const per = Math.max(1, detail().perChunk);
+      progress[id].total = Math.ceil(todo.length / per) || 1;
+      for (let i = 0; i < todo.length; i += per) {
+        checkStop();
+        const batch = todo.slice(i, i + per);
+        const label = 'Got the facts of ' + replyRange(chat, batch);
+        setStep(id, label + '…');
+        const t0 = Date.now();
+        const again = await summarise(chat, withPrompts(msgs, batch.map((e) => byId.get(e.id))));
+        const n = mergeFacts(batch, again);
+        got += n;
+        asked += batch.length;
+        logJob(chat, { kind: 'check', label: label + ': ' + n + ' of ' + batch.length + ' had facts', ok: true, ms: Date.now() - t0 });
+        progress[id].done++;
+        await saveChat(chat);
+        renderPanel();
+      }
+      toast('Asked again for ' + asked + ' facts lists: ' + got + ' had facts' + (asked - got ? ', ' + (asked - got) + ' had none' : '') +
+        (got ? '. Tap "Check for missing facts" to add them to the characters & story.' : '.'));
+      return 'done';
+    } catch (e) {
+      await saveChat(chat);
+      if (e.stopped) { toast('Stopped. What was done is kept.'); return 'stopped'; }
+      toast('Could not get the facts lists: ' + (e.message || e), true);
+      return 'failed';
+    } finally {
+      busy[id] = false;
+      if (!anyBusy()) keepAwake(false);
+      stopRequested[id] = false;
+      if (activeChatId === id) activeChatId = null;
+      delete progress[id];
+      setStatus();
+      renderPanel(true);
+    }
+  }
+
   async function runFactCheck(id, all) {
     const chat = await getChat(id, true);
     if (busy[id]) return 'skipped';
@@ -2469,6 +2564,48 @@
       setStatus();
       renderPanel();
     }
+  }
+
+  async function correctAfterRedo(chat, job) {
+    const stale = chat.stale.slice();
+    const removed = stale.map((e, i) => '[OLD' + (i + 1) + '] ' + e.text + (e.facts ? '\nFACTS: ' + e.facts : '')).join('\n\n');
+    const now = chat.log.slice(-8);
+    const what = stale.length === 1 ? 'a reply that was' : stale.length + ' replies that were';
+    const r = await job('update', 'Corrected the memory after ' + what + ' redone or deleted', async () => {
+      const user = 'STORY:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
+        'CURRENT ENTRIES:\n<<<\n' + entriesForRequest(chat, removed, false) + '\n>>>\n\n' +
+        (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
+        'EVENTS THAT NO LONGER HAPPENED (the user deleted or redid these replies, so they are not part of the story any more):\n<<<\n' + removed + '\n>>>\n\n' +
+        'WHAT THE STORY SAYS NOW (the newest replies, oldest first):\n<<<\n' + (now.length ? formatEvents(now) : '(nothing yet)') + '\n>>>\n\n' +
+        'JOB: CORRECT. Some facts in the STORY and ENTRIES came only from the events that no longer happened. Remove or fix those facts, ' +
+        'and keep everything that is still true (including facts the current story also says). Output every changed STORY section in full, ' +
+        'and every changed ENTRY complete with its normal header (never "| add"). Leave out what does not need to change. If nothing needs to change, answer NO CHANGES.';
+      const out = cleanOutput(await callLLM(updateSystem(), user));
+      checkStop();
+      if (/^\W*no changes\W*$/i.test(out)) return { sections: [], updates: [] };
+      const parsed = parseKeeperAnswer(out, []);
+      parsed.updates = parsed.updates.filter((u) => !u.add);
+      return parsed;
+    });
+    if (r.sections.length) chat.memory = applySections(chat.memory, r.sections.filter((x) => !x.add));
+    const applied = applyUpdates(chat.entries, r.updates, chat.ignored);
+    if (applied.refused.length) toast('Kept the fuller version of: ' + applied.refused.join(', '));
+    // Chapters that held a removed reply: written again from what is left.
+    const touched = [...new Set(stale.map((e) => e.chapter).filter((c) => c != null && c < chat.chapters.length))].sort((a, b) => b - a);
+    for (const idx of touched) {
+      const items = chat.log.filter((e) => e.chapter === idx);
+      if (!items.length) {
+        chat.chapters.splice(idx, 1);
+        for (const e of chat.log) if (e.chapter != null && e.chapter > idx) e.chapter--;
+        continue;
+      }
+      checkStop();
+      const ch = await job('chapter', 'Rewrote chapter ' + (idx + 1) + ' without the removed replies', () => makeChapter(chat, items, idx));
+      chat.chapters[idx] = ch;
+    }
+    chat.stale = (chat.stale || []).filter((x) => !stale.some((y) => y.id === x.id));
+    if (!chat.stale.length) chat.staleFacts = false;
+    await saveChat(chat);
   }
 
   async function writeChapters(chat, job) {
@@ -3040,6 +3177,7 @@
     const dropped = chat.log.filter((e) => gone.has(e.id) && (!changed || !chat.redo.includes(e.id)));
     if (!hit.length && !(chat.redo || []).length) return;
     if (dropped.length) {
+      for (const e of dropped) markStale(chat, e);
       chat.log = chat.log.filter((e) => !dropped.includes(e));
       for (const c of chat.chapters) if (c.ids) c.ids = c.ids.filter((x) => !gone.has(x));
       if (dropped.some((e) => e.folded)) chat.staleFacts = true;
@@ -3562,6 +3700,7 @@
           chat.entries = chat.entries.filter((e) => e.always);
           chat.chapters = [];
           chat.log = [];
+          chat.stale = [];
           chat.processedIds = [];
           chat.processedCount = 0;
           chat.rebuiltWith = SM_VERSION;
@@ -3589,7 +3728,7 @@
           }
           renderPanel(true);
           return;
-        } else if (!unprocessed(chat, msgs).length && !stages(chat).unfolded && !(chat.redo || []).length) {
+        } else if (!unprocessed(chat, msgs).length && !stages(chat).unfolded && !(chat.redo || []).length && !(chat.stale || []).length) {
           toast('Memory is already up to date (' + msgs.length + ' messages checked)');
           return;
         }
@@ -3616,6 +3755,7 @@
       chat.entries = chat.entries.filter((e) => e.always);
       chat.chapters = [];
       chat.staleFacts = false;
+      chat.stale = [];
       for (const e of chat.log) { e.folded = false; delete e.chapter; }
       await saveChat(chat);
       const status = await updateMemory(chat.id, [], { force: true });
@@ -3731,7 +3871,8 @@
         })() : null,
         settings.provider === 'miniapps' && toolCache && chat.tool && toolCache.id === chat.tool.toolId
           ? el('div', { class: 'error' }, '⚠ The memory keeper is the same bot as this story. MiniApps may then open Story Manager\'s helper chats instead of your story. Pick a different bot in Settings → MiniApps bot.') : null,
-        chat.staleFacts ? el('div', {}, 'ℹ Some replies were deleted or rewritten after their facts went into the story & characters. Tap "Redo story & characters from summaries" to remove anything from the old versions.') : null,
+        (chat.stale || []).length ? el('div', {}, 'ℹ ' + chat.stale.length + ' repl' + (chat.stale.length === 1 ? 'y was' : 'ies were') + ' deleted or redone after their facts went into the story & characters. At the next update, the memory keeper takes out what only ' + (chat.stale.length === 1 ? 'it' : 'they') + ' said and rewrites ' + (chat.stale.length === 1 ? 'its chapter' : 'their chapters') + '.')
+          : chat.staleFacts ? el('div', {}, 'ℹ Some replies were deleted or rewritten after their facts went into the story & characters. Tap "Redo story & characters from summaries" to remove anything from the old versions.') : null,
         chat.continuedIn ? el('div', {}, 'This story continues in chat ' + chat.continuedIn.slice(0, 8) + '.') : null,
         chat.continuedFrom ? el('div', {}, 'Continued from chat ' + chat.continuedFrom.slice(0, 8) + ', with its memory.') : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),
@@ -3764,11 +3905,24 @@
         el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')),
       el('div', { class: 'btns' },
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: factCheck }, 'Check for missing facts'),
+        chat.log.some((e) => !e.facts && e.nofacts !== 'none') ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          const n = chat.log.filter((e) => !e.facts && e.nofacts !== 'none').length;
+          if (!confirm(n + ' reply summaries have no facts list (the memory keeper skipped it, or an older version made them). Ask the memory keeper for their facts again? This takes about ' + Math.ceil(n / Math.max(1, detail().perChunk)) + ' requests.')) return;
+          await runMissingFacts(chat.id);
+        } }, 'Get missing facts lists') : null,
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: redoFromSummaries }, 'Redo story & characters from summaries'),
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat'),
         el('button', { class: 'btn', disabled: isBusy, onclick: continueNew }, 'Continue in a new chat')),
       activityView(chat),
       diagnosticsBox());
+  }
+
+  // How many summaries have facts, "none", a skipped FACTS line, or are too old to tell.
+  function factsSplit(chat) {
+    const n = { facts: 0, none: 0, missing: 0, unknown: 0 };
+    for (const e of chat.log) n[e.facts ? 'facts' : e.nofacts === 'none' ? 'none' : e.nofacts === 'missing' ? 'missing' : 'unknown']++;
+    return n.facts + ' with facts, ' + n.none + ' none' + (n.missing ? ', ' + n.missing + ' FACTS line missing' : '') + (n.unknown ? ', ' + n.unknown + ' unknown (older)' : '');
   }
 
   // Which versions of Story Manager made this story's memory.
@@ -3895,7 +4049,7 @@
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
       'Made with: ' + (chat && chat.smVersions && chat.smVersions.length ? chat.smVersions.map((x) => 'v' + x.v).join(' → ') : 'unknown (before v3.10.12)') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
-      'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + chat.log.filter((e) => e.facts).length + ' with facts), ' +
+      'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + factsSplit(chat) + '), ' +
         chat.log.filter((e) => e.checked).length + ' facts-checked, ' + st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +
         ' · settings: summaries every ' + settings.updateEvery + ', story & characters every ' + foldEvery() + ', chapter every ' + chapterSize() +
         ', ' + parallel() + ' at once, detail ' + settings.detail; })() : 'no chat'),

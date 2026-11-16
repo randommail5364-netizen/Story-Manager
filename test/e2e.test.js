@@ -115,6 +115,7 @@ async function main() {
   }
 
   // Answers like a real memory keeper, for each of its three jobs.
+  const factsSkipped = new Set();
   function keeperAnswer(input, n, tag) {
     // The messages it was given: each reply [R#] and the user message before it.
     const replies = [];
@@ -128,12 +129,20 @@ async function main() {
     if (/JOB: SUMMARISE/.test(input)) {
       // DROPLAST in the chat simulates a keeper that runs out of room.
       const list = /DROPLAST/.test(input) && replies.length > 1 ? replies.slice(0, -1) : replies;
-      return list.map((r) => '[R' + r.n + '] Detailed summary of reply ' + r.n + ' in update ' + n + '. User: ' + r.user.slice(0, 60) +
-        ' Reply: ' + r.text.slice(0, 40) + '\nFACTS: Mira is a healer | Ash is a dragon').join('\n');
+      // NOFACTSLINE in a reply: the keeper leaves its FACTS line out the first time.
+      return list.map((r) => {
+        const skip = /NOFACTSLINE/.test(r.text) && !factsSkipped.has(r.text);
+        if (skip) factsSkipped.add(r.text);
+        return '[R' + r.n + '] Detailed summary of reply ' + r.n + ' in update ' + n + '. User: ' + r.user.slice(0, 60) +
+          ' Reply: ' + r.text.slice(0, 40) + (skip ? '' : '\nFACTS: Mira is a healer | Ash is a dragon');
+      }).join('\n');
     }
     const asked = input.match(/who have none yet: ([^.]+)\./);
     if (/ENTRIES ONLY/.test(input) && asked) {
       return asked[1].split(',').map((name) => '=== ENTRY: ' + name.trim() + ' | character ===\n- ' + name.trim() + ' is a member of the group.').join('\n');
+    }
+    if (/JOB: CORRECT/.test(input)) {
+      return '=== ENTRY: Ash | character ===\n- Ash is a dragon. Corrected after redo.';
     }
     if (/ONE ENTRY ONLY/.test(input)) {
       const old = (input.match(/THE ENTRY SO FAR:\n<<<\n=== ENTRY: Mira[^\n]*\n([\s\S]*?)\n>>>/) || [])[1] || '';
@@ -1168,7 +1177,7 @@ async function main() {
   const sock = (event, payload) => page.evaluate(([ev, p]) => document.dispatchEvent(new CustomEvent('smx:ws', { detail: JSON.stringify({ dir: 'in', event: ev, text: JSON.stringify([p]) }) })), [event, payload]);
   newConv.messages = newConv.messages.filter((x) => x.id !== deleted.id);
   await sock('cmd', { conversationId: newId, ids: [deleted.id] });
-  rewritten.elements = [{ type: 'text', text: 'REWRITTEN reply: Ash flies away.' }];
+  rewritten.elements = [{ type: 'text', text: 'REWRITTEN reply: Ash flies away. NOFACTSLINE' }];
   await sock('cmu', { conversationId: newId, message: Object.assign({ conversationId: newId }, rewritten) });
   await page.waitForTimeout(500);
   const after39 = await keyNow();
@@ -1179,7 +1188,51 @@ async function main() {
   const redone39 = await keyNow();
   check(llmCalls.slice(calls39).some((c) => /JOB: SUMMARISE/.test(c) && /REWRITTEN reply: Ash flies away/.test(c)) &&
     /Reply: REWRITTEN reply/.test(redone39.log.find((e) => e.id === rewritten.id).text) && !(redone39.redo || []).length, 'rewritten reply summarised again from its new text');
-  check(redone39.staleFacts && /Redo story & characters from summaries/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel suggests redoing the story & characters');
+  const redoneEntry = redone39.log.find((e) => e.id === rewritten.id);
+  check(redoneEntry.facts && redoneEntry.factsAsked && llmCalls.slice(calls39).filter((c) => /JOB: SUMMARISE/.test(c) && /NOFACTSLINE/.test(c)).length === 2,
+    'a skipped FACTS line is asked for again, once');
+  const corr39 = llmCalls.slice(calls39).filter((c) => /JOB: CORRECT/.test(c));
+  check(corr39.length === 1 && /EVENTS THAT NO LONGER HAPPENED[\s\S]*\[OLD1\]/.test(corr39[0]), 'one correction request with the summaries of the replies that are gone');
+  check(!(redone39.stale || []).length && !redone39.staleFacts && /Corrected after redo/.test(redone39.entries.find((e) => e.name === 'Ash').text) &&
+    redone39.jobs.some((j) => /Corrected the memory after/.test(j.label)), 'what only the old replies said is corrected; recorded in Activity');
+  await page.getByText('Diagnostics', { exact: true }).click();
+  check(/summaries \(\d+ with facts, \d+ none/.test(await page.locator('#story-manager-root >> textarea.diag').inputValue()), 'Diagnostics shows which summaries have facts');
+
+  console.log('39b) A deleted reply inside a chapter: the chapter is written again without it');
+  const inCh = redone39.log.find((e) => e.chapter != null && newConv.messages.some((x) => x.id === e.id));
+  if (!inCh) check(false, 'a reply in a chapter to delete: ' + JSON.stringify(redone39.log.map((e) => e.chapter)));
+  const chI = inCh.chapter;
+  const chCount = redone39.log.filter((e) => e.chapter === chI).length;
+  newConv.messages = newConv.messages.filter((x) => x.id !== inCh.id);
+  await sock('cmd', { conversationId: newId, ids: [inCh.id] });
+  await page.waitForTimeout(500);
+  const calls39b = llmCalls.length;
+  await page.getByText('Update now').click({ timeout: 120000 });
+  await settle();
+  const after39b = await keyNow();
+  const chCalls = llmCalls.slice(calls39b).filter((c) => new RegExp('JOB: CHAPTER\\. Write chapter ' + (chI + 1) + ' now').test(c));
+  const left39b = after39b.log.filter((e) => e.chapter === chI).length;
+  check((chCount > 1 ? chCalls.length === 1 && left39b === chCount - 1 && after39b.jobs.some((j) => new RegExp('Rewrote chapter ' + (chI + 1) + ' without').test(j.label))
+    : after39b.chapters.length === redone39.chapters.length - 1), 'the chapter is rewritten from the replies left in it (or removed if none are left)');
+
+  console.log('39c) "Get missing facts lists" asks again for summaries without facts');
+  const here39c = newConv.messages.map((x) => x.id);
+  const pick39c = (await keyNow()).log.filter((e) => here39c.includes(e.id)).slice(0, 2).map((e) => e.id);
+  await page.evaluate((ids) => {
+    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
+    const c = JSON.parse(localStorage.getItem(key));
+    for (const e of c.log) if (ids.includes(e.id)) { delete e.facts; delete e.nofacts; delete e.factsAsked; }
+    localStorage.setItem(key, JSON.stringify(c));
+  }, pick39c);
+  await page.reload();
+  await page.waitForTimeout(800);
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByText('Get missing facts lists').click();
+  await waitFor(async () => (await keyNow()).log.filter((e) => pick39c.includes(e.id)).every((e) => e.facts), 60000, 'facts lists');
+  await settle();
+  check((await keyNow()).jobs.some((j) => /Got the facts of [^:]*: 2 of 2 had facts/.test(j.label)), 'both summaries got their facts back; recorded in Activity');
+  await page.locator('#story-manager-root >> .x').click();
 
   console.log('40) Pins wait for the story AI to finish; the newest replies are held back until newer ones follow');
   await page.evaluate(() => {

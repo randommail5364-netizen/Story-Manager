@@ -1,7 +1,16 @@
 # Redesign plan: facts as records, entries built by Story Manager
 
-Status: **planned, not started.** The last version before this work is saved as
-`v3.21.0` (Git tag `v3.21.0-stable`, and `releases/story-manager-v3.21.0.user.js`).
+Status: **stages 1–5 built in v3.22.0** as a per-story switch ("Memory format:
+Facts (new)" in the panel); not yet tried on a real story. The last version
+before this work is saved as `v3.21.0` (`releases/story-manager-v3.21.0.user.js`,
+commit `d8ce60e`).
+
+How it is built: each summary in `chat.log` carries its `records`; `buildEntries`
+turns all records (plus `chat.manualRecords`, minus `chat.hiddenRecords` and
+`chat.ignored`) into `chat.entries` on every save, so everything that reads
+entries works unchanged. The AI's story update (`foldScene`) writes only the
+story sections. Switching keeps the classic characters in `chat.classicEntries`
+(used as a fallback until every older summary has records, and to switch back).
 
 ## Why
 
@@ -61,6 +70,15 @@ promise, secret (+ who knows), role, status, nickname, key moment) ·
 4. **Chapters**.
 
 ## Stages (each tested before the next)
+
+Done in v3.22.0: 2 (records stored in the summaries, synced with them),
+3 (entry builder; facts panel with remove / add), 4 (new replies produce
+records; story-only update), 5 ("Take facts from summaries" converts a story
+without reading the chat again; Rebuild from whole chat also works).
+Still to do: 1 (a "facts format" option in Compare bots), 6 (retire the
+classic-only tools once the new format has proven itself), and a limit on
+Key Moments per character in the pinned message.
+
 
 1. **Prototype / report only**: run the new extraction on the first 20 replies
    of a story and produce a report (like Compare bots) with the fact records

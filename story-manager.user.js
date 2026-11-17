@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.26.2
+// @version      3.26.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -875,6 +875,7 @@
         // Settings: the newest saved settings, from whichever device.
         let remoteSettings = null;
         try { remoteSettings = gist.files['settings.json'] ? JSON.parse(gist.files['settings.json'].content) : null; } catch (e) { /* ignore */ }
+        sync.remoteSettings = remoteSettings ? { at: remoteSettings.at || 0, keeper: remoteSettings.values ? (remoteSettings.values.provider === 'miniapps' ? remoteSettings.values.miniappsSlug : remoteSettings.values.provider) : '?' } : null;
         let settingsLoaded = false;
         if (remoteSettings && remoteSettings.values && (remoteSettings.at || 0) > (settings.settingsAt || 0)) {
           for (const k of SHARED_SETTINGS) if (remoteSettings.values[k] !== undefined) settings[k] = remoteSettings.values[k];
@@ -5621,6 +5622,8 @@
           (helperWait.readOk ? '' : ', last read failed') + ', answer ' + helperWait.answerChars + ' chars' +
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
+      'Settings: saved here ' + (settings.settingsAt ? ago(settings.settingsAt) + ' (' + new Date(settings.settingsAt).toLocaleString() + ')' : 'never') +
+        ' · on GitHub: ' + (!settings.githubToken ? 'sync off' : sync.remoteSettings ? 'saved ' + new Date(sync.remoteSettings.at).toLocaleString() + ', keeper ' + sync.remoteSettings.keeper : 'none yet') + '\n' +
       'Memory health: ' + (chat ? memoryHealth(chat) : 'no chat') + '\n' +
       'Summaries made with: ' + (chat && chat.log.length ? summaryVersions(chat).join(', ') : 'none yet') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
       'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + factsSplit(chat) + '), ' +

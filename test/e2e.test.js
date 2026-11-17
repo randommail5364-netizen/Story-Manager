@@ -1189,7 +1189,7 @@ async function main() {
   const cutText = await page.locator('#story-manager-root >> .panel').innerText();
   check(/not complete/.test(cutText) && /MiniApps refused the full message \([^)]*Message is too long\)/.test(cutText) && /Left out: Ash/.test(cutText) &&
     /Shortened[^\n]*: Mira/.test(cutText) && /Chapters: 1 of 3 in full, the older 2 by title only/.test(cutText), 'the panel says what MiniApps said, what was kept and what was left out');
-  check(/Made with Story Manager: v9\.9\.9[^\n]*reply summaries: \d+ from v9\.9\.9/.test(cutText), 'the panel shows which Story Manager version made the memory');
+  check(/Summaries made with Story Manager: v9\.9\.9 \(\d+\)/.test(cutText), 'the panel shows which Story Manager versions made the summaries');
   const edits37c = edits.length;
   await page.getByText('Try the full size again').click();
   await waitFor(() => edits.length > edits37c, 30000, 'retried at full size');
@@ -1759,6 +1759,7 @@ async function main() {
   check(/- Likes: plum tea/.test((r53.entries.find((e) => e.name === 'Mira') || {}).text || '') && !(r53.hiddenRecords || []).length,
     'facts the user added are kept; old removals (by position) are cleared');
   check(r53.portraits && r53.portraits.mira && !/old portrait/.test(r53.portraits.mira.text), 'portraits are written fresh from the new facts');
+  check(r53.smVersions.length === 1 && r53.log.every((e) => e.v === '9.9.9') && r53.rebuiltWith === '9.9.9', 'after a rebuild only the version that made the new summaries is listed');
 
   console.log('53b) Redoing one of the newest (held back) replies does not get it summarised early');
   await page.evaluate(() => { const st = JSON.parse(localStorage.getItem('smx:settings')); st.holdBack = 1; localStorage.setItem('smx:settings', JSON.stringify(st)); });

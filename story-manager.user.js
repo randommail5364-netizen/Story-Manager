@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.25.0
+// @version      3.25.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2992,7 +2992,7 @@
           () => summarise(chat, withPrompts(msgs, redo)));
         const ids = new Set(got.map((e) => e.id));
         for (const e of chat.log) if (ids.has(e.id)) markStale(chat, e);
-        chat.log = chat.log.map((e) => (ids.has(e.id) ? Object.assign(got.find((g) => g.id === e.id), { folded: false }, e.chapter != null ? { chapter: e.chapter } : {}) : e));
+        chat.log = chat.log.map((e) => (ids.has(e.id) ? Object.assign(got.find((g) => g.id === e.id), { folded: false }, SM_VERSION ? { v: SM_VERSION } : {}, e.chapter != null ? { chapter: e.chapter } : {}) : e));
         chat.redo = chat.redo.filter((x) => !redo.some((m) => m.id === x));
         await saveChat(chat);
       }
@@ -3328,6 +3328,7 @@
             if (e.folded) markStale(chat, e);
             if (!e.facts && g.facts) factsAdded++;
             e.text = g.text;
+            if (SM_VERSION) e.v = SM_VERSION;
             if (g.facts) { e.facts = g.facts; delete e.nofacts; } else if (g.nofacts === 'none') e.nofacts = 'none';
             if (g.records) e.records = g.records; else delete e.records;
             delete e.checked;
@@ -5045,6 +5046,7 @@
           chat.processedIds = [];
           chat.processedCount = 0;
           chat.rebuiltWith = SM_VERSION;
+          chat.smVersions = []; // a rebuild starts the list of versions again
           await saveChat(chat);
           renderPanel(true);
           chat.readCount = 0;
@@ -5329,18 +5331,22 @@
   }
 
   // Which versions of Story Manager made this story's memory.
-  function versionLine(chat) {
-    const vs = chat.smVersions || [];
-    if (!vs.length && !chat.log.length) return null;
-    const by = {};
-    for (const e of chat.log) by[e.v || 'older'] = (by[e.v || 'older'] || 0) + 1;
-    const parts = Object.keys(by).sort((a, b) => (a === 'older') - (b === 'older')).map((v) => by[v] + ' from ' + (v === 'older' ? 'before v3.10.12' : 'v' + v));
-    const latest = vs.length ? vs[vs.length - 1].v : '';
-    return el('div', {}, 'Made with Story Manager: ', el('b', {}, latest ? 'v' + latest : 'an older version'),
-      vs.length > 1 ? ' (earlier: ' + vs.slice(0, -1).slice(-4).map((x) => 'v' + x.v).join(', ') + ')' : '',
-      chat.rebuiltWith ? ' · rebuilt with v' + chat.rebuiltWith : '',
-      parts.length ? ' · reply summaries: ' + parts.join(', ') : '');
+  // Which versions of Story Manager made the summaries the memory is built
+  // from (newest first, with how many each), so only versions that matter
+  // are shown; a rebuild starts the list again.
+  function summaryVersions(chat) {
+    const by = new Map();
+    for (const e of chat.log) { const v = e.v || ''; by.set(v, (by.get(v) || 0) + 1); }
+    const cmp = (a, b) => { const x = a.split('.').map(Number); const y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (y[i] || 0) - (x[i] || 0); return 0; };
+    return [...by.keys()].sort((a, b) => (!a) - (!b) || cmp(a, b)).map((v) => (v ? 'v' + v : 'an older version') + ' (' + by.get(v) + ')');
   }
+  function versionLine(chat) {
+    if (!chat.log.length && !chat.rebuiltWith) return null;
+    const list = summaryVersions(chat);
+    return el('div', {}, 'Summaries made with Story Manager: ', el('b', {}, list.join(', ') || '—'),
+      chat.rebuiltWith ? ' · rebuilt with v' + chat.rebuiltWith : '');
+  }
+
 
 
   // The facts format: an entry is built from records, so it is not edited as
@@ -5554,7 +5560,7 @@
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
       'Memory health: ' + (chat ? memoryHealth(chat) : 'no chat') + '\n' +
-      'Made with: ' + (chat && chat.smVersions && chat.smVersions.length ? chat.smVersions.map((x) => 'v' + x.v).join(' → ') : 'unknown (before v3.10.12)') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
+      'Summaries made with: ' + (chat && chat.log.length ? summaryVersions(chat).join(', ') : 'none yet') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
       'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + factsSplit(chat) + '), ' +
         chat.log.filter((e) => e.checked).length + ' facts-checked, ' + st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +
         ' · settings: summaries every ' + settings.updateEvery + ', story & characters every ' + foldEvery() + ', chapter every ' + chapterSize() +

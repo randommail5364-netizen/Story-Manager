@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.26.3
+// @version      3.26.4
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -858,23 +858,26 @@
           id = await syncGist();
           gist = await gh('GET', '/gists/' + id);
         }
+        // A big gist comes with some files' content cut off or missing (GitHub
+        // limits the total): those are read from raw_url instead.
+        const readFile = async (f) => (f.truncated || !f.content) && f.raw_url ? requestJSON('GET', f.raw_url, {}, undefined) : JSON.parse(f.content);
         const remote = {};
         for (const [name, f] of Object.entries(gist.files || {})) {
           const m = name.match(/^chat-([0-9a-f-]+)\.json$/i);
           if (!m) continue;
           // Big files come without their content: it is read from raw_url.
-          try { remote[m[1]] = f.truncated && f.raw_url ? await requestJSON('GET', f.raw_url, {}, undefined) : JSON.parse(f.content); } catch (e) { /* unreadable: skip */ }
+          try { remote[m[1]] = await readFile(f); } catch (e) { /* unreadable: skip */ }
         }
         // Helper chats from every device, so all of them stay hidden everywhere.
         let remoteHelpers = [];
-        try { remoteHelpers = gist.files['helpers.json'] ? JSON.parse(gist.files['helpers.json'].content) : []; } catch (e) { /* ignore */ }
+        try { remoteHelpers = gist.files['helpers.json'] ? (await readFile(gist.files['helpers.json'])) || [] : []; } catch (e) { /* ignore */ }
         let remoteNot = [];
-        try { remoteNot = gist.files['not-helpers.json'] ? JSON.parse(gist.files['not-helpers.json'].content) : []; } catch (e) { /* ignore */ }
+        try { remoteNot = gist.files['not-helpers.json'] ? (await readFile(gist.files['not-helpers.json'])) || [] : []; } catch (e) { /* ignore */ }
         for (const h of remoteNot) if (typeof h === 'string' && !notHelpers.includes(h)) await notHelper(h);
         for (const h of remoteHelpers) if (typeof h === 'string' && !helperAll.includes(h)) rememberHelper(h);
         // Settings: the newest saved settings, from whichever device.
         let remoteSettings = null;
-        try { remoteSettings = gist.files['settings.json'] ? JSON.parse(gist.files['settings.json'].content) : null; } catch (e) { /* ignore */ }
+        try { remoteSettings = gist.files['settings.json'] ? await readFile(gist.files['settings.json']) : null; } catch (e) { /* ignore */ }
         sync.remoteSettings = remoteSettings ? { at: remoteSettings.at || 0, keeper: remoteSettings.values ? (remoteSettings.values.provider === 'miniapps' ? remoteSettings.values.miniappsSlug : remoteSettings.values.provider) : '?' } : null;
         let settingsLoaded = false;
         if (remoteSettings && remoteSettings.values && (remoteSettings.at || 0) > (settings.settingsAt || 0)) {
@@ -915,6 +918,7 @@
         const names = Object.keys(files).filter((n) => /^chat-/.test(n));
         if (Object.keys(files).length) {
           await gh('PATCH', '/gists/' + id, { files });
+          if (files['settings.json']) sync.remoteSettings = { at: settings.settingsAt, keeper: settings.provider === 'miniapps' ? settings.miniappsSlug : settings.provider };
           for (const n of names) {
             const c = chats[n.slice(5, -5)];
             if (c) { c.syncedAt = c.changedAt; await Store.set('chat:' + c.id, c); }
@@ -4338,7 +4342,9 @@
       history.replaceState(null, '', location.pathname + location.search);
       setTimeout(() => toast('Sync is set up on this device ✓'), 1500);
     }
-    runSync().catch(() => {});
+    // The first sync finishes before any chat is read here, so a device that
+    // has not got a chat yet loads it from GitHub instead of starting it anew.
+    await Promise.race([runSync().catch(() => {}), new Promise((r) => setTimeout(r, 20000))]);
     publishInjectMap();
   })();
 

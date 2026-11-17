@@ -360,8 +360,13 @@ async function main() {
     const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS' };
     const reply = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
-    if (req.headers().authorization !== 'Bearer gh-test-token') return reply({ message: 'Bad credentials' }, 401);
+    // Raw file content (GitHub serves cut-off files from raw_url).
     let m;
+    if ((m = url.pathname.match(/^\/raw\/([^/]+)\/(.+)$/))) {
+      const f = ((gists[m[1]] || {}).files || {})[decodeURIComponent(m[2])];
+      return f ? route.fulfill({ status: 200, headers, contentType: 'text/plain', body: f.content }) : reply({ message: 'Not Found' }, 404);
+    }
+    if (req.headers().authorization !== 'Bearer gh-test-token') return reply({ message: 'Bad credentials' }, 401);
     if (url.pathname === '/gists' && req.method() === 'GET') return reply(Object.values(gists).map((g) => ({ id: g.id, description: g.description })));
     if (url.pathname === '/gists' && req.method() === 'POST') {
       const b = JSON.parse(req.postData());
@@ -386,7 +391,12 @@ async function main() {
         for (const [n, f] of Object.entries(JSON.parse(req.postData()).files)) g.files[n] = { content: f.content };
         (g.history = g.history || []).push({ version: 'v' + ((g.history || []).length + 1), at: Date.now(), files: JSON.parse(JSON.stringify(g.files)) });
       }
-      return reply(g);
+      // Like GitHub with a big gist: small files can come without content.
+      const out = { id: g.id, description: g.description, files: {} };
+      for (const [n, f] of Object.entries(g.files)) {
+        out.files[n] = /^(settings|helpers|not-helpers)\.json$/.test(n) ? { truncated: true, content: '', raw_url: 'https://api.github.com/raw/' + g.id + '/' + encodeURIComponent(n) } : f;
+      }
+      return reply(out);
     }
     return reply({ message: 'Not Found' }, 404);
   });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.26.1
+// @version      3.26.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -5874,15 +5874,14 @@
       buttonSide: f.buttonSide.value,
     });
 
-    // explicit: the "Save settings" button. Only a real change to a setting
-    // that follows the user between devices makes these the newest settings
-    // (or the first explicit save, so a device can share its settings once);
-    // "Sync now" and "Test connection" save too, but must not send the form's
-    // old values over settings that just came from the other device.
+    // explicit: the "Save settings" button, which always makes these the
+    // newest settings (the user pressed it on purpose). "Sync now" and "Test
+    // connection" save too, but only a real change to a shared setting counts
+    // there, so they never send the form's old values over newer ones.
     const save = async (explicit) => {
       const next = Object.assign({}, DEFAULT_SETTINGS, collect());
       const changed = SHARED_SETTINGS.some((k) => JSON.stringify(next[k]) !== JSON.stringify(settings[k]));
-      next.settingsAt = changed || (explicit === true && !settings.settingsAt) ? Date.now() : settings.settingsAt;
+      next.settingsAt = changed || explicit === true ? Date.now() : settings.settingsAt;
       settings = next;
       publishSounds();
       scheduleSync(); // the settings follow to your other devices

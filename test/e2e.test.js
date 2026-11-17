@@ -1464,6 +1464,44 @@ async function main() {
   await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:settings')).githubToken)) === 'gh-test-token', 15000, 'token from the sync link');
   check(!(await page.evaluate(() => location.href)).includes('smx-sync'), 'opening the sync link sets up sync, and the token leaves the address bar');
 
+  console.log('42b) Two devices: an old copy that was only looked at does not overwrite a newer one; settings follow');
+  await page.goto('https://miniapps.ai/c/' + newId);
+  await page.waitForTimeout(1500);
+  await page.locator('#story-manager-root >> .fab').click().catch(() => {});
+  if (!(await page.locator('#story-manager-root >> .panel.open').count())) await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> nav button', { hasText: 'Settings' }).click();
+  await page.getByText('Sync now').click();
+  await page.waitForTimeout(2500);
+  const g42b = Object.values(gists)[0];
+  const fileOf = () => JSON.parse(g42b.files['chat-' + newId + '.json'].content);
+  // The other device wrote on: a newer copy with a newer summary of a real reply.
+  const other42 = fileOf();
+  const real42 = other42.log.filter((e) => newConv.messages.some((m) => m.id === e.id)).slice(-1)[0].id;
+  Object.assign(other42.log.find((e) => e.id === real42), { text: 'FROM THE OTHER DEVICE: Ash found the key.', at: Date.now() });
+  other42.changedAt = Date.now() + 500;
+  g42b.files['chat-' + newId + '.json'] = { content: JSON.stringify(other42) };
+  // This device only tidies up (nothing changes) and syncs: the newer copy must win.
+  await page.locator('#story-manager-root >> nav button', { hasText: 'Memory' }).click();
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await page.waitForTimeout(500);
+  await page.locator('#story-manager-root >> nav button', { hasText: 'Settings' }).click();
+  await page.getByText('Sync now').click();
+  const hasText = (log, id, t) => (log || []).some((e) => e.id === id && e.text === t);
+  await waitFor(async () => hasText((await keyNow()).log, real42, 'FROM THE OTHER DEVICE: Ash found the key.'), 20000, 'newer copy loaded');
+  check(hasText(fileOf().log, real42, 'FROM THE OTHER DEVICE: Ash found the key.'), 'a device with an old copy that only tidied up does not overwrite the newer copy');
+  // Settings saved on one device reach the other.
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save settings' }).click();
+  await waitFor(() => !!g42b.files['settings.json'], 20000, 'settings saved to GitHub');
+  const sv = JSON.parse(g42b.files['settings.json'].content);
+  check(sv.values.provider && !('githubToken' in sv.values) && !('buttonSide' in sv.values), 'settings are saved to GitHub (without the token or the button position)');
+  sv.values.miniappsSlug = 'set-on-the-other-device';
+  sv.at = Date.now() + 1000;
+  g42b.files['settings.json'] = { content: JSON.stringify(sv) };
+  await page.getByText('Sync now').click();
+  await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:settings')).miniappsSlug)) === 'set-on-the-other-device', 20000, 'settings loaded');
+  check(true, 'settings changed on the other device are loaded here');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+
   console.log('42c) "Compare bots" runs the same jobs on the first replies with each bot and makes one report');
   const mem42c = JSON.stringify((await keyNow()).entries) + (await keyNow()).memory;
   await page.locator('#story-manager-root >> .fab').click();

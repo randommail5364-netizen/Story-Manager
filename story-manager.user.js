@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.25.1
+// @version      3.26.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -700,6 +700,8 @@
     if (saved) {
       // Stories saved before the facts format existed stay classic until switched.
       const chat = chats[id] = Object.assign(newChat(id), { version: 0, format: 'classic' }, saved);
+      // What it holds as stored: only a real change after this counts as newer.
+      if (!chat.contentKey) chat.contentKey = contentKey(chat);
       if (chat.version < 3) await migrate(chat);
       // Stories saved by older versions get the current cleaning rules too.
       if (tidy(chat).length) await saveChat(chat);
@@ -734,8 +736,21 @@
   }
 
   // fromSync: the chat was just loaded from the sync gist (not a local change).
+  // What the memory holds (not when or where it was last looked at): a save
+  // that changes none of it is not a newer version, so a device with an old
+  // copy open cannot win the sync just by tidying or checking it.
+  function contentKey(chat) {
+    return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
+      chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
+      factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
+      chat.manualRecords, chat.hiddenRecords, chat.portraits]));
+  }
+
   async function saveChat(chat, fromSync) {
-    if (!fromSync) {
+    const key = contentKey(chat);
+    if (fromSync) chat.contentKey = key; // as loaded from the other device: not a change made here
+    else if (key !== chat.contentKey) {
+      chat.contentKey = key;
       chat.changedAt = Date.now();
       // Which versions of Story Manager worked on this story, oldest first.
       const vs = chat.smVersions || (chat.smVersions = []);
@@ -809,6 +824,18 @@
     return settings.gistId;
   }
 
+
+  // Settings that follow the user between devices (the memory keeper and how
+  // it works). The GitHub token, the button position and API keys stay on
+  // each device.
+  const SHARED_SETTINGS = ['provider', 'model', 'miniappsSlug', 'detail', 'holdBack', 'updateEvery', 'foldEvery', 'chapterSize', 'parallel', 'helperRotate',
+    'injectEvery', 'injectBudget', 'logAttach', 'pinMemory', 'memoryMessage', 'hideHelpers', 'autoEnable', 'newFormat', 'blockSounds'];
+  function sharedSettings() {
+    const v = {};
+    for (const k of SHARED_SETTINGS) if (settings[k] !== undefined) v[k] = settings[k];
+    return v;
+  }
+
   function scheduleSync() {
     if (!settings.githubToken || !settings.githubToken.trim()) return;
     clearTimeout(sync.timer);
@@ -845,11 +872,25 @@
         try { remoteNot = gist.files['not-helpers.json'] ? JSON.parse(gist.files['not-helpers.json'].content) : []; } catch (e) { /* ignore */ }
         for (const h of remoteNot) if (typeof h === 'string' && !notHelpers.includes(h)) await notHelper(h);
         for (const h of remoteHelpers) if (typeof h === 'string' && !helperAll.includes(h)) rememberHelper(h);
+        // Settings: the newest saved settings, from whichever device.
+        let remoteSettings = null;
+        try { remoteSettings = gist.files['settings.json'] ? JSON.parse(gist.files['settings.json'].content) : null; } catch (e) { /* ignore */ }
+        let settingsLoaded = false;
+        if (remoteSettings && remoteSettings.values && (remoteSettings.at || 0) > (settings.settingsAt || 0)) {
+          for (const k of SHARED_SETTINGS) if (remoteSettings.values[k] !== undefined) settings[k] = remoteSettings.values[k];
+          settings.settingsAt = remoteSettings.at;
+          await Store.set('settings', settings);
+          toolCache = null;
+          publishSounds();
+          settingsLoaded = true;
+        }
         // Newer on GitHub: load it (unless the memory is being updated here).
         let loaded = 0;
         for (const [cid, r] of Object.entries(remote)) {
           if (!r || !r.id || busy[cid]) continue;
           const local = await getChat(cid, false);
+          // The newest real change wins (a device that only looked at or tidied
+          // an old copy has not changed it, so it cannot win: see contentKey).
           if (local && (local.changedAt || 0) >= (r.changedAt || 0)) continue;
           // Updated in place, so an open panel keeps working on the same chat.
           const fresh = Object.assign(newChat(cid), { format: 'classic' }, r, { id: cid, syncedAt: r.changedAt || 0 });
@@ -869,7 +910,8 @@
         }
         if (helperAll.some((h) => !remoteHelpers.includes(h)) || remoteHelpers.some((h) => notHelpers.includes(h))) files['helpers.json'] = { content: JSON.stringify(helperAll) };
         if (notHelpers.some((h) => !remoteNot.includes(h))) files['not-helpers.json'] = { content: JSON.stringify(notHelpers) };
-        const names = Object.keys(files).filter((n) => n !== 'helpers.json');
+        if ((settings.settingsAt || 0) > ((remoteSettings && remoteSettings.at) || 0)) files['settings.json'] = { content: JSON.stringify({ at: settings.settingsAt, values: sharedSettings() }) };
+        const names = Object.keys(files).filter((n) => /^chat-/.test(n));
         if (Object.keys(files).length) {
           await gh('PATCH', '/gists/' + id, { files });
           for (const n of names) {
@@ -881,6 +923,7 @@
         sync.at = Date.now();
         sync.error = '';
         if (loaded) { if (currentId && remote[currentId]) toast('Loaded the newer memory from your other device'); renderPanel(); }
+        if (settingsLoaded) { toast('Loaded your settings from your other device'); renderPanel(); }
       } catch (e) {
         sync.state = 'error';
         sync.error = String(e.message || e).slice(0, 200);
@@ -1933,6 +1976,17 @@
     return got.sort((a, b) => order.get(a.id) - order.get(b.id));
   }
 
+  // Replies whose summaries were removed here (deleted, redone, or gone from
+  // the chat), with when: a merge with another device's copy never brings
+  // them back.
+  function forget(chat, ids) {
+    const now = Date.now();
+    chat.removed = Object.assign({}, chat.removed);
+    for (const id of ids) chat.removed[id] = now;
+    const keys = Object.keys(chat.removed);
+    if (keys.length > 600) for (const k of keys.sort((x, y) => chat.removed[x] - chat.removed[y]).slice(0, keys.length - 600)) delete chat.removed[k];
+  }
+
   // A summary whose facts are already in the story & characters, for a reply
   // that was deleted or redone: kept until the memory is corrected.
   function markStale(chat, e) {
@@ -2953,6 +3007,7 @@
     const heldRedo = (chat.redo || []).filter((x) => held.has(x));
     if (heldRedo.length) {
       for (const e of chat.log) if (heldRedo.includes(e.id)) markStale(chat, e);
+      forget(chat, heldRedo);
       chat.log = chat.log.filter((e) => !heldRedo.includes(e.id));
       chat.processedIds = chat.processedIds.filter((x) => !heldRedo.includes(x));
       chat.redo = chat.redo.filter((x) => !heldRedo.includes(x));
@@ -2992,7 +3047,7 @@
           () => summarise(chat, withPrompts(msgs, redo)));
         const ids = new Set(got.map((e) => e.id));
         for (const e of chat.log) if (ids.has(e.id)) markStale(chat, e);
-        chat.log = chat.log.map((e) => (ids.has(e.id) ? Object.assign(got.find((g) => g.id === e.id), { folded: false }, SM_VERSION ? { v: SM_VERSION } : {}, e.chapter != null ? { chapter: e.chapter } : {}) : e));
+        chat.log = chat.log.map((e) => (ids.has(e.id) ? Object.assign(got.find((g) => g.id === e.id), { folded: false, at: Date.now() }, SM_VERSION ? { v: SM_VERSION } : {}, e.chapter != null ? { chapter: e.chapter } : {}) : e));
         chat.redo = chat.redo.filter((x) => !redo.some((m) => m.id === x));
         await saveChat(chat);
       }
@@ -3018,7 +3073,7 @@
         let failure = null;
         for (let k = 0; k < wave.length; k++) {
           if (results[k].status === 'rejected') { failure = results[k].reason; break; }
-          const got = results[k].value.map((e) => Object.assign(e, { folded: false }, SM_VERSION ? { v: SM_VERSION } : {}));
+          const got = results[k].value.map((e) => Object.assign(e, { folded: false, at: Date.now() }, SM_VERSION ? { v: SM_VERSION } : {}));
           const ids = new Set(got.map((e) => e.id));
           // A regenerated or re-read reply replaces its old summary.
           for (const e of chat.log) if (ids.has(e.id)) markStale(chat, e);
@@ -3329,6 +3384,7 @@
             if (!e.facts && g.facts) factsAdded++;
             e.text = g.text;
             if (SM_VERSION) e.v = SM_VERSION;
+            e.at = Date.now();
             if (g.facts) { e.facts = g.facts; delete e.nofacts; } else if (g.nofacts === 'none') e.nofacts = 'none';
             if (g.records) e.records = g.records; else delete e.records;
             delete e.checked;
@@ -3642,6 +3698,8 @@
             if (!confirm('Use "' + r.slug + '" as your memory keeper from now on?')) return;
             settings.miniappsSlug = r.slug;
             settings.provider = 'miniapps';
+            settings.settingsAt = Date.now();
+            scheduleSync();
             await Store.set('settings', settings);
             toolCache = null;
             toast('The memory keeper is now ' + r.slug);
@@ -4410,6 +4468,7 @@
     if (!hit.length && !(chat.redo || []).length) return;
     if (dropped.length) {
       for (const e of dropped) markStale(chat, e);
+      forget(chat, dropped.map((e) => e.id));
       chat.log = chat.log.filter((e) => !dropped.includes(e));
       for (const c of chat.chapters) if (c.ids) c.ids = c.ids.filter((x) => !gone.has(x));
       if (dropped.some((e) => e.folded)) chat.staleFacts = true;
@@ -4680,6 +4739,7 @@
     }
     if (!gone.length) return 0;
     for (const e of gone) markStale(chat, e);
+    forget(chat, gone.map((e) => e.id));
     const ids = new Set(gone.map((e) => e.id));
     chat.log = chat.log.filter((e) => !ids.has(e.id));
     for (const c of chat.chapters) if (c.ids) c.ids = c.ids.filter((x) => !ids.has(x));
@@ -5046,6 +5106,7 @@
           chat.processedIds = [];
           chat.processedCount = 0;
           chat.rebuiltWith = SM_VERSION;
+          chat.rebuiltAt = Date.now();
           chat.smVersions = []; // a rebuild starts the list of versions again
           await saveChat(chat);
           renderPanel(true);
@@ -5813,8 +5874,9 @@
     });
 
     const save = async () => {
-      settings = Object.assign({}, DEFAULT_SETTINGS, collect());
+      settings = Object.assign({}, DEFAULT_SETTINGS, collect(), { settingsAt: Date.now() });
       publishSounds();
+      scheduleSync(); // the settings follow to your other devices
       toolCache = null;
       await Store.set('settings', settings);
       ui.fab.className = 'fab ' + settings.buttonSide;

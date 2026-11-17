@@ -1744,6 +1744,33 @@ async function main() {
     'facts the user added are kept; old removals (by position) are cleared');
   check(r53.portraits && r53.portraits.mira && !/old portrait/.test(r53.portraits.mira.text), 'portraits are written fresh from the new facts');
 
+  console.log('53b) Redoing one of the newest (held back) replies does not get it summarised early');
+  await page.evaluate(() => { const st = JSON.parse(localStorage.getItem('smx:settings')); st.holdBack = 1; localStorage.setItem('smx:settings', JSON.stringify(st)); });
+  await page.goto('https://miniapps.ai/c/' + factsId);
+  await page.waitForTimeout(1500);
+  await settle();
+  let k53 = await keyOf(factsId);
+  // The newest reply that has a summary; newer replies are deleted, so it is now the newest of all.
+  const lastSum = k53.log.filter((e) => factsConv.messages.some((m) => m.id === e.id)).slice(-1)[0];
+  const li = factsConv.messages.findIndex((m) => m.id === lastSum.id);
+  const gone53 = factsConv.messages.slice(li + 1).map((m) => m.id);
+  factsConv.messages = factsConv.messages.slice(0, li + 1);
+  if (gone53.length) await page.evaluate(([cid, ids]) => document.dispatchEvent(new CustomEvent('smx:ws', { detail: JSON.stringify({ dir: 'in', event: 'cmd', text: JSON.stringify([{ conversationId: cid, ids }]) }) })), [factsId, gone53]);
+  // Now the user redoes it.
+  factsConv.messages[li] = Object.assign({}, factsConv.messages[li], { elements: [{ type: 'text', text: 'REDONE newest reply: Ash sings.' }] });
+  await page.evaluate(([cid, m]) => document.dispatchEvent(new CustomEvent('smx:ws', { detail: JSON.stringify({ dir: 'in', event: 'cmu', text: JSON.stringify([{ conversationId: cid, message: m }]) }) })), [factsId, Object.assign({ conversationId: factsId }, factsConv.messages[li])]);
+  await page.waitForTimeout(500);
+  const calls53b = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click().catch(() => {});
+  if (!(await page.locator('#story-manager-root >> .panel.open').count())) await page.locator('#story-manager-root >> .fab').click();
+  await page.getByRole('button', { name: 'Update now' }).click();
+  await settle();
+  k53 = await keyOf(factsId);
+  check(!llmCalls.slice(calls53b).some((c) => /REDONE newest reply/.test(c)) && !k53.log.some((e) => e.id === lastSum.id) && !(k53.redo || []).includes(lastSum.id),
+    'the redone newest reply is not summarised yet, and its old summary is gone');
+  check(k53.jobs.some((j) => /A held-back reply was redone/.test(j.label)), 'recorded in Activity');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+
   console.log('54) MiniApps\' own sounds do not take the phone\'s audio (unless turned off)');
   const sound = () => page.evaluate(async () => {
     const a = new Audio('https://miniapps.ai/sounds/ringtones/ringtone2.mp3');
@@ -1756,6 +1783,7 @@ async function main() {
     await ctx.close();
     return { muted: a.muted, played, state };
   });
+  await page.waitForTimeout(2000); // no recent tap (a tap allows audio for a moment)
   const on54 = await sound();
   check(on54.muted === true && on54.played === false && on54.state === 'suspended', 'a MiniApps ringtone is not played, and an audio channel stays off without a tap');
   await page.locator('#msg').click();

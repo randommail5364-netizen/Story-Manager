@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.24.0
+// @version      3.24.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1509,7 +1509,7 @@
       let readOk = true;
       try { msgs = await fetchMessages(cid, { cache: false, mode: 'latest' }); } catch (e) { readOk = false; }
       // Whole messages pushed over the live connection count too.
-      if (seenMsgs[cid]) msgs = mergeMsgs(msgs, [...seenMsgs[cid].values()]);
+      if (seenMsgs[cid]) msgs = mergeMsgs(msgs, [...seenMsgs[cid].values()]).filter((m) => !deletedMsgs.has(m.id));
       let at = -1;
       msgs.forEach((m, j) => { if (m.role === 'user' && m.text.includes(tag)) at = j; });
       let answers;
@@ -2858,6 +2858,18 @@
       }
     }
     // Replies that changed after they were summarised (see overwritten()).
+    // One of the newest (held back) replies is not summarised again yet: its
+    // old summary goes now (that version no longer exists) and the new one is
+    // summarised like any other reply once newer ones follow.
+    const held = new Set(hold ? msgs.filter((m) => m.role === 'assistant').slice(-hold).map((m) => m.id) : []);
+    const heldRedo = (chat.redo || []).filter((x) => held.has(x));
+    if (heldRedo.length) {
+      for (const e of chat.log) if (heldRedo.includes(e.id)) markStale(chat, e);
+      chat.log = chat.log.filter((e) => !heldRedo.includes(e.id));
+      chat.processedIds = chat.processedIds.filter((x) => !heldRedo.includes(x));
+      chat.redo = chat.redo.filter((x) => !heldRedo.includes(x));
+      logJob(chat, { kind: 'check', label: 'A held-back reply was redone: its old summary is removed, and the new version is summarised once newer replies follow', ok: true, ms: 0 });
+    }
     const redo = (chat.redo || []).map((x) => msgs.find((m) => m.id === x && m.role === 'assistant')).filter(Boolean);
     const st = stages(chat);
     const foldDue = st.unfolded && (force || st.unfolded >= foldEvery() || !chat.memory.trim());
@@ -3785,6 +3797,7 @@
 
   let learned = null;               // { template: 'https://…{id}…' }
   const seenMsgs = {};              // chat id -> Map(message id -> message), this page visit only
+  const deletedMsgs = new Set();    // messages MiniApps reported deleted on this page visit
   const siteLog = new Map();        // the site's own requests, for Diagnostics
   const ownLog = new Map();         // Story Manager's requests, for Diagnostics
   const sockLog = new Map();        // Socket.IO events, for Diagnostics
@@ -3799,7 +3812,7 @@
 
   function remember(id, msgs) {
     const prev = seenMsgs[id] ? [...seenMsgs[id].values()] : [];
-    const all = mergeMsgs(prev, msgs);
+    const all = mergeMsgs(prev, msgs).filter((m) => !deletedMsgs.has(m.id));
     seenMsgs[id] = new Map(all.map((m) => [m.id, m]));
     return all;
   }
@@ -4287,11 +4300,16 @@
   // summarised again at the next update.
   async function overwritten(cid, ids, changed) {
     const chat = chats[cid];
-    ids = ids.filter(Boolean).map(String);
-    if (!chat || !ids.length || ids.includes(chat.pinnedMemoryId)) return;
+    // The pinned memory message is not a story message: it is left out (its
+    // own loss is noticed when it is next updated); the others still count.
+    ids = ids.filter(Boolean).map(String).filter((x) => x !== chat?.pinnedMemoryId);
+    if (!chat || !ids.length) return;
     const gone = new Set(ids);
     const hit = chat.log.filter((e) => gone.has(e.id));
     const seen = seenMsgs[cid] ? [...seenMsgs[cid].values()] : [];
+    // Deleted messages are forgotten at once, so e.g. "the newest reply" (for
+    // Hold back) is never one that no longer exists.
+    if (!changed && seenMsgs[cid]) for (const x of ids) { seenMsgs[cid].delete(x); deletedMsgs.add(x); }
     if (changed) {
       // A changed user message: the reply after it is summarised again too.
       const i = seen.findIndex((m) => gone.has(m.id));

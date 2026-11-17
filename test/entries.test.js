@@ -557,4 +557,14 @@ test('regression (second facts rebuild): moment looks, activities as roles, empt
   assert.deepStrictEqual(es.map((e) => e.name), ['Tiffany'], 'no empty or placeholder entries');
 });
 
+test('facts format: built entries are already tidy (no nickname for the tidy-up to clean at every save)', () => {
+  const rec = (s, k, v) => ({ s, k, t: '', v, label: k });
+  const chat = { ignored: [], entries: [], chapters: [], memory: '', log: [{ id: 'r1', text: 'x', records: [rec('Mina', 'nickname', 'Mimi, Jacek\'s anchor, Jacek'), rec('Mina', 'role', 'graduate student'), rec('Jacek', 'role', 'student')] }] };
+  chat.entries = lib.buildEntries(chat);
+  assert.deepStrictEqual(chat.entries.find((e) => e.name === 'Mina').aliases, ['Mimi']);
+  assert(/Role: student/.test((chat.entries.find((e) => e.name === 'Jacek') || {}).text || '') && !/Role: student$/m.test(chat.entries.find((e) => e.name === 'Mina').text),
+    'Jacek\'s facts stay with Jacek, even though Mina\'s nicknames mention him');
+  assert.deepStrictEqual(lib.organize(chat).filter((f) => /aliases/.test(f)), []);
+});
+
 console.log('All ' + passed + ' entry checks passed.');

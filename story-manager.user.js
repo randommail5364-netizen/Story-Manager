@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.23.4
+// @version      3.23.5
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2372,6 +2372,11 @@
       if (parts.length > 1 && parts.every((x) => NAMEISH.test(x))) for (const x of parts) split.push(Object.assign({}, r, { s: x }));
       else split.push(r);
     }
+    // Every subject's name is known before any nickname is accepted, so a
+    // nickname that names (or contains) someone else is never taken.
+    const subjects = [...new Set(split.map((r) => r.s.trim()).filter((x) => x.length > 2))];
+    const namesOther = (a, own) => subjects.some((x) => x.toLowerCase() !== own.toLowerCase() && !sameButTitle(x, own) &&
+      new RegExp('(^|[^\\p{L}])' + x.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\p{L}])', 'u').test(a.toLowerCase()));
     for (const r of split) {
       if (skip.has(r.s.toLowerCase()) || PLACEHOLDER_SUBJECT_RE.test(r.s.trim())) continue;
       if (r.k === 'appearance' && MOMENT_LOOK_RE.test(r.v)) continue;
@@ -2382,11 +2387,11 @@
       if (r.s.length > p.name.length && r.s.toLowerCase().startsWith(p.name.toLowerCase() + ' ')) { p.aliases.push(p.name); p.name = r.s; }
       p.records.push(r);
       if (r.k === 'nickname') for (const a of r.v.split(/[,;]|\band\b/).map((x) => x.replace(/["“”]/g, '').trim()).filter(Boolean)) {
-        if (!isGeneric(a) && a.length <= 40 && !people.some((q) => q !== p && q.name.toLowerCase() === a.toLowerCase()) && !p.aliases.some((x) => x.toLowerCase() === a.toLowerCase())) p.aliases.push(a);
+        if (!isGeneric(a) && a.length <= 40 && !namesOther(a, r.s) && !people.some((q) => q !== p && q.name.toLowerCase() === a.toLowerCase()) && !p.aliases.some((x) => x.toLowerCase() === a.toLowerCase())) p.aliases.push(a);
       }
     }
     const before = new Map((chat.entries || []).map((e) => [e.name.toLowerCase(), e]));
-    return people.filter((p) => !p.aliases.some((a) => skip.has(a.toLowerCase()))).map((p) => {
+    const built = people.filter((p) => !p.aliases.some((a) => skip.has(a.toLowerCase()))).map((p) => {
       const by = (k) => p.records.filter((r) => r.k === k);
       const uniq = (list) => {
         const kept = [];
@@ -2446,8 +2451,14 @@
         : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
       return { name: p.name, kind, aliases: p.aliases, text: L.join('\n'), always: !!(old && old.always), updated: Date.now(), records: p.records.length, recordIds: p.records.map((r) => r.id), fromFacts: true };
-    }).filter((e) => e.text.trim()) // an entry with nothing but its type says nothing
-      .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || b.records - a.records);
+    }).filter((e) => e.text.trim()); // an entry with nothing but its type says nothing
+    // The tidy-up's nickname rules, applied here so built entries are already
+    // tidy (otherwise every save would "clean" the same nickname again).
+    for (const e of built) {
+      const seen = new Set([e.name.toLowerCase()]);
+      e.aliases = e.aliases.filter((a) => { const k = a.toLowerCase(); if (!a || seen.has(k) || aliasOfOther(built, e, a)) return false; seen.add(k); return true; });
+    }
+    return built.sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || b.records - a.records);
   }
   const factsMode = (chat) => chat && chat.format === 'facts';
 

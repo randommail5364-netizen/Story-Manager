@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.20.3
+// @version      3.21.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -896,7 +896,8 @@
     if (chat.chapters.length) head.push('## The story so far, chapter by chapter\n' + chaptersText(chat, Math.round(budget * 0.3)));
     if (chat.memory.trim()) head.push('## The story now\n' + chat.memory.trim());
     const inPlay = new Set(entriesInPlay(chat));
-    const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: e.text });
+    // A slimmed-down entry (made with "Slim down") is what the AI reads; the full one stays here.
+    const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: e.slim && e.slim.text ? e.slim.text : e.text });
     const plan = {
       prefix: MEM_START + '\n(Background notes for story continuity. Use them silently; do not quote, mention or reply to them.)\n\n',
       suffix: '\n' + MEM_END,
@@ -3385,6 +3386,73 @@
     return box;
   }
 
+
+  // "Slim down": the keeper writes a compact version of a big entry for the
+  // pinned message (and attached memory), keeping everything that still
+  // matters. The full entry stays in Story Manager and keeps growing; the
+  // slim one is only remade when the user presses the button again.
+  const SLIM_BIG = 15000;
+  // Names (other entries) the full entry mentions must all survive slimming.
+  function slimMissing(chat, e, slim) {
+    return chat.entries.filter((x) => x !== e && x.name.length > 2 && mentions(e.text, x.name) && !entryKeys(x).some((k) => k.length > 2 && !isGeneric(k) && mentions(slim, k))).map((x) => x.name);
+  }
+  async function slimEntry(chat, e) {
+    const user = 'STORY NOW:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
+      'THE FULL ENTRY (' + e.text.length + ' characters):\n<<<\n' + formatEntries([e]) + '\n>>>\n\n' +
+      'JOB: SLIM. This entry is too long to send to the storyteller AI. Write a SLIM version of it, with its normal header, at most about ' +
+      Math.max(3000, Math.min(15000, Math.round(e.text.length * 0.2))) + ' characters. KEEP: who they are now; appearance; personality and voice as they are NOW, including how they have changed; ' +
+      'every relationship and where it stands; promises, secrets and who knows them; boundaries, likes and dislikes; possessions and gifts that matter; nicknames and running jokes; ' +
+      'turning points in their story. CONDENSE: long lists of individual scenes into what they led to (e.g. "Intimate with Jacek regularly since the first night after the concert"). ' +
+      'DROP: repeats, one-off details nothing later depends on, and step-by-step scene descriptions (the chapters keep those). Every person the entry mentions must still be mentioned. ' +
+      'Never invent anything. Output only that one entry.';
+    const out = cleanOutput(await callLLM(updateSystem(), user));
+    checkStop();
+    const u = parseKeeperAnswer(out, []).updates.find((x) => !x.add && isEntryFor(e, x));
+    if (!u || !u.text) throw new Error('the memory keeper did not write a slim version of ' + e.name);
+    if (u.text.length >= e.text.length * 0.9) throw new Error('the slim version of ' + e.name + ' was not shorter');
+    const missing = slimMissing(chat, e, u.text);
+    if (missing.length) throw new Error('the slim version of ' + e.name + ' left out ' + missing.join(', ') + ', so it was not used');
+    return u.text;
+  }
+
+  async function runSlim(id, names) {
+    const chat = await getChat(id, true);
+    const todo = names.map((n) => findEntry(chat.entries, n)).filter(Boolean);
+    if (!todo.length) return 'nothing';
+    const done = [];
+    const failed = [];
+    const status = await withBusy(id, todo.length, async () => {
+      try {
+        for (const e of todo) {
+          checkStop();
+          const label = 'Slimmed down ' + e.name;
+          setStep(id, 'Slimming down ' + e.name + '…');
+          const t0 = Date.now();
+          try {
+            const text = await slimEntry(chat, e);
+            e.slim = { text, at: Date.now(), fullLen: e.text.length };
+            done.push(e.name + ' ' + Math.round(e.text.length / 1000) + 'k → ' + Math.round(text.length / 1000) + 'k');
+            logJob(chat, { kind: 'update', label: label + ' (' + e.text.length.toLocaleString() + ' → ' + text.length.toLocaleString() + ' characters; the full entry is kept)', ok: true, ms: Date.now() - t0 });
+          } catch (err) {
+            if (err.stopped) throw err;
+            failed.push(e.name + ': ' + (err.message || err));
+            logJob(chat, { kind: 'update', label, ok: false, ms: Date.now() - t0, error: String(err.message || err).slice(0, 200) });
+          }
+          progress[id].done++;
+          await saveChat(chat);
+          renderPanel();
+        }
+        return 'done';
+      } catch (err) {
+        await saveChat(chat);
+        if (err.stopped) { toast('Stopped. What was slimmed is kept.'); return 'stopped'; }
+        throw err;
+      }
+    });
+    if (done.length || failed.length) toast((done.length ? 'Slimmed down: ' + done.join(', ') + '. The AI now reads these; the full entries are kept. ' : '') + (failed.length ? 'Not slimmed: ' + failed.join('; ') : ''), !!failed.length && !done.length);
+    return status;
+  }
+
   async function runFactCheck(id, all) {
     const chat = await getChat(id, true);
     if (busy[id]) return 'skipped';
@@ -5010,6 +5078,13 @@
           if (status === 'nothing') toast('No chapters with summaries to check.');
         } }, 'Check chapters'),
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: factCheck }, 'Check for missing facts'),
+        chat.entries.some((e) => e.text.length > SLIM_BIG) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          await save(true);
+          const big = chat.entries.filter((e) => e.text.length > SLIM_BIG);
+          if (!confirm('Slim down ' + big.map((e) => e.name + ' (' + Math.round(e.text.length / 1000) + 'k)').join(', ') + '? For each, the memory keeper writes a compact version for the AI to read; the full entries stay here. One request each (' + big.length + ').')) return;
+          await runSlim(chat.id, big.map((e) => e.name));
+        } }, 'Slim down big characters') : null,
         el('button', { class: 'btn', disabled: isBusy || !chat.entries.length, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           await save(true);
@@ -5076,6 +5151,19 @@
   // One collapsible entry in the panel. apply() copies the edits into it.
   function entryEditor(chat, e) {
     const name = el('input', { value: e.name });
+    // The slim version (if any): what the AI reads, editable, with a way back to the full entry.
+    const slimText = el('textarea', { class: 'entry' });
+    if (e.slim) slimText.value = e.slim.text;
+    const slimBox = e.slim ? el('div', {},
+      el('label', {}, 'Slim version — what the AI reads (' + e.slim.text.length.toLocaleString() + ' of ' + e.text.length.toLocaleString() + ' characters)'),
+      e.text.length > (e.slim.fullLen || 0) * 1.2 ? el('div', { class: 'hint' }, 'The full entry has grown by ' + Math.round((e.text.length / (e.slim.fullLen || 1) - 1) * 100) + '% since this was made: new facts are not in it yet. Tap "Slim down again" to include them.') : null,
+      slimText,
+      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+        if (!confirm('Stop using the slim version of "' + e.name + '"? The AI reads the full entry again.')) return;
+        delete e.slim;
+        await saveChat(chat);
+        renderPanel(true);
+      } }, 'Use the full entry'))) : null;
     const kind = el('select', {}, ...['character', 'place', 'item', 'group', 'lore'].map((k) => el('option', { value: k }, k)));
     kind.value = e.kind || 'character';
     const aliases = el('input', { value: (e.aliases || []).join(', '), placeholder: 'Other names, nicknames, titles' });
@@ -5089,13 +5177,19 @@
       node.style.opacity = '0.4';
     } }, 'Delete');
     const node = el('details', { class: 'entrybox', open: e.open || undefined },
-      el('summary', {}, (e.always ? '★ ' : '') + e.name + ' · ' + (e.kind || 'character') + ' · ' + e.text.length + ' chars'),
+      el('summary', {}, (e.always ? '★ ' : '') + e.name + ' · ' + (e.kind || 'character') + ' · ' + e.text.length + ' chars' + (e.slim ? ' (slim: ' + e.slim.text.length + ')' : '')),
       el('label', {}, 'Name'), name,
       el('label', {}, 'Kind'), kind,
       el('label', {}, 'Also known as (comma-separated)'), aliases,
       el('label', {}, 'Details'), text,
       el('div', { class: 'row' }, always, el('label', {}, 'Always send (and keep on Rebuild)')),
+      slimBox,
       el('div', { class: 'btns' }, del, chat ? el('button', { class: 'btn', onclick: async () => {
+        if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+        if (!confirm((e.slim ? 'Make a new slim version of "' : 'Slim down "') + e.name + '"? The memory keeper writes a compact version for the AI to read, keeping who they are, relationships, promises, secrets and turning points, and leaving out scene-by-scene detail. The full entry stays here. One request.')) return;
+        e.open = true;
+        await runSlim(chat.id, [e.name]);
+      } }, e.slim ? 'Slim down again' : 'Slim down') : null, chat ? el('button', { class: 'btn', onclick: async () => {
         if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
         if (!confirm('Write "' + e.name + '" again in full detail, from every reply that mentions them? Nothing it already says is dropped. This takes a few memory-keeper requests. (Unsaved edits to this entry are lost.)')) return;
         e.open = true;
@@ -5108,6 +5202,7 @@
         e.kind = kind.value;
         e.aliases = aliases.value.split(',').map((a) => a.trim()).filter(Boolean);
         if (text.value !== e.text) { e.text = text.value; e.updated = Date.now(); }
+        if (e.slim && slimText.value.trim() && slimText.value !== e.slim.text) e.slim.text = slimText.value;
         e.always = always.checked;
         delete e.open;
       },

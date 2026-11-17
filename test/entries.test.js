@@ -19,8 +19,8 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const factKey = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections']
+const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const factKey = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther']
   .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts, cleanSummary, greetingOf, dedupeSections };')();
 
 let passed = 0;
@@ -417,6 +417,35 @@ test('the bot\'s greeting (an AI message before the user\'s first one) is found'
 test('regression: a repeated story section (er-8\'s planning) and "none" lines are dropped', () => {
   const m = '## Current Scene\n- Seoul penthouse suite, late night.\n\n## Open Threads\n(None)\n\n## World & Timeline\n- Turning points:\n  - Post-concert: Jacek began relationships with all members\n\n## Open Threads\nThere are no unresolved plans.\n\n## World & Timeline\n   ### Basics\n The Silk Scarf entry will have:';
   assert.strictEqual(lib.dedupeSections(m), '## Current Scene\n- Seoul penthouse suite, late night.\n\n## World & Timeline\n- Turning points:\n  - Post-concert: Jacek began relationships with all members');
+});
+
+// From the user's 10-reply bot comparison: Yujin's and Giselle's entries
+// were merged into Karina's because all were called "unnie".
+test('regression: people who share a term of address ("unnie") are never merged', () => {
+  const p = lib.parseKeeperAnswer([
+    '=== CAST ===', 'Jacek, Karina, Giselle, Yujin',
+    '=== ENTRY: Karina | character | aliases: unnie, Karina-unnie ===', '- Leader of aespa.',
+    '=== ENTRY: Giselle | character | aliases: unnie, Giselle-unnie ===', '- Hourglass figure.',
+    '=== ENTRY: Yujin | character | aliases: unnie, Yujin-unnie ===', '- Full name: Ahn Yujin', '- Role: Leader of IVE',
+  ].join('\n'), []);
+  const r = lib.applyUpdates([], p.updates, []);
+  assert.deepStrictEqual(r.entries.map((e) => e.name), ['Karina', 'Giselle', 'Yujin']);
+  assert.strictEqual(r.entries[0].text, '- Leader of aespa.');
+  // Later updates find each by name, never by "unnie".
+  lib.applyUpdates(r.entries, [{ name: 'Yujin', aliases: ['unnie'], add: true, text: '- Walked in on them in Hongdae.' }], []);
+  assert(!/Hongdae/.test(r.entries[0].text) && /Hongdae/.test(r.entries[2].text));
+  // An update for someone new, called only "unnie" by others, gets its own entry.
+  lib.applyUpdates(r.entries, [{ name: 'Wonyoung', aliases: ['unnie'], kind: 'character', text: '- Member of IVE.' }], []);
+  assert(r.entries.some((e) => e.name === 'Wonyoung') && !/IVE\./.test(r.entries[0].text.replace('Leader of aespa.', '')));
+});
+
+test('regression: another character\'s name is never added as a nickname', () => {
+  const entries = [{ name: 'Karina', kind: 'character', aliases: [], text: '- Leader.' }, { name: 'Giselle', kind: 'character', aliases: [], text: '- Rapper.' }, { name: 'Yujin', kind: 'character', aliases: [], text: '- IVE.' }];
+  lib.applyUpdates(entries, [{ name: 'Karina', aliases: ['unnie', 'Giselle', 'Yujin-unnie', 'Jimin'], add: true, text: '- Tall.' }], []);
+  assert.deepStrictEqual(entries[0].aliases, ['unnie', 'Jimin']);
+  const chat = { memory: '', entries: [{ name: 'Karina', kind: 'character', aliases: ['unnie', 'Giselle', 'Yujin-unnie', 'Jimin'], text: '- Leader.' }, { name: 'Giselle', kind: 'character', aliases: [], text: '- Rapper.' }, { name: 'Yujin', kind: 'character', aliases: [], text: '- IVE.' }], ignored: [], log: [], chapters: [] };
+  lib.organize(chat);
+  assert.deepStrictEqual(chat.entries.find((e) => e.name === 'Karina').aliases, ['unnie', 'Jimin']);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

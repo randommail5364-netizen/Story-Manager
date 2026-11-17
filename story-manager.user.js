@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.20.1
+// @version      3.20.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1954,9 +1954,18 @@
     return entries.map((e) => Object.assign({}, e, { aliases: (e.aliases || []).slice() }));
   }
 
+  // Terms of address the characters use for each other ("unnie", "oppa",
+  // "little one"): they are not names, and never identify one person.
+  const GENERIC_ALIAS_RE = /^(the )?(unnie|eonni|eonnie|onnie|oppa|hyung|hyungnim|noona|nuna|sunbae|sunbaenim|hoobae|maknae|babe|baby|bae|honey|hon|sweetheart|sweetie|sugar|darling|darlin'?|dear|dearest|love|my love|lover|little one|little bird|princess|prince|queen|king|kitten|pet|puppy|angel|beautiful|gorgeous|pretty|sir|ma'?am|madam|boss|leader|captain|master|mistress|daddy|mommy|sis|sister|bro|brother|girl|boy|kid|you|her|him|them)$/i;
+  const isGeneric = (a) => GENERIC_ALIAS_RE.test(String(a || '').trim());
+  // An entry by its name; by a nickname only when that nickname is a real
+  // name for it (not a term of address) and belongs to no other entry.
   function findEntry(entries, name) {
     const n = String(name).trim().toLowerCase();
-    return entries.find((e) => e.name.toLowerCase() === n || (e.aliases || []).some((a) => a.toLowerCase() === n));
+    const byName = entries.find((e) => e.name.toLowerCase() === n);
+    if (byName || !n || isGeneric(n)) return byName;
+    const byAlias = entries.filter((e) => (e.aliases || []).some((a) => a.toLowerCase() === n));
+    return byAlias.length === 1 ? byAlias[0] : undefined;
   }
 
   // Apply the keeper's new or changed entries. An "add" update appends its new
@@ -2001,6 +2010,13 @@
     return out;
   }
 
+  // A nickname that is (or contains) another entry's name, e.g. "Giselle" or
+  // "Yujin-unnie" on Karina, belongs to that other person.
+  function aliasOfOther(entries, e, alias) {
+    const a = String(alias || '').toLowerCase();
+    return entries.some((x) => x !== e && x.name.length > 2 && (a === x.name.toLowerCase() || new RegExp('(^|[^\\p{L}])' + x.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\p{L}])', 'u').test(a)));
+  }
+
   function applyUpdates(entries, updates, ignored) {
     updates = splitMisplaced(entries, updates);
     const refused = [];
@@ -2010,7 +2026,10 @@
       if (!u.text) continue;
       // Entries the user deleted stay deleted.
       if ([u.name].concat(u.aliases).some((n) => skip.has(n.toLowerCase()))) continue;
-      const e = findEntry(entries, u.name) || u.aliases.map((a) => findEntry(entries, a)).find(Boolean);
+      // A nickname only leads to an entry when it is not another update's
+      // name and the update's own name is not a different known character.
+      const others = new Set(updates.filter((x) => x !== u).map((x) => x.name.toLowerCase()));
+      const e = findEntry(entries, u.name) || u.aliases.filter((a) => !others.has(a.toLowerCase())).map((a) => findEntry(entries, a)).find(Boolean);
       if (!e) {
         if (!u.text) continue;
         entries.push({ name: u.name, kind: (u.add ? u.newKind : u.kind) || guessKind(u.name, [], u.text) || 'lore', aliases: u.aliases, text: latestState(u.text), always: false, updated: Date.now() });
@@ -2033,7 +2052,7 @@
       if (u.kind && !u.add) e.kind = u.kind;
       const names = new Set([e.name.toLowerCase()].concat(e.aliases.map((a) => a.toLowerCase())));
       for (const a of u.aliases.concat(u.name)) {
-        if (!names.has(a.toLowerCase())) { e.aliases.push(a); names.add(a.toLowerCase()); }
+        if (!names.has(a.toLowerCase()) && !aliasOfOther(entries, e, a)) { e.aliases.push(a); names.add(a.toLowerCase()); }
       }
     }
     return { entries, refused };
@@ -2202,8 +2221,19 @@
       if (!e.always && entryKeys(e).some((k) => skip.has(k.toLowerCase()))) { fixes.push('removed deleted entry ' + e.name); continue; }
       // Only a name counts: two characters may share a nickname like "babe".
       const keys = entryKeys(e).map((k) => k.toLowerCase());
+      // Characters merge only on clear evidence: the same name, the same name
+      // with a title ("Ms. Choi"), a first name and the full name ("Jacek" /
+      // "Jacek Kowalski"), or one's full name (two or more words) as the
+      // other's nickname when neither mentions the other (two people who do are not one person; the wrong
+      // nickname is removed below).
+      const person = (e.kind || 'character') === 'character';
+      const firstAndFull = (a, b) => { const A = a.toLowerCase().split(/\s+/); const B = b.toLowerCase().split(/\s+/); return A.length !== B.length && (A.length < B.length ? B.slice(0, A.length).join(' ') === A.join(' ') : A.slice(0, B.length).join(' ') === B.join(' ')); };
       const twin = kept.find((x) => (x.kind || 'character') === (e.kind || 'character') &&
-        (keys.includes(x.name.toLowerCase()) || entryKeys(x).some((k) => k.toLowerCase() === e.name.toLowerCase()) || sameButTitle(x.name, e.name)));
+        (x.name.toLowerCase() === e.name.toLowerCase() || sameButTitle(x.name, e.name) ||
+          ((keys.includes(x.name.toLowerCase()) || entryKeys(x).some((k) => k.toLowerCase() === e.name.toLowerCase())) &&
+            // Two people who mention each other ("Relationships – Giselle: …") are not one person.
+            (!person || (!mentions(e.text, x.name) && !mentions(x.text, e.name) && (x.name.trim().includes(' ') || e.name.trim().includes(' '))))) ||
+          (person && firstAndFull(x.name, e.name))));
       if (!twin) { kept.push(e); continue; }
       // Merge: keep the longer text, add lines only the other one has.
       const [main, other] = twin.text.length >= e.text.length ? [twin.text, e.text] : [e.text, twin.text];
@@ -2221,7 +2251,7 @@
       const before = e.aliases.length;
       e.aliases = e.aliases.map((a) => String(a).trim()).filter((a) => {
         const k = a.toLowerCase();
-        if (!a || seen.has(k) || names.has(k)) return false;
+        if (!a || seen.has(k) || names.has(k) || aliasOfOther(kept, e, a)) return false;
         seen.add(k);
         return true;
       });

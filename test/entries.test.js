@@ -487,4 +487,22 @@ test('facts format: an answer is split by its [R…] labels', () => {
   assert.strictEqual(lib.parseRecords(parts[3])[0].v, '23');
 });
 
+test('facts format: records written the way real bots vary them are understood; old-style facts are not misread', () => {
+  const recs = lib.parseRecords([
+    '- Karina | relationship with Winter | comforted her after the fight',
+    '- **Karina** | Where things stand with Winter | close again',
+    '* Winter (aespa) | Key Moments | cried in the rain',
+    'Park Ji-won | Role (current) | COO of SM',
+    'Mira is a healer | Ash is a dragon | Karina leads aespa',
+    '- They | appearance | tired',
+    '- Jacek | some very long made up kind name | x',
+  ].join('\n'));
+  assert.deepStrictEqual(recs.map((r) => [r.s, r.k, r.t, r.v]), [
+    ['Karina', 'relationship', 'Winter', 'comforted her after the fight'],
+    ['Karina', 'stands', 'Winter', 'close again'],
+    ['Winter', 'moment', '', 'cried in the rain'],
+    ['Park Ji-won', 'role', '', 'COO of SM'],
+  ]);
+});
+
 console.log('All ' + passed + ' entry checks passed.');

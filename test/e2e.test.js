@@ -1703,6 +1703,38 @@ async function main() {
   const back = await keyOf(classicId);
   check(JSON.stringify(back.entries.map((e) => e.name).sort()) === JSON.stringify(before52.entries.map((e) => e.name).sort()), 'switching back brings the classic characters back');
 
+  console.log('53) Rebuild from whole chat turns a classic story into a facts story, fresh from every reply');
+  await page.evaluate((id) => {
+    const key = 'smx:chat:' + id;
+    const c = JSON.parse(localStorage.getItem(key));
+    c.manualRecords = [{ n: 0, s: 'Mira', k: 'likes', t: '', v: 'plum tea', label: 'likes' }];
+    c.hiddenRecords = ['someone#3'];
+    c.portraits = { mira: { text: 'An old portrait from before the rebuild.', at: 1, records: 1 } };
+    localStorage.setItem(key, JSON.stringify(c));
+  }, classicId);
+  await page.reload();
+  await page.waitForTimeout(1500);
+  const calls53 = llmCalls.length;
+  await page.locator('#story-manager-root >> .fab').click().catch(() => {});
+  if (!(await page.locator('#story-manager-root >> .panel.open').count())) await page.locator('#story-manager-root >> .fab').click();
+  const asked53 = [];
+  const accept53 = (d) => { asked53.push(d.message()); d.accept(); };
+  page.on('dialog', accept53);
+  await page.getByRole('button', { name: 'Rebuild from whole chat' }).click();
+  await waitFor(async () => { const k = await keyOf(classicId); return k.format === 'facts' && k.log.length > 0; }, 60000, 'rebuild started in the facts format');
+  await settle();
+  page.off('dialog', accept53);
+  const r53 = await keyOf(classicId);
+  const msgs53 = convs[classicId].messages;
+  check(asked53.some((m) => /Rebuild this story in the new facts format/.test(m)), 'a classic story is offered the facts format when it is rebuilt');
+  check(r53.format === 'facts' && r53.log.length >= msgs53.filter((m) => m.origin === 'assistant').length - 1 && r53.log.every((e) => (e.records || []).length),
+    'every reply is summarised again, each with its facts');
+  check(r53.entries.length && r53.entries.every((e) => e.fromFacts) && llmCalls.slice(calls53).some((c) => /JOB: SCENE/.test(c)) && !llmCalls.slice(calls53).some((c) => /JOB: UPDATE/.test(c)),
+    'every character is built from the new facts; the AI only wrote the story');
+  check(/- Likes: plum tea/.test((r53.entries.find((e) => e.name === 'Mira') || {}).text || '') && !(r53.hiddenRecords || []).length,
+    'facts the user added are kept; old removals (by position) are cleared');
+  check(r53.portraits && r53.portraits.mira && !/old portrait/.test(r53.portraits.mira.text), 'portraits are written fresh from the new facts');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

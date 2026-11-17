@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.23.0
+// @version      3.23.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1866,8 +1866,9 @@
       if (got.length === count) break;
     }
     got = dedupeEntries(got);
-    // Summaries without a FACTS line: ask once more, for their facts only.
-    const noLine = got.filter((e) => e.nofacts === 'missing');
+    // Summaries without a FACTS line (or, in the facts format, without
+    // usable records): ask once more, for their facts only.
+    const noLine = got.filter((e) => e.nofacts === 'missing' || (factsMode(chat) && e.facts && !e.records));
     for (let i = 0; i < noLine.length; i += 3) {
       checkStop();
       const batch = noLine.slice(i, i + 3);
@@ -2293,7 +2294,10 @@
   // Kinds that hold one value at a time: the newest is true, older ones are history.
   const SINGLE_KINDS = new Set(['fullname', 'age', 'role', 'type', 'status', 'location', 'stands']);
   function recordKind(k) {
-    const m = String(k || '').trim().match(/^([^:]+?)\s*(?::\s*(.+))?$/);
+    // "relationship with Winter", "Relationship to Winter", "where things stand with Winter" → kind and target.
+    let raw = String(k || '').replace(/\([^)]*\)/g, '').replace(/\*+/g, '').trim();
+    raw = raw.replace(/^(relationships?|relation|bond|where things stand|stands|feelings?)\s+(?:with|to|toward|towards|for|about)\s+(.+)$/i, '$1: $2');
+    const m = raw.match(/^([^:]+?)\s*(?::\s*(.+))?$/);
     if (!m) return null;
     const name = m[1].trim().toLowerCase();
     const hit = RECORD_KINDS.find(([, re]) => re.test(name));
@@ -2306,9 +2310,13 @@
       const m = l.match(/^\s*[-*•]?\s*([^|\n]{1,60}?)\s*\|\s*([^|\n]{1,60}?)\s*\|\s*(.+?)\s*$/);
       if (!m) continue;
       const k = recordKind(m[2]);
-      const s = m[1].replace(/^\*+|\*+$/g, '').trim();
+      const s = m[1].replace(/^\*+|\*+$/g, '').replace(/\s*\([^)]*\)\s*$/, '').trim();
       const v = m[3].replace(/\s*\|\s*/g, '; ').trim();
       if (!k || !s || !v || TEMPLATE_NAME_RE.test(s) || isGeneric(s) || isJunk(v, true) || EMPTY_FACT_RE.test(v)) continue;
+      // A record's subject is a name and its kind a short label. "Mira is a
+      // healer | Ash is a dragon | …" (old-style facts on one line) is not a record.
+      if (s.split(/\s+/).length > 5 || /\b(is|was|are|were|has|had|did|does|became|got|gave|said|told)\b/i.test(s) || /^(the|a|an|they|she|he|it|we|i)\b/i.test(s)) continue;
+      if (k.kind === 'other' && k.label.split(/\s+/).length > 3) continue;
       out.push({ s, k: k.kind, t: k.target, v, label: k.label });
     }
     return out;
@@ -2841,7 +2849,8 @@
       // then write the chapters that are complete.
       await foldAndChapter(chat, force || !chat.memory.trim() ? 1 : foldEvery(), job);
       // The facts format: portraits of main characters that have grown.
-      if (factsMode(chat)) { try { await updatePortraits(chat, job); } catch (e) { if (e.stopped) throw e; } }
+      // (After a rebuild or "Update now", every main character that needs one.)
+      if (factsMode(chat)) { try { await updatePortraits(chat, job, null, force ? 8 : PORTRAITS_PER_UPDATE); } catch (e) { if (e.stopped) throw e; } }
       // 4. Replies that were deleted or redone after their facts went in:
       // take what only they said back out, and rewrite their chapters.
       if ((chat.stale || []).length && !(chat.redo || []).length) await correctAfterRedo(chat, job);
@@ -2907,9 +2916,9 @@
     if (c.bad || c.text.length < 120) throw new Error('the memory keeper did not write a usable portrait of ' + e.name);
     return c.text;
   }
-  async function updatePortraits(chat, job, names) {
+  async function updatePortraits(chat, job, names, max = PORTRAITS_PER_UPDATE) {
     const todo = names ? names.map((n) => chat.entries.find((e) => e.name === n)).filter(Boolean)
-      : mainCharacters(chat).filter((e) => portraitDue(chat, e)).slice(0, PORTRAITS_PER_UPDATE);
+      : mainCharacters(chat).filter((e) => portraitDue(chat, e)).slice(0, max);
     for (const e of todo) {
       checkStop();
       const text = await job('update', 'Wrote who ' + e.name + ' is now', () => writePortrait(chat, e));
@@ -4803,11 +4812,19 @@
             : '';
           if (!confirm('Rebuild the memory from all ' + msgs.length + ' messages? This takes about ' + parts +
             ' memory-keeper request' + (parts === 1 ? '' : 's') + '.' + cost +
-            ' (Pinned facts and entries marked "Always send" are kept.)')) return;
+            ' (Pinned facts, entries marked "Always send" and facts you added yourself are kept.)')) return;
+          // A classic story is rebuilt in the facts format, if the user agrees.
+          const toFacts = !factsMode(chat) && confirm('Rebuild this story in the new facts format? (Recommended: the characters are built from facts taken out of every reply.) Cancel keeps the classic format.');
           // Let an automatic update that started meanwhile finish first.
           for (let i = 0; busy[chat.id] && i < 600; i++) await sleep(500);
-          const old = { snap: snapshot(chat), log: chat.log.slice(), ids: chat.processedIds.slice(), count: chat.processedCount, read: chat.readCount };
+          const old = { snap: snapshot(chat), log: chat.log.slice(), ids: chat.processedIds.slice(), count: chat.processedCount, read: chat.readCount,
+            format: chat.format, hidden: (chat.hiddenRecords || []).slice(), portraits: chat.portraits, classic: chat.classicEntries };
           chat.history = [old.snap].concat(chat.history).slice(0, 5);
+          if (toFacts) { chat.classicEntries = cloneEntries(chat.entries); chat.format = 'facts'; }
+          // Facts removed by hand were remembered by their place in a summary, and
+          // portraits describe the old facts: both start again with the new summaries.
+          chat.hiddenRecords = [];
+          chat.portraits = {};
           chat.memory = '';
           chat.entries = chat.entries.filter((e) => e.always);
           chat.chapters = [];
@@ -4826,6 +4843,10 @@
             chat.log = old.log;
             chat.processedIds = old.ids;
             chat.processedCount = old.count;
+            chat.format = old.format;
+            chat.hiddenRecords = old.hidden;
+            chat.portraits = old.portraits;
+            chat.classicEntries = old.classic;
             chat.history.shift();
             await saveChat(chat);
             chat.readCount = old.read;

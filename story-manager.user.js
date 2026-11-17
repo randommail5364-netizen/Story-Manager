@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.23.5
+// @version      3.23.6
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -718,6 +718,7 @@
       chat.entries = built;
     }
     await Store.set('chat:' + chat.id, chat);
+    try { refreshAgo(); } catch (e) { /* the panel is not set up yet */ } // "updated … ago" shows the new time at once
     publishInjectMap();
     if (!fromSync) scheduleSync();
     schedulePinned(chat);
@@ -4733,6 +4734,21 @@
     ui.fab.classList.toggle('off', !!(chat && !chat.enabled));
   }
 
+  // A live "… ago" in the panel: it shows the CURRENT value of a chat's time
+  // (e.g. when the pinned message was last updated), re-read every 15 seconds
+  // and whenever a job changes it, so it never shows a time from before.
+  function agoEl(chat, field) {
+    return el('span', { 'data-ago-chat': chat.id, 'data-ago-field': field }, ago(chat[field]));
+  }
+  function refreshAgo() {
+    if (!root) return;
+    for (const sp of root.querySelectorAll('[data-ago-field]')) {
+      const c = chats[sp.getAttribute('data-ago-chat')];
+      if (c) sp.textContent = ago(c[sp.getAttribute('data-ago-field')]);
+    }
+  }
+  setInterval(refreshAgo, 15000);
+
   function ago(ts) {
     if (!ts) return 'never';
     const s = Math.round((Date.now() - ts) / 1000);
@@ -4989,7 +5005,7 @@
             ' (' + (total ? total + ' messages including yours' : 'messages not counted yet') +
             (chat.allVersions > total ? ', ' + chat.allVersions + ' counting every redone version' : '') + ')',
             chat.log.length > own ? ' · plus ' + (chat.log.length - own) + ' from the chat this one continues' : '',
-            ' · Last update: ', el('b', {}, ago(chat.lastUpdate)));
+            ' · Last update: ', el('b', {}, agoEl(chat, 'lastUpdate')));
         })(),
         lastSentInfo[chat.id] ? el('div', {}, 'Last message carried: ' + lastSentInfo[chat.id]) : null,
         el('div', {}, 'Reply summaries: ', el('b', {}, String(st.summaries)),
@@ -5009,7 +5025,7 @@
         chatErrors[chat.id] && TOO_LONG_RE.test(chatErrors[chat.id].error)
           ? el('div', { class: 'error' }, '⚠ This chat has become too long for the AI (MiniApps sends the whole chat every time). Tap "Continue in a new chat" below to carry the story on in a fresh chat.') : null,
         memoryInMessage(chat)
-          ? el('div', {}, '📌 The memory lives in one pinned message, updated in place' + (chat.memoryMsgAt ? ' (' + ago(chat.memoryMsgAt) + ')' : '') +
+          ? el('div', {}, '📌 The memory lives in one pinned message, updated in place (', agoEl(chat, 'memoryMsgAt'), ')' +
             (pinnedUpToDate(chat) ? '' : ' — it is behind the memory and will be updated as soon as the story AI is idle') + '. The AI keeps it however long the chat gets, and new messages carry no memory.')
           : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
         chat.memoryMsgError && settings.memoryMessage && !memoryInMessage(chat) ? el('div', { class: 'error' }, '⚠ Could not update the pinned memory message (' + chat.memoryMsgError + '); the memory is attached to your messages instead.') : null,

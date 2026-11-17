@@ -1144,6 +1144,15 @@ async function main() {
     'the pinned message holds every entry (' + all37.entries.length + ') and every chapter (' + all37.chapters.length + ') in full');
   await page.locator('#story-manager-root >> .fab').click();
   check(/The memory lives in one pinned message/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'the panel says where the memory lives');
+  // The "updated … ago" follows later updates without the panel being redrawn.
+  await page.evaluate((id) => document.querySelector('#story-manager-root').shadowRoot.querySelector('[data-ago-field="memoryMsgAt"]').textContent = 'STALE', newId);
+  const edits37t = edits.length;
+  await page.evaluate(() => window.editMsg && null);
+  await page.locator('#story-manager-root >> textarea').first().fill('Mira hums when she cooks.');
+  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
+  await waitFor(() => edits.length > edits37t, 30000, 'pinned message updated again');
+  await waitFor(async () => /updated in place \(just now\)/.test(await page.locator('#story-manager-root >> .panel').innerText()), 20000, 'time shown');
+  check(true, 'the panel shows the time of the newest pinned-message update');
   await page.locator('#story-manager-root >> .x').click();
   await page.evaluate((id) => window.editMsg(id, 'Then we rest by the fire.'), lastUser());
   check(!/STORY-MEMORY/.test(edits[edits.length - 1].elements[0].text), 'the user\'s own edits get no memory');

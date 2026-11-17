@@ -20,8 +20,10 @@ function grab(name) {
   throw new Error('unbalanced ' + name);
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const factKey = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'slimMissing']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts, cleanSummary, greetingOf, dedupeSections, isEntryFor, slimMissing };')();
+const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
+const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'slimMissing', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts, cleanSummary, greetingOf, dedupeSections, isEntryFor, slimMissing, parseRecords, allRecords, buildEntries, splitByLabel };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -472,6 +474,42 @@ test('a slim version must keep every person the full entry mentions; the AI read
   karina.slim = { text: '- Leader (slim).', at: 1, fullLen: karina.text.length };
   const plan = { prefix: '', suffix: '', head: '', budget: Infinity, log: [], extra: [], core: [{ name: 'Karina', kind: 'character', keys: ['Karina'], text: karina.slim.text }] };
   assert(/Leader \(slim\)/.test(lib.composeMemory(plan, '').text));
+});
+
+// The facts format (docs/REDESIGN.md).
+test('facts format: records are read from a summary\'s FACTS', () => {
+  const p = lib.parseKeeperAnswer('=== LOG ===\n[R1] Karina comforted Winter.\nFACTS:\n- Karina | relationship: Winter | comforted her after the fight\n- Park Ji-won | Role | COO of SM\n- unnie | personality | kind\n- Winter | where things stand: Karina | close again', [{ id: 'a' }]);
+  assert.deepStrictEqual(p.entries[0].records.map((r) => [r.s, r.k, r.t, r.v]), [['Karina', 'relationship', 'Winter', 'comforted her after the fight'], ['Park Ji-won', 'role', '', 'COO of SM'], ['Winter', 'stands', 'Karina', 'close again']]);
+  assert(/Karina — relationship: Winter: comforted her/.test(p.entries[0].facts));
+});
+
+test('facts format: characters are built from the records — newest wins, history kept, nobody mixed up', () => {
+  const rec = (s, k, v) => { const m = k.match(/^([^:]+)(?::\s*(.+))?$/); return { s, k: m[1], t: m[2] || '', v, label: m[1] }; };
+  const chat = { ignored: [], entries: [], log: [
+    { id: 'r1', text: 'x', records: [rec('Park Ji-won', 'role', 'PR head at SM'), rec('Karina', 'appearance', 'tall and athletic'), rec('Karina', 'nickname', 'unnie, Yu Jimin'), rec('Yujin', 'nickname', 'unnie'), rec('Yujin', 'role', 'leader of IVE')] },
+    { id: 'r2', text: 'x', records: [rec('Park Ji-won', 'role', 'CFO of SM'), rec('Karina', 'relationship: Winter', 'kissed her in the rain'), rec('Mango plushie', 'status', 'ordered for the villa'), rec('Mango plushie', 'type', 'item')] },
+    { id: 'r3', text: 'x', records: [rec('Park Ji-won', 'role', 'COO of SM'), rec('Karina', 'stands: Winter', 'close again; promised to stop teasing'), rec('Mango plushie', 'status', 'delivered to the penthouse'), rec('Ms. Choi', 'role', 'PR head'), rec('Choi', 'personality', 'strict')] },
+  ] };
+  const es = lib.buildEntries(chat);
+  const get = (n) => es.find((e) => e.name === n);
+  assert(/- Role: COO of SM \(before: PR head at SM, until reply 2; CFO of SM, until reply 3\)/.test(get('Park Ji-won').text), get('Park Ji-won').text);
+  assert(/- Status: delivered to the penthouse \(before: ordered for the villa/.test(get('Mango plushie').text) && get('Mango plushie').kind === 'item');
+  assert(/- Winter: kissed her in the rain\. Where things stand: close again/.test(get('Karina').text));
+  assert(get('Yujin') && /leader of IVE/.test(get('Yujin').text) && !/IVE/.test(get('Karina').text), 'Yujin is not merged into Karina through "unnie"');
+  assert.deepStrictEqual(get('Karina').aliases, ['Yu Jimin']);
+  assert(!es.some((e) => e.name === 'Choi') && /strict/.test((get('Ms. Choi') || {}).text || ''), 'Ms. Choi and Choi are one person');
+  // A redone reply takes its facts along; facts the user removed stay removed.
+  chat.log = chat.log.filter((e) => e.id !== 'r3');
+  chat.hiddenRecords = ['r1#1'];
+  const es2 = lib.buildEntries(chat);
+  assert(/- Role: CFO of SM \(before: PR head at SM/.test(es2.find((e) => e.name === 'Park Ji-won').text));
+  assert(!/tall and athletic/.test(es2.find((e) => e.name === 'Karina').text));
+});
+
+test('facts format: an answer is split by its [R…] labels', () => {
+  const parts = lib.splitByLabel('[R1]\n- Karina | role | leader\n**[R2]**\nnone\n[R3]:\n- Winter | age | 23');
+  assert.deepStrictEqual(Object.keys(parts), ['1', '2', '3']);
+  assert.strictEqual(lib.parseRecords(parts[3])[0].v, '23');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.21.0
+// @version      3.22.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -702,6 +702,16 @@
         vs.push({ v: SM_VERSION, at: Date.now() });
         if (vs.length > 30) vs.splice(0, vs.length - 30);
       }
+    }
+    // The facts format: the entries are built from the records, every time.
+    if (factsMode(chat)) {
+      const built = buildEntries(chat);
+      // While some summaries still have no records (just switched), the
+      // previous characters fill in for anyone not built from facts yet.
+      if (chat.classicEntries && chat.log.some((e) => e.needsRecords && !e.records)) {
+        for (const c of chat.classicEntries) if (!built.some((b) => b.name.toLowerCase() === c.name.toLowerCase() || sameButTitle(b.name, c.name))) built.push(Object.assign({}, c, { aliases: (c.aliases || []).slice(), fromClassic: true }));
+      }
+      chat.entries = built;
     }
     await Store.set('chat:' + chat.id, chat);
     publishInjectMap();
@@ -1464,7 +1474,23 @@
     '- If a recap written by the USER disagrees with what is known, trust the recap. If one written by the STORY AI disagrees, keep what is known unless the recap is clearly more detailed and accurate. Anything that happens after a recap overrides it.',
   ];
 
-  function summarySystem() {
+  // The FACTS part of a summary in the facts format: one record per line.
+  const RECORD_RULES = [
+    '- After each summary write FACTS: and then, one per line, the lasting facts this reply revealed or changed, as records: "- Subject | kind | fact".',
+    '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
+    '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
+      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, goal, nickname, key moment.',
+    '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are at this moment.',
+    '  A secret says who knows it. A key moment is a short line saying what happened to or because of them in this reply.',
+    '  Only lasting facts: not where someone is or what they wear at this moment. Write FACTS: none if there are none.',
+    '  Example:',
+    '  FACTS:',
+    '  - Karina | relationship: Winter | comforted Winter after the fight and slept beside her',
+    '  - Karina | where things stand: Winter | close again; promised to stop teasing her about Jacek',
+    '  - Park Ji-won | role | COO of SM Entertainment',
+    '  - Mango plushie | status | delivered to the penthouse',
+  ];
+  function summarySystem(facts) {
     return [
       'You are the continuity editor for a long-running interactive story / roleplay chat.',
       'Your job now: write a detailed summary of EACH story reply in the messages, so the storyteller AI can remember exactly what happened.',
@@ -1475,17 +1501,19 @@
       '- Each [R…] label gives the MOST its summary should be (longer replies get longer summaries). A short reply gets a short summary: never pad, never discuss the length. Cover the whole reply, including its end.',
       '- A story reply may begin with the storyteller AI\'s own planning or thinking (e.g. "Okay, the user wants…", notes on how to write the scene). That is not part of the story: ignore it and summarise only the story itself.',
       '- Write only the summaries and FACTS lines. Never write your own planning, questions about the task, notes on the format or the length, or what you are about to do.',
+    ].concat(facts ? RECORD_RULES : [
       '- After each summary, on its own line, write FACTS: followed by the lasting facts this reply revealed or changed, separated by " | ": names and nicknames, relationships and feelings, confessions, promises, secrets (and who knows them), injuries and condition, possessions, appearance changes, places, rules of the world, dates and times. Write FACTS: none if there are none.',
+    ], [
       '- A reply that is a recap gets a summary starting with "Recap of earlier events:".',
       '- Never invent anything. Use the names in KNOWN NAMES for people and places that already have them.',
       '',
-    ].concat(RECAP_RULES, [
+    ], RECAP_RULES, [
       '',
       'No commentary, no warnings, no questions. Answer in exactly this format and nothing else:',
       '[R1] (summary)',
-      'FACTS: (facts)',
+      facts ? 'FACTS:\n- (Subject | kind | fact)\n- (…)' : 'FACTS: (facts)',
       '[R2] (summary)',
-      'FACTS: (facts)',
+      facts ? 'FACTS:\n- (…)' : 'FACTS: (facts)',
     ]).join('\n');
   }
 
@@ -1770,7 +1798,7 @@
         (scene ? 'WHERE THE STORY STOOD BEFORE THESE MESSAGES:\n<<<\n' + scene + '\n>>>\n\n' : '') +
         'MESSAGES (oldest first):\n<<<\n' + formatMessages(list, chat.title) + '\n>>>\n\n' +
         'JOB: SUMMARISE. Write one summary and one FACTS line for each [R…] reply now.';
-      const out = cleanOutput(await callLLM(summarySystem(), user, slot));
+      const out = cleanOutput(await callLLM(summarySystem(factsMode(chat)), user, slot));
       checkStop();
       const log = /^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out;
       // Working-out inside a summary is removed; a summary that is mostly
@@ -1827,7 +1855,7 @@
     let n = 0;
     for (const e of items) {
       const a = again.find((x) => x.id === e.id);
-      if (a && a.facts) { e.facts = a.facts; delete e.nofacts; n++; } else if (a && a.nofacts === 'none') e.nofacts = 'none';
+      if (a && a.facts) { e.facts = a.facts; if (a.records) e.records = a.records; delete e.nofacts; n++; } else if (a && a.nofacts === 'none') e.nofacts = 'none';
       else e.nofacts = 'missing';
       e.factsAsked = true;
     }
@@ -2213,6 +2241,155 @@
     return out.join('\n\n');
   }
 
+  // ---------------------------------------------------------------------------
+  // The "facts" memory format (per story; see docs/REDESIGN.md)
+  // ---------------------------------------------------------------------------
+  // Each reply's summary carries fact records: "Subject | kind | value"
+  // (kind may name a target: "relationship: Winter"). Story Manager builds
+  // the entries from all records itself; the AI never edits entries, so
+  // facts cannot move to the wrong person, contradictions are settled by
+  // "the newest wins", and a redone or deleted reply takes its facts along.
+  const RECORD_KINDS = [
+    ['fullname', /^(full name|real name|birth name|name)$/],
+    ['age', /^(age|born|birthday)$/],
+    ['role', /^(role|job|occupation|position|title|profession|rank)$/],
+    ['type', /^(type|is a|what it is|category)$/],
+    ['status', /^(status|condition of item|state of item)$/],
+    ['location', /^(location|lives|home|lives in|based in)$/],
+    ['basics', /^(basics?|identity|info|about)$/],
+    ['appearance', /^(appearance|looks?|body|build|hair|eyes|face|features?|scar|tattoo)$/],
+    ['personality', /^(personality|traits?|voice|manner|mannerisms?|habits?|speech|temperament|character)$/],
+    ['ability', /^(abilit(y|ies)|skills?|talents?|power)$/],
+    ['likes', /^(likes?|loves?|preferences?|favou?rites?|enjoys)$/],
+    ['dislikes', /^(dislikes?|hates?|fears?)$/],
+    ['boundary', /^(boundar(y|ies)|limits?|consent)$/],
+    ['backstory', /^(backstory|history|past|origin)$/],
+    ['stands', /^(where things stand|stands|relationship status|status with)$/],
+    ['relationship', /^(relationships?|relation|bond|feelings? (for|about|toward))$/],
+    ['possession', /^(possessions?|owns|gifts?|items?|belongings?)$/],
+    ['promise', /^(promises?|vows?|agreements?|commitments?|deals?)$/],
+    ['secret', /^(secrets?)$/],
+    ['goal', /^(goals?|plans?|wants|desires?|intentions?)$/],
+    ['nickname', /^(nicknames?|alias(es)?|called|also known as|pet names?)$/],
+    ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?)$/],
+  ];
+  // Kinds that hold one value at a time: the newest is true, older ones are history.
+  const SINGLE_KINDS = new Set(['fullname', 'age', 'role', 'type', 'status', 'location', 'stands']);
+  function recordKind(k) {
+    const m = String(k || '').trim().match(/^([^:]+?)\s*(?::\s*(.+))?$/);
+    if (!m) return null;
+    const name = m[1].trim().toLowerCase();
+    const hit = RECORD_KINDS.find(([, re]) => re.test(name));
+    return { kind: hit ? hit[0] : 'other', target: (m[2] || '').trim(), label: name };
+  }
+  // "- Karina | relationship: Winter | close friends since the dorm night"
+  function parseRecords(block) {
+    const out = [];
+    for (const l of String(block || '').split('\n')) {
+      const m = l.match(/^\s*[-*•]?\s*([^|\n]{1,60}?)\s*\|\s*([^|\n]{1,60}?)\s*\|\s*(.+?)\s*$/);
+      if (!m) continue;
+      const k = recordKind(m[2]);
+      const s = m[1].replace(/^\*+|\*+$/g, '').trim();
+      const v = m[3].replace(/\s*\|\s*/g, '; ').trim();
+      if (!k || !s || !v || TEMPLATE_NAME_RE.test(s) || isGeneric(s) || isJunk(v, true) || EMPTY_FACT_RE.test(v)) continue;
+      out.push({ s, k: k.kind, t: k.target, v, label: k.label });
+    }
+    return out;
+  }
+
+  // Every record of the story, oldest first: from the summaries (in story
+  // order), then the ones the user added. Hidden ones (deleted by the user)
+  // are left out. Each gets an id: "<reply id>#<n>" or "manual#<n>".
+  function allRecords(chat) {
+    const hidden = new Set(chat.hiddenRecords || []);
+    const out = [];
+    chat.log.forEach((e, i) => (e.records || []).forEach((r, n) => out.push(Object.assign({ id: e.id + '#' + n, at: i + 1 }, r))));
+    (chat.manualRecords || []).forEach((r, n) => out.push(Object.assign({ id: 'manual#' + (r.n != null ? r.n : n), at: Infinity, manual: true }, r)));
+    return out.filter((r) => !hidden.has(r.id));
+  }
+
+  const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
+  function buildEntries(chat) {
+    const records = allRecords(chat);
+    const skip = new Set((chat.ignored || []).map((n) => n.toLowerCase()));
+    // Who is who: names, titles ("Ms. Choi"), first/full names and real
+    // nicknames lead to one person; terms of address ("unnie") never do.
+    const people = [];
+    const find = (name) => {
+      const n = String(name).trim();
+      const l = n.toLowerCase();
+      return people.find((p) => p.name.toLowerCase() === l || sameButTitle(p.name, n) || p.aliases.some((a) => a.toLowerCase() === l) ||
+        (n.includes(' ') !== p.name.includes(' ') && (n.toLowerCase().startsWith(p.name.toLowerCase() + ' ') || p.name.toLowerCase().startsWith(l + ' '))));
+    };
+    for (const r of records) {
+      if (skip.has(r.s.toLowerCase())) continue;
+      let p = find(r.s);
+      if (!p) { p = { name: r.s, aliases: [], records: [] }; people.push(p); }
+      // The fuller name is the entry's name ("Jacek Kowalski" over "Jacek").
+      if (r.s.length > p.name.length && r.s.toLowerCase().startsWith(p.name.toLowerCase() + ' ')) { p.aliases.push(p.name); p.name = r.s; }
+      p.records.push(r);
+      if (r.k === 'nickname') for (const a of r.v.split(/[,;]|\band\b/).map((x) => x.replace(/["“”]/g, '').trim()).filter(Boolean)) {
+        if (!isGeneric(a) && a.length <= 40 && !people.some((q) => q !== p && q.name.toLowerCase() === a.toLowerCase()) && !p.aliases.some((x) => x.toLowerCase() === a.toLowerCase())) p.aliases.push(a);
+      }
+    }
+    const before = new Map((chat.entries || []).map((e) => [e.name.toLowerCase(), e]));
+    return people.filter((p) => !p.aliases.some((a) => skip.has(a.toLowerCase()))).map((p) => {
+      const by = (k) => p.records.filter((r) => r.k === k);
+      const uniq = (list) => {
+        const kept = [];
+        for (const r of list) {
+          const n = normValue(r.v);
+          const twin = kept.findIndex((x) => { const m = normValue(x.v); return m === n || m.includes(n) || n.includes(m); });
+          if (twin < 0) kept.push(r);
+          else if (r.v.length > kept[twin].v.length) kept[twin] = r;
+        }
+        return kept;
+      };
+      // One value at a time: the newest, with the older ones as history.
+      const single = (list) => {
+        if (!list.length) return null;
+        const last = list[list.length - 1];
+        const older = uniq(list.slice(0, -1)).filter((r) => normValue(r.v) !== normValue(last.v));
+        return last.v + (older.length ? ' (before: ' + older.map((r) => r.v + (r.at !== Infinity ? ', until reply ' + list[list.indexOf(r) + 1].at : '')).join('; ') + ')' : '');
+      };
+      const L = [];
+      const section = (title, lines) => { if (lines.length) L.push('### ' + title, ...lines); };
+      const basics = [];
+      const fn = single(by('fullname')); if (fn) basics.push('- Full name: ' + fn);
+      const age = single(by('age')); if (age) basics.push('- Age: ' + age);
+      const role = single(by('role')); if (role) basics.push('- Role: ' + role);
+      const loc = single(by('location')); if (loc) basics.push('- Lives / based: ' + loc);
+      const st = single(by('status')); if (st) basics.push('- Status: ' + st);
+      basics.push(...uniq(by('basics')).map((r) => '- ' + r.v));
+      section('Basics', basics);
+      section('Appearance', uniq(by('appearance')).map((r) => '- ' + r.v));
+      section('Personality & Voice', uniq(by('personality')).map((r) => '- ' + r.v));
+      section('Abilities & Skills', uniq(by('ability')).map((r) => '- ' + r.v));
+      section('Likes, Dislikes & Boundaries', [].concat(uniq(by('likes')).map((r) => '- Likes: ' + r.v), uniq(by('dislikes')).map((r) => '- Dislikes: ' + r.v), uniq(by('boundary')).map((r) => '- Boundary: ' + r.v)));
+      section('Backstory', uniq(by('backstory')).map((r) => '- ' + r.v));
+      // Relationships: one line per person, with where things stand now.
+      const targets = [];
+      for (const r of p.records) if ((r.k === 'relationship' || r.k === 'stands') && r.t && !targets.some((t) => t.toLowerCase() === r.t.toLowerCase())) targets.push(r.t);
+      section('Relationships', targets.map((t) => {
+        const of = (k) => p.records.filter((r) => r.k === k && r.t.toLowerCase() === t.toLowerCase());
+        const hist = uniq(of('relationship')).map((r) => r.v);
+        const now = single(of('stands'));
+        return '- ' + t + ': ' + hist.join('; ') + (now ? (hist.length ? '. ' : '') + 'Where things stand: ' + now : '');
+      }).concat(uniq(by('relationship').filter((r) => !r.t)).map((r) => '- ' + r.v)));
+      section('Possessions', uniq(by('possession')).map((r) => '- ' + r.v));
+      section('Goals, Promises & Secrets', [].concat(uniq(by('goal')).map((r) => '- Goal: ' + r.v), uniq(by('promise')).map((r) => '- Promise: ' + r.v), uniq(by('secret')).map((r) => '- Secret: ' + r.v)));
+      section('Key Moments', uniq(by('moment')).map((r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + r.v));
+      section('Other', uniq(by('other')).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
+      const typed = single(by('type'));
+      const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
+      const kind = kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase()) : (guessKind(p.name, [], L.join('\n')) || 'character');
+      const old = before.get(p.name.toLowerCase());
+      return { name: p.name, kind, aliases: p.aliases, text: L.join('\n'), always: !!(old && old.always), updated: Date.now(), records: p.records.length, recordIds: p.records.map((r) => r.id), fromFacts: true };
+    }).sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || b.records - a.records);
+  }
+  const factsMode = (chat) => chat && chat.format === 'facts';
+
   // "Choi" and "Ms. Choi" are the same person; "Mr. Kim" and "Ms. Kim" may not be.
   const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|president)\.?\s+/i;
   function sameButTitle(a, b) {
@@ -2330,10 +2507,14 @@
           // "FACTS: …" after the summary: the reply's lasting facts.
           const f = raw.match(/^[^\S\n]*[*_]*\s*(?:lasting\s+)?facts?(?:\s+to\s+remember)?[*_]*\s*:[*_]*/im);
           const text = (f ? raw.slice(0, f.index) : raw).replace(/\s+/g, ' ').trim();
-          let facts = f ? raw.slice(f.index + f[0].length).replace(/\s*\n\s*[-*•]?\s*/g, ' | ').replace(/\s+/g, ' ').replace(/^[\s|]+|[\s|]+$/g, '').trim() : '';
+          const block = f ? raw.slice(f.index + f[0].length) : '';
+          // The facts format: one "Subject | kind | value" record per line.
+          const records = parseRecords(block);
+          let facts = records.length ? records.map((r) => r.s + ' — ' + r.label + (r.t ? ': ' + r.t : '') + ': ' + r.v).join(' | ')
+            : block.replace(/\s*\n\s*[-*•]?\s*/g, ' | ').replace(/\s+/g, ' ').replace(/^[\s|]+|[\s|]+$/g, '').trim();
           if (/^(none|n\/?a|nothing( new)?|-+|—)\.?$/i.test(facts)) facts = '';
           // No facts: the keeper said so ("none"), or left the FACTS line out ("missing").
-          if (reply && text) entries.push(facts ? { id: reply.id, text, facts } : { id: reply.id, text, nofacts: f ? 'none' : 'missing' });
+          if (reply && text) entries.push(Object.assign(facts ? { id: reply.id, text, facts } : { id: reply.id, text, nofacts: f ? 'none' : 'missing' }, records.length ? { records } : {}));
         });
       } else {
         const fields = mk.head.replace(/^ENTRY\s*:\s*/i, '').split('|').map((x) => x.trim());
@@ -2675,19 +2856,58 @@
 
   // Folds waiting summaries into the story and entries once at least
   // `threshold` are waiting, then writes the chapters that are complete.
+  // In the facts format the AI only keeps the story sections (Current Scene,
+  // Open Threads, World & Timeline); the entries are built from the records.
+  function sceneSystem() {
+    const all = updateSystem().split('\n');
+    const start = all.findIndex((l) => /^STORY rules:/.test(l));
+    const end = all.findIndex((l) => /^ENTRY rules:/.test(l));
+    return all.slice(0, 1).concat([
+      'You keep the STORY sections of a knowledge base up to date: the situation now. Characters, places and items are kept separately (do not write entries).',
+      '',
+    ], all.slice(start, end), [
+      'Answer in exactly this format and nothing else:',
+      '=== SECTION: Current Scene ===',
+      '(complete section; repeat for each changed section)',
+      '=== CAST ===',
+      '(every named character in the STORY and NEW EVENTS, comma-separated)',
+    ]).join('\n');
+  }
+  async function foldScene(chat, items) {
+    const user = 'STORY:\n<<<\n' + (chat.memory.trim() || '(empty — this is the start)') + '\n>>>\n\n' +
+      (chat.entries.length ? 'PEOPLE AND THINGS IN THE STORY: ' + chat.entries.map((e) => e.name).join(', ') + '\n\n' : '') +
+      (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
+      'NEW EVENTS (oldest first):\n<<<\n' + formatEvents(items) + '\n>>>\n\n' +
+      'JOB: SCENE. Write the changed STORY sections and the CAST now. No entries.';
+    const out = cleanOutput(await callLLM(sceneSystem(), user));
+    checkStop();
+    const parsed = parseKeeperAnswer(out, []);
+    const sections = parsed.sections.filter((x) => !/^story so far$/i.test(x.title));
+    if (!sections.length && !parsed.memory.trim() && !parsed.cast.length) throw new Error('Memory keeper gave an unusable answer: "' + out.slice(0, 120) + '"');
+    const memory = sections.length ? applySections(chat.memory, sections) : (parsed.memory.trim() ? dedupeSections(dropJunk(removeSection(parsed.memory, 'Story So Far'))) : chat.memory);
+    return { memory, updates: [], cast: parsed.cast };
+  }
+
   async function foldAndChapter(chat, threshold, job) {
     while (stages(chat).unfolded && stages(chat).unfolded >= threshold) {
       const items = nextFold(chat);
       checkStop();
-      const r = await job('update', 'Updated story & characters from ' + replyRange(chat, items), () => fold(chat, items));
-      chat.memory = r.memory;
-      const applied = applyUpdates(chat.entries, r.updates, chat.ignored);
-      placeStates(chat, r.updates);
-      if (applied.refused.length) toast('Kept the fuller version of: ' + applied.refused.join(', '));
-      for (const e of items) e.folded = true;
-      // Every few updates, entries that changed are consolidated.
-      chat.foldsSinceConsolidate = (chat.foldsSinceConsolidate || 0) + 1;
-      if (chat.foldsSinceConsolidate >= CONSOLIDATE_EVERY) { await consolidateEntries(chat, job); chat.foldsSinceConsolidate = 0; }
+      if (factsMode(chat)) {
+        // The facts format: the AI updates the story sections only.
+        const r = await job('update', 'Updated the story from ' + replyRange(chat, items), () => foldScene(chat, items));
+        chat.memory = r.memory;
+        for (const e of items) e.folded = true;
+      } else {
+        const r = await job('update', 'Updated story & characters from ' + replyRange(chat, items), () => fold(chat, items));
+        chat.memory = r.memory;
+        const applied = applyUpdates(chat.entries, r.updates, chat.ignored);
+        placeStates(chat, r.updates);
+        if (applied.refused.length) toast('Kept the fuller version of: ' + applied.refused.join(', '));
+        for (const e of items) e.folded = true;
+        // Every few updates, entries that changed are consolidated.
+        chat.foldsSinceConsolidate = (chat.foldsSinceConsolidate || 0) + 1;
+        if (chat.foldsSinceConsolidate >= CONSOLIDATE_EVERY) { await consolidateEntries(chat, job); chat.foldsSinceConsolidate = 0; }
+      }
       chat.lastUpdate = Date.now();
       chat.lastError = '';
       await saveChat(chat);
@@ -2892,7 +3112,7 @@
             'names, details that were left out, and anything the summary says that the reply does not. ' +
             'For a correct summary write "[R#] OK". For a wrong or incomplete one write "[R#]" followed by the corrected, complete summary, and on the next line ' +
             'FACTS: with its complete facts list. Answer in this format only, one line per correct summary.';
-          const out = cleanOutput(await callLLM(summarySystem(), user));
+          const out = cleanOutput(await callLLM(summarySystem(factsMode(chat)), user));
           checkStop();
           const got = parseKeeperAnswer(/^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out, replies).entries;
           let n = 0;
@@ -2904,6 +3124,7 @@
             if (!e.facts && g.facts) factsAdded++;
             e.text = g.text;
             if (g.facts) { e.facts = g.facts; delete e.nofacts; } else if (g.nofacts === 'none') e.nofacts = 'none';
+            if (g.records) e.records = g.records; else delete e.records;
             delete e.checked;
             if (e.folded) e.folded = false;
             if (e.chapter != null && chat.chapters[e.chapter]) chat.chapters[e.chapter].needsCheck = true;
@@ -3453,6 +3674,88 @@
     return status;
   }
 
+
+  // An answer cut into its "[R1]", "[R2]" … parts: { 1: text, 2: text }.
+  function splitByLabel(out) {
+    const parts = {};
+    const re = /^[^\S\n]*[-*•]?[^\S\n]*[*_]{0,2}\[?R(\d+)\b[^\]\n]*\]?[*_]{0,2}[:.]?/gim;
+    const marks = [];
+    let m;
+    while ((m = re.exec(out))) marks.push({ n: Number(m[1]), at: m.index, end: m.index + m[0].length });
+    marks.forEach((x, k) => { parts[x.n] = out.slice(x.end, k + 1 < marks.length ? marks[k + 1].at : out.length); });
+    return parts;
+  }
+
+  // Fact records for summaries that have none (made before the facts format,
+  // or by a keeper that wrote plain FACTS): read from the summaries
+  // themselves, 8 at a time, without reading the chat again.
+  const EXTRACT_PER = 8;
+  async function runExtractRecords(id) {
+    const chat = await getChat(id, true);
+    const todo = chat.log.filter((e) => !e.records && e.text);
+    if (!todo.length) return 'nothing';
+    const batches = [];
+    for (let i = 0; i < todo.length; i += EXTRACT_PER) batches.push(todo.slice(i, i + EXTRACT_PER));
+    let got = 0;
+    const status = await withBusy(id, batches.length, async () => {
+      try {
+        for (const batch of batches) {
+          checkStop();
+          const label = 'Took the facts out of the summaries of ' + replyRange(chat, batch);
+          setStep(id, label + '…');
+          const t0 = Date.now();
+          const names = [...new Set(allRecords(chat).map((r) => r.s))];
+          const user = (names.length ? 'KNOWN NAMES: ' + names.join('; ') + '\n\n' : '') +
+            'SUMMARIES (oldest first):\n<<<\n' + batch.map((e, i) => '[R' + (i + 1) + '] ' + e.text + (e.facts ? '\nFACTS SO FAR: ' + e.facts : '')).join('\n\n') + '\n>>>\n\n' +
+            'JOB: RECORDS. Do not repeat the summaries. For each summary write only its label on its own line, then its lasting facts as records, one per line ("- Subject | kind | fact"), or "none".';
+          const out = cleanOutput(await callLLM(summarySystem(true), user));
+          checkStop();
+          const parsed = splitByLabel(out);
+          let n = 0;
+          batch.forEach((e, i) => {
+            const part = parsed[i + 1];
+            if (part == null) return;
+            const recs = parseRecords(part);
+            if (recs.length) { e.records = recs; n++; } else if (/\bnone\b/i.test(part)) e.records = [];
+            if (e.records) delete e.needsRecords;
+          });
+          got += n;
+          logJob(chat, { kind: 'check', label: label + ': ' + n + ' of ' + batch.length, ok: true, ms: Date.now() - t0 });
+          progress[id].done++;
+          await saveChat(chat);
+          renderPanel();
+        }
+        return 'done';
+      } catch (e) {
+        await saveChat(chat);
+        if (e.stopped) { toast('Stopped. What was done is kept.'); return 'stopped'; }
+        toast('Could not take the facts out of the summaries: ' + (e.message || e), true);
+        return 'failed';
+      }
+    });
+    if (status === 'done') toast('Took ' + allRecords(chat).length + ' facts out of ' + got + ' summaries; the characters are built from them.');
+    return status;
+  }
+
+  // Switching a story to the facts format (and back).
+  async function switchFormat(chat, to) {
+    const before = snapshot(chat);
+    chat.history = [before].concat(chat.history).slice(0, 5);
+    if (to === 'facts') {
+      chat.classicEntries = cloneEntries(chat.entries);
+      chat.format = 'facts';
+      // The summaries made so far have no records yet ("Take facts from summaries").
+      for (const e of chat.log) if (!e.records) e.needsRecords = true;
+      logJob(chat, { kind: 'check', label: 'Switched this story to the facts format (the previous characters are kept for switching back)', ok: true, ms: 0 });
+    } else {
+      chat.format = 'classic';
+      if (chat.classicEntries) chat.entries = cloneEntries(chat.classicEntries);
+      logJob(chat, { kind: 'check', label: 'Switched this story back to the classic format', ok: true, ms: 0 });
+    }
+    await saveChat(chat);
+    renderPanel(true);
+  }
+
   async function runFactCheck(id, all) {
     const chat = await getChat(id, true);
     if (busy[id]) return 'skipped';
@@ -3532,12 +3835,15 @@
     const removed = stale.map((e, i) => '[OLD' + (i + 1) + '] ' + e.text + (e.facts ? '\nFACTS: ' + e.facts : '')).join('\n\n');
     const now = chat.log.slice(-8);
     const what = stale.length === 1 ? 'a reply that was' : stale.length + ' replies that were';
+    // The facts format: the removed replies took their records along, so only
+    // the story sections and the chapters need correcting.
     const r = await job('update', 'Corrected the memory after ' + what + ' redone or deleted', async () => {
       const user = 'STORY:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\n' +
         'CURRENT ENTRIES:\n<<<\n' + entriesForRequest(chat, removed, false) + '\n>>>\n\n' +
         (chat.pinned.trim() ? 'FACTS THE USER PINNED (always true):\n<<<\n' + chat.pinned.trim() + '\n>>>\n\n' : '') +
         'EVENTS THAT NO LONGER HAPPENED (the user deleted or redid these replies, so they are not part of the story any more):\n<<<\n' + removed + '\n>>>\n\n' +
         'WHAT THE STORY SAYS NOW (the newest replies, oldest first):\n<<<\n' + (now.length ? formatEvents(now) : '(nothing yet)') + '\n>>>\n\n' +
+        (factsMode(chat) ? 'JOB: CORRECT. The ENTRIES are already correct; output only STORY sections. ' : '') +
         'JOB: CORRECT. Some facts in the STORY and ENTRIES came only from the events that no longer happened. Remove or fix those facts, ' +
         'and keep everything that is still true (including facts the current story also says). Output every changed STORY section in full, ' +
         'and every changed ENTRY complete with its normal header (never "| add"). Leave out what does not need to change. If nothing needs to change, answer NO CHANGES.';
@@ -3549,6 +3855,7 @@
       return parsed;
     });
     if (r.sections.length) chat.memory = applySections(chat.memory, r.sections.filter((x) => !x.add));
+    if (factsMode(chat)) r.updates = [];
     const applied = applyUpdates(chat.entries, r.updates, chat.ignored);
     if (applied.refused.length) toast('Kept the fuller version of: ' + applied.refused.join(', '));
     // Chapters that held a removed reply: written again from what is left.
@@ -4791,7 +5098,7 @@
       toast(chat.enabled ? 'Auto-managing this chat' : 'Paused for this chat');
     });
 
-    const editors = chat.entries.map((e) => entryEditor(chat, e));
+    const editors = chat.entries.map((e) => (factsMode(chat) ? factsEntryView(chat, e) : entryEditor(chat, e)));
     const chapterEds = chat.chapters.map((c, i) => chapterEditor(c, i, chat));
 
     const save = async (quiet) => {
@@ -4959,6 +5266,7 @@
       el('div', { class: 'status' },
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
         versionLine(chat),
+        formatLine(chat),
         (() => {
           const hold = Math.max(0, Number(settings.holdBack) || 0);
           const waiting = waitingReplies(chat);
@@ -5077,6 +5385,15 @@
           const status = await runCheckChapters(chat.id, all);
           if (status === 'nothing') toast('No chapters with summaries to check.');
         } }, 'Check chapters'),
+        ...(factsMode(chat) ? [
+          chat.log.some((e) => !e.records && e.text) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+            if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+            const n = chat.log.filter((e) => !e.records && e.text).length;
+            if (!confirm(n + ' summaries have no fact records yet. Take the facts out of them (the chat is not read again)? About ' + Math.ceil(n / EXTRACT_PER) + ' requests.')) return;
+            await save(true);
+            await runExtractRecords(chat.id);
+          } }, 'Take facts from summaries') : null,
+        ] : [
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: factCheck }, 'Check for missing facts'),
         chat.entries.some((e) => e.text.length > SLIM_BIG) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
@@ -5096,6 +5413,7 @@
           await runConsolidate(chat.id, all);
         } }, 'Consolidate now'),
         settings.githubToken && settings.githubToken.trim() ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => { await save(true); await runRecover(chat); } }, 'Recover lost facts') : null,
+        ]),
         chat.log.some((e) => !e.facts && e.nofacts !== 'none') ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           const n = chat.log.filter((e) => !e.facts && e.nofacts !== 'none').length;
@@ -5134,6 +5452,25 @@
     return (bad.length ? '⚠ ' + bad.join(', ') : 'OK') + ' · ' + waiting + ' entr' + (waiting === 1 ? 'y' : 'ies') + ' waiting to be consolidated';
   }
 
+  // The memory format of this story, and the switch.
+  function formatLine(chat) {
+    const facts = factsMode(chat);
+    const missing = chat.log.filter((e) => !e.records && e.text).length;
+    return el('div', {}, 'Memory format: ', el('b', {}, facts ? 'Facts (new)' : 'Classic'),
+      facts ? ' — characters are built from ' + allRecords(chat).length + ' facts' + (missing ? '; ' + missing + ' summaries have no facts yet (tap "Take facts from summaries")' : '') + '. ' : ' — ',
+      el('button', { class: 'btn', onclick: async () => {
+        if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+        if (facts) {
+          if (!confirm('Switch this story back to the classic format? The characters go back to how they were before the switch (later changes in the facts format are not carried over).')) return;
+          await switchFormat(chat, 'classic');
+          return;
+        }
+        if (!confirm('Switch this story to the new facts format? The memory keeper will only take facts out of each reply, and Story Manager builds the characters from them (newest wins, nothing moves to the wrong person). ' +
+          'Your current characters are kept, so you can switch back. Next: tap "Take facts from summaries" (about ' + Math.ceil(chat.log.length / EXTRACT_PER) + ' requests), or Rebuild from whole chat.')) return;
+        await switchFormat(chat, 'facts');
+      } }, facts ? 'Switch back to classic' : 'Switch to the facts format'));
+  }
+
   // Which versions of Story Manager made this story's memory.
   function versionLine(chat) {
     const vs = chat.smVersions || [];
@@ -5146,6 +5483,51 @@
       vs.length > 1 ? ' (earlier: ' + vs.slice(0, -1).slice(-4).map((x) => 'v' + x.v).join(', ') + ')' : '',
       chat.rebuiltWith ? ' · rebuilt with v' + chat.rebuiltWith : '',
       parts.length ? ' · reply summaries: ' + parts.join(', ') : '');
+  }
+
+
+  // The facts format: an entry is built from records, so it is not edited as
+  // text; its facts are listed (with the reply each came from) and can be
+  // removed one by one, and the user can add facts of their own.
+  const KIND_CHOICES = ['key moment', 'appearance', 'personality', 'relationship: ', 'where things stand: ', 'role', 'full name', 'age', 'ability', 'likes', 'dislikes', 'boundary', 'backstory', 'possession', 'promise', 'secret', 'goal', 'nickname', 'status', 'location', 'type'];
+  function factsEntryView(chat, e) {
+    const byId = new Map(allRecords(chat).map((r) => [r.id, r]));
+    const recs = (e.recordIds || []).map((id) => byId.get(id)).filter(Boolean);
+    const text = el('textarea', { class: 'entry', readonly: true });
+    text.value = e.text;
+    const kindIn = el('input', { placeholder: 'kind, e.g. key moment, relationship: Winter', list: 'smx-kinds' });
+    const valueIn = el('input', { placeholder: 'the fact' });
+    const del = el('button', { class: 'btn', onclick: () => {
+      if (!confirm('Delete "' + e.name + '" and all its facts? It will not be created again. (Save to confirm.)')) return;
+      e.deleted = true;
+      node.style.opacity = '0.4';
+    } }, 'Delete');
+    const node = el('details', { class: 'entrybox', open: e.open || undefined },
+      el('summary', {}, (e.always ? '★ ' : '') + e.name + ' · ' + (e.kind || 'character') + ' · ' + recs.length + ' facts · ' + e.text.length + ' chars'),
+      e.aliases && e.aliases.length ? el('div', { class: 'hint' }, 'Also known as: ' + e.aliases.join(', ')) : null,
+      el('label', {}, 'What the AI reads (built from the facts below)'), text,
+      el('label', {}, 'Facts (' + recs.length + ')'),
+      el('div', { class: 'hint' }, ...recs.slice().reverse().map((r) => el('div', { class: 'row' },
+        el('span', {}, (r.label || r.k) + (r.t ? ': ' + r.t : '') + ' — ' + r.v + (r.manual ? ' (added by you)' : ' (reply ' + r.at + ')')),
+        el('button', { class: 'btn', title: 'Remove this fact', onclick: async () => {
+          chat.hiddenRecords = [...new Set((chat.hiddenRecords || []).concat(r.id))];
+          e.open = true;
+          await saveChat(chat);
+          renderPanel(true);
+        } }, '✕')))),
+      el('label', {}, 'Add a fact about ' + e.name), kindIn, valueIn,
+      el('datalist', { id: 'smx-kinds' }, ...KIND_CHOICES.map((k) => el('option', { value: k }))),
+      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: async () => {
+        const k = recordKind(kindIn.value || 'key moment');
+        const v = valueIn.value.trim();
+        if (!v) { toast('Write the fact first.'); return; }
+        const list = chat.manualRecords || (chat.manualRecords = []);
+        list.push({ n: list.reduce((m, x) => Math.max(m, (x.n || 0) + 1), list.length), s: e.name, k: k.kind, t: k.target, v, label: k.label });
+        e.open = true;
+        await saveChat(chat);
+        renderPanel(true);
+      } }, 'Add fact'), del));
+    return { node, apply() { delete e.open; } };
   }
 
   // One collapsible entry in the panel. apply() copies the edits into it.

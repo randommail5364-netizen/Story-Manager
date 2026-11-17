@@ -138,7 +138,9 @@ async function main() {
           '- Mira | nickname | Miri, unnie\n' +
           '- unnie | personality | not a person\n' +
           '- Ash | role | ' + (k >= 3 ? 'captain of the guard' : 'scout') + '\n' +
-          '- Ash | key moment | guarded the camp in reply ' + k;
+          '- Ash | key moment | guarded the camp in reply ' + k +
+          (k === 1 ? '\n- Mira | secret | [the key] hid the lost key in her satchel\n- Ash | does not know | [the key]\n- Public | cover story | [the key] the key was lost in the river' : '') +
+          (k === 3 ? '\n- Ash | knows | [the key] saw her hide it' : '');
       }).join('\n');
     }
     if (/JOB: SCENE/.test(input)) {
@@ -1663,6 +1665,20 @@ async function main() {
   const at = (h) => sent51.indexOf(h);
   check(at('## Now\n### Current Scene') > 0 && at('## Now') < at('## Characters, places & things') && at('## Characters, places & things') < at('## World & turning points') &&
     at('### Mira (character)') < at('### Ash (character)'), 'the memory reads: Now → Characters (main ones first) → World & turning points');
+  check(at('## Who knows what') > at('## Now') && at('## Who knows what') < at('## Characters, places & things') &&
+    /- \[the key\] hid the lost key in her satchel\n  Knows: Mira, Ash \(saw her hide it, reply \d+\) · Cover story: the key was lost in the river/.test(sent51),
+    'the memory has "Who knows what" right after Now: who knows each secret (newest wins) and the cover story');
+  // The user corrects who knows, in the panel.
+  await waitFor(() => !factsConv.generating, 15000, 'idle');
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> summary', { hasText: /^🔒 Who knows what/ }).click();
+  await page.locator('#story-manager-root >> input[placeholder^="who, e.g."]').fill('Ash');
+  await page.locator('#story-manager-root >> details[open] >> select').nth(1).selectOption('notknows');
+  await page.locator('#story-manager-root >> details[open] >> button', { hasText: 'Save' }).click();
+  await waitFor(async () => /- Does NOT know: \[the key\]/.test(((await keyOf(factsId)).entries.find((e) => e.name === 'Ash') || {}).text || ''), 15000, 'correction');
+  check(true, 'the user can correct who knows a secret; their correction counts as the newest');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+
   // Facts in the panel: remove one, add one.
   await waitFor(() => !factsConv.generating, 15000, 'idle');
   await page.locator('#story-manager-root >> .fab').click();

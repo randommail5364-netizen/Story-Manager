@@ -21,9 +21,9 @@ function grab(name) {
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
-const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
-const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel };')();
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
+const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -565,6 +565,36 @@ test('facts format: built entries are already tidy (no nickname for the tidy-up 
   assert(/Role: student/.test((chat.entries.find((e) => e.name === 'Jacek') || {}).text || '') && !/Role: student$/m.test(chat.entries.find((e) => e.name === 'Mina').text),
     'Jacek\'s facts stay with Jacek, even though Mina\'s nicknames mention him');
   assert.deepStrictEqual(lib.organize(chat).filter((f) => /aliases/.test(f)), []);
+});
+
+test('who knows what: each secret is put together across replies; the newest record per person wins', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const chat = { ignored: [], entries: [], log: [
+    R(1, ['- Jacek | secret | [SM ownership] owns SM Entertainment through Luxembourg shell companies', '- Giselle | does not know | [SM ownership]', '- Public | cover story | [SM ownership] Jacek is a "trusted associate"', '- Jacek | role | stylist']),
+    R(2, ['- Winter | knows | [SM ownership] Jacek told her on the terrace', '- Karina and Ningning | knows | [SM ownership] overheard the phone call']),
+    R(3, ['- Giselle | knows | [SM ownership] found the contracts', '- Tiffany | secret | [the office] what happened in Irene\'s office', '- Irene | knows | [the office] she was there', '- Mina | does not know | [the office]']),
+  ] };
+  const sec = lib.buildSecrets(chat);
+  const sm = sec.find((x) => x.name === 'SM ownership');
+  assert.deepStrictEqual(sm.knows.map((p) => p.who).sort(), ['Giselle', 'Jacek', 'Karina', 'Ningning', 'Winter']);
+  assert.deepStrictEqual(sm.notKnows, [], 'Giselle found out in reply 3 (newest wins)');
+  assert.strictEqual(sm.cover, 'Jacek is a "trusted associate"');
+  const office = sec.find((x) => x.name === 'the office');
+  assert.deepStrictEqual(office.knows.map((p) => p.who), ['Tiffany', 'Irene']);
+  assert.deepStrictEqual(office.notKnows.map((p) => p.who), ['Mina']);
+  const text = lib.secretsText(chat);
+  assert(/- \[SM ownership\] owns SM Entertainment[^\n]*\n  Knows: Jacek, Giselle \(found the contracts, reply 3\)|Knows: .*Winter \(Jacek told her on the terrace, reply 2\)/.test(text), text);
+  assert(/\[the office\][^\n]*\n  Knows: Tiffany, Irene \(she was there, reply 3\) · Does NOT know: Mina/.test(text), text);
+  // Each person's entry lists what they know and do not know; knowledge records are not facts of their own.
+  const es = lib.buildEntries(chat);
+  const t = (n) => (es.find((e) => e.name === n) || {}).text || '';
+  assert(/- Knows: \[SM ownership\]/.test(t('Winter')) && /- Does NOT know: \[the office\]/.test(t('Mina')));
+  assert.strictEqual(es.find((e) => e.name === 'Mina').kind, 'character', 'someone who only knows (or does not know) a secret is still a person');
+  assert(!es.some((e) => /^(public|everyone)$/i.test(e.name)) && !/cover story|trusted associate/.test(t('Jacek')));
+  // When it comes out, everyone knows and nobody is listed as not knowing.
+  chat.log.push(R(4, ['- Everyone | knows | [the office] the photos leaked']));
+  const office2 = lib.buildSecrets(chat).find((x) => x.name === 'the office');
+  assert(office2.everyone && !office2.notKnows.length);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

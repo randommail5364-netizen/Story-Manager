@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.24.1
+// @version      3.25.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -979,6 +979,9 @@
     const others = (chat.memory.match(/^##\s*(.+?)\s*$/gm) || []).map((h) => h.replace(/^##\s*/, '').trim())
       .filter((t) => !/^(current scene|open threads|world & timeline|story so far)$/i.test(t)).map((t) => [t, sectionOf(chat.memory, t).trim()]).filter(([, x]) => x);
     if (now.length || others.length) head.push('## Now\n' + now.concat(others).map(([t, x]) => '### ' + t + '\n' + x).join('\n\n'));
+    // Right after "Now": so a character never knows what they should not.
+    const secrets = secretsText(chat);
+    if (secrets) head.push('## Who knows what\n(Characters only know the secrets listed for them; never let anyone act on a secret they do not know.)\n' + secrets);
     const tail = [];
     const world = sectionOf(chat.memory, 'World & Timeline').trim();
     if (world) tail.push('## World & turning points\n' + world);
@@ -1564,9 +1567,12 @@
     '- After each summary write FACTS: and then, one per line, the lasting facts this reply revealed or changed, as records: "- Subject | kind | fact".',
     '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
     '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
-      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, goal, nickname, key moment.',
+      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, nickname, key moment.',
     '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are at this moment.',
-    '  A secret says who knows it. A key moment is a short line saying what happened to or because of them in this reply.',
+    '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
+    '  "- Person | knows | [short name] how they found out" when someone learns, is told or overhears it; "- Person | does not know | [short name]" for someone it is kept from;',
+    '  "- Everyone | knows | [short name]" when it comes out; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
+    '  A key moment is a short line saying what happened to or because of them in this reply.',
     '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
     '  One subject per record: never "Tiffany and Irene" — write a record for each of them. To say what a place or thing is, use kind "type" (place, item, group) or "basics". Write FACTS: none if there are none.',
     '  Example:',
@@ -2334,6 +2340,9 @@
     ['possession', /^(possessions?|owns|gifts?|items?|belongings?)$/],
     ['promise', /^(promises?|vows?|agreements?|commitments?|deals?)$/],
     ['secret', /^(secrets?)$/],
+    ['notknows', /^(does not know|doesn'?t know|does not know about|doesn'?t know about|unaware of|must not know|must not find out|kept from|not told|in the dark about)$/],
+    ['knows', /^(knows|knows about|is aware of|aware of|learned|found out|was told|overheard|discovered|in on)$/],
+    ['cover', /^(cover story|cover|public story|official story|what others are told|what outsiders are told|alibi)$/],
     ['goal', /^(goals?|plans?|wants|desires?|intentions?)$/],
     ['nickname', /^(nicknames?|alias(es)?|called|also known as|pet names?)$/],
     ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?)$/],
@@ -2399,7 +2408,11 @@
   const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
   function buildEntries(chat) {
-    const records = allRecords(chat);
+    // Knowledge records ("knows", "does not know", "cover story") are not facts
+    // of their own: they make a person exist and feed "Who knows what".
+    const records = allRecords(chat).filter((r) => r.k !== 'cover');
+    // Secrets are put together once; each person's entry lists what they know.
+    Object.defineProperty(chat, '__secrets', { value: buildSecrets(chat), configurable: true, enumerable: false, writable: true });
     const skip = new Set((chat.ignored || []).map((n) => n.toLowerCase()));
     // Who is who: names, titles ("Ms. Choi"), first/full names and real
     // nicknames lead to one person; terms of address ("unnie") never do.
@@ -2427,8 +2440,10 @@
       if (skip.has(r.s.toLowerCase()) || PLACEHOLDER_SUBJECT_RE.test(r.s.trim())) continue;
       if (r.k === 'appearance' && MOMENT_LOOK_RE.test(r.v)) continue;
       if (r.k === 'role' && NOT_ROLE_RE.test(r.v)) continue;
+      if ((r.k === 'knows' || r.k === 'notknows') && EVERYONE_RE.test(r.s.trim())) continue;
       let p = find(r.s);
       if (!p) { p = { name: r.s, aliases: [], records: [] }; people.push(p); }
+      if (r.k === 'knows' || r.k === 'notknows') { p.knowsOnly = true; continue; }
       // The fuller name is the entry's name ("Jacek Kowalski" over "Jacek").
       if (r.s.length > p.name.length && r.s.toLowerCase().startsWith(p.name.toLowerCase() + ' ')) { p.aliases.push(p.name); p.name = r.s; }
       p.records.push(r);
@@ -2486,13 +2501,17 @@
         return '- ' + t + ': ' + hist.join('; ') + (now ? (hist.length ? '. ' : '') + 'Where things stand: ' + now : '');
       }).concat(uniq(by('relationship').filter((r) => !r.t)).map((r) => '- ' + r.v)));
       section('Possessions', uniq(by('possession')).map((r) => '- ' + r.v));
-      section('Goals, Promises & Secrets', [].concat(uniq(by('goal')).map((r) => '- Goal: ' + r.v), uniq(by('promise')).map((r) => '- Promise: ' + r.v), uniq(by('secret')).map((r) => '- Secret: ' + r.v)));
+      // What they know (from "Who knows what"): the secrets' short names.
+      const knownNames = (chat.__secrets || []).filter((x) => x.knows.some((k) => k.who.toLowerCase() === p.name.toLowerCase() || p.aliases.some((a) => a.toLowerCase() === k.who.toLowerCase()))).map((x) => '[' + x.name + ']');
+      const unknownNames = (chat.__secrets || []).filter((x) => x.notKnows.some((k) => k.who.toLowerCase() === p.name.toLowerCase())).map((x) => '[' + x.name + ']');
+      section('Goals, Promises & Secrets', [].concat(uniq(by('goal')).map((r) => '- Goal: ' + r.v), uniq(by('promise')).map((r) => '- Promise: ' + r.v), uniq(by('secret')).map((r) => '- Secret: ' + r.v),
+        knownNames.length ? ['- Knows: ' + knownNames.join(', ')] : [], unknownNames.length ? ['- Does NOT know: ' + unknownNames.join(', ')] : []));
       section('Key Moments', uniq(by('moment')).map((r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + r.v));
       section('Other', uniq(by('other')).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
       const typed = single(by('type'));
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
       // Without a type: a person only if something personal is known about them.
-      const personal = p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory)$/.test(r.k));
+      const personal = p.knowsOnly || p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory)$/.test(r.k));
       const kind = kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase())
         : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
@@ -2506,6 +2525,75 @@
     }
     return built.sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || b.records - a.records);
   }
+
+  // "Who knows what": every secret of the story, put together from the
+  // records of all replies. A secret has a short name in brackets
+  // ("[SM ownership] …") so the same secret is found again later; the newest
+  // record per person wins ("does not know" in reply 40, "knows" in reply 90
+  // → knows since reply 90). Returns [{ name, text, knows, notKnows, cover }].
+  const SECRET_NAME_RE = /^\s*\[([^\]]{1,60})\]\s*[:–—-]?\s*/;
+  const EVERYONE_RE = /^(everyone|everybody|the public|public|all|the world|the whole group)$/i;
+  function buildSecrets(chat) {
+    const recs = allRecords(chat).filter((r) => /^(secret|knows|notknows|cover)$/.test(r.k));
+    const secrets = [];
+    const keyOf = (name, text) => normValue(name || text).split(' ').slice(0, 8).join(' ');
+    const find = (key, text) => secrets.find((x) => x.key === key) ||
+      (text ? secrets.find((x) => { const a = normValue(x.text); const b = normValue(text); return a && b && (a.includes(b) || b.includes(a)); }) : null);
+    const ensure = (name, text) => {
+      const key = keyOf(name, text);
+      let x = find(key, name ? '' : text);
+      if (!x) { x = { key, name: name || '', text: '', people: new Map(), cover: '', at: 0 }; secrets.push(x); }
+      if (name && !x.name) x.name = name;
+      return x;
+    };
+    // Who: split "Karina and Winter"; one name per person.
+    const whoOf = (sub) => sub.split(/\s*(?:,|&|\band\b)\s*/).map((p) => p.trim()).filter(Boolean);
+    for (const r of recs) {
+      const m = r.v.match(SECRET_NAME_RE);
+      const name = m ? m[1].trim() : '';
+      const rest = m ? r.v.slice(m[0].length).trim() : r.v.trim();
+      if (r.k === 'secret') {
+        const x = ensure(name, rest);
+        if (rest) x.text = rest;
+        x.at = r.at;
+        for (const p of whoOf(r.s)) x.people.set(p.toLowerCase(), { who: p, knows: true, at: r.at, how: 'their secret' });
+      } else if (r.k === 'cover') {
+        const x = ensure(name, rest);
+        if (rest) x.cover = rest;
+      } else {
+        // "knows [name] how they found out" / "does not know [name]"; without a name, the first secret it matches.
+        const x = name ? ensure(name, '') : find(keyOf('', rest), rest);
+        if (!x) continue;
+        for (const p of whoOf(r.s)) {
+          const prev = x.people.get(p.toLowerCase());
+          if (prev && prev.at > r.at) continue; // the newest record about this person wins
+          x.people.set(p.toLowerCase(), { who: p, knows: r.k === 'knows', at: r.at, how: r.k === 'knows' ? rest : '' });
+        }
+      }
+    }
+    return secrets.filter((x) => x.text || x.people.size).map((x) => {
+      const people = [...x.people.values()];
+      const everyone = people.some((p) => p.knows && EVERYONE_RE.test(p.who));
+      return {
+        name: x.name || x.text.split(/[.;,]/)[0].slice(0, 40),
+        text: x.text,
+        everyone,
+        knows: people.filter((p) => p.knows && !EVERYONE_RE.test(p.who)),
+        notKnows: everyone ? [] : people.filter((p) => !p.knows),
+        cover: x.cover,
+      };
+    });
+  }
+  // The "Who knows what" text for the pinned message.
+  function secretsText(chat) {
+    return buildSecrets(chat).map((x) => {
+      const knows = x.everyone ? 'everyone (no longer a secret)' : x.knows.map((p) => p.who + (p.how && p.how !== 'their secret' ? ' (' + p.how + (p.at !== Infinity ? ', reply ' + p.at : '') + ')' : '')).join(', ');
+      return '- [' + x.name + '] ' + (x.text || '') + '\n  Knows: ' + (knows || 'not recorded') +
+        (x.notKnows.length ? ' · Does NOT know: ' + x.notKnows.map((p) => p.who).join(', ') : '') +
+        (x.cover ? ' · Cover story: ' + x.cover : '');
+    }).join('\n');
+  }
+
   const factsMode = (chat) => chat && chat.format === 'facts';
 
   // "Choi" and "Ms. Choi" are the same person; "Mr. Kim" and "Ms. Kim" may not be.
@@ -5137,6 +5225,7 @@
         ? 'The story\'s history. The newest chapters are sent in full, older ones by title once they no longer fit.'
         : 'Every ' + chapterSize() + ' AI replies become a chapter of the story\'s history.'),
       chapterEds.map((ed) => ed.node),
+      factsMode(chat) ? secretsView(chat) : null,
       el('label', {}, '👥 Entries (' + chat.entries.length + ')'),
       el('div', { class: 'hint' }, chat.entries.length && memoryInMessage(chat) && !chat.memoryMsgCut
         ? 'Every entry is in the pinned memory message in full.' + (inPlay.length ? ' In the current scene: ' + inPlay.join(', ') + '.' : '')
@@ -5317,6 +5406,33 @@
       if (t && (!portrait || t !== portrait.text)) { chat.portraits = chat.portraits || {}; chat.portraits[key] = { text: t, at: Date.now(), records: e.records || 0, manual: true }; }
       else if (!t && portrait) delete chat.portraits[key];
     } };
+  }
+
+
+  // The facts format: "Who knows what" in the panel. The user can mark
+  // someone as knowing (or not knowing) a secret; their choice is the newest.
+  function secretsView(chat) {
+    const list = buildSecrets(chat);
+    const who = el('input', { placeholder: 'who, e.g. Giselle' });
+    const which = el('select', {}, ...list.map((x) => el('option', { value: x.name }, '[' + x.name + ']')));
+    const how = el('select', {}, el('option', { value: 'knows' }, 'knows'), el('option', { value: 'notknows' }, 'does not know'));
+    const add = async () => {
+      const p = who.value.trim();
+      if (!p || !which.value) { toast('Choose a secret and write who.'); return; }
+      const listR = chat.manualRecords || (chat.manualRecords = []);
+      listR.push({ n: listR.reduce((m, x) => Math.max(m, (x.n || 0) + 1), listR.length), s: p, k: how.value, t: '', v: '[' + which.value + '] (set by you)', label: how.value === 'knows' ? 'knows' : 'does not know' });
+      await saveChat(chat);
+      renderPanel(true);
+    };
+    return el('details', { class: 'entrybox' },
+      el('summary', {}, '🔒 Who knows what (' + list.length + ' secret' + (list.length === 1 ? '' : 's') + ')'),
+      list.length ? el('div', { class: 'hint' }, ...list.map((x) => el('div', {},
+        el('b', {}, '[' + x.name + '] '), x.text || '',
+        el('div', {}, 'Knows: ' + (x.everyone ? 'everyone' : x.knows.map((p) => p.who).join(', ') || 'not recorded') +
+          (x.notKnows.length ? ' · Does NOT know: ' + x.notKnows.map((p) => p.who).join(', ') : '') + (x.cover ? ' · Cover story: ' + x.cover : ''))))) :
+        el('div', { class: 'hint' }, 'No secrets recorded yet. The memory keeper records them as the story goes on.'),
+      list.length ? el('div', {}, el('label', {}, 'Correct who knows'), who, which, how,
+        el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: add }, 'Save'))) : null);
   }
 
   // One collapsible entry in the panel. apply() copies the edits into it.

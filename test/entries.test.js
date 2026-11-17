@@ -505,4 +505,35 @@ test('facts format: records written the way real bots vary them are understood; 
   ]);
 });
 
+// From the user's first rebuild in the facts format (Uncensored-Smut-Writer).
+test('regression (first facts rebuild): joint subjects, places filed as characters, moment states', () => {
+  const recs = lib.parseRecords([
+    '- Tiffany and Irene | relationship: Jacek | agreed to share him',
+    '- Tiffany | age | 37',
+    '- Tiffany | personality | bubbly, affectionate',
+    '- Tiffany | status | remained bound throughout',
+    '- Irene | role | lecturer in Humanities',
+    '- Seoul University | place | prestigious university in Seoul',
+    '- Lecture Hall B | place | steeply raked modern auditorium',
+    '- Lighting rig | status | reset to Preset Two',
+    '- Setting | place | Irene\'s university office',
+    '- Thursday | key moment | faculty meeting for Tiffany and Irene',
+    '- Daehyun | role | sound technician',
+  ].join('\n'));
+  const chat = { ignored: [], entries: [], log: [{ id: 'r1', text: 'x', records: recs }] };
+  const es = lib.buildEntries(chat);
+  const get = (n) => es.find((e) => e.name === n) || {};
+  assert(!es.some((e) => /and/.test(e.name)), 'no "Tiffany and Irene" entry: ' + es.map((e) => e.name));
+  assert(/- Jacek: agreed to share him/.test(get('Tiffany').text) && /- Jacek: agreed to share him/.test(get('Irene').text), 'a joint fact goes to each of them');
+  assert(/Age: 37/.test(get('Tiffany').text) && !/remained bound/.test(get('Tiffany').text), 'a person\'s moment "status" is left out');
+  assert.strictEqual(get('Seoul University').kind, 'place');
+  assert.strictEqual(get('Lecture Hall B').kind, 'place');
+  assert.strictEqual(get('Lighting rig').kind, 'item');
+  assert(/Status: reset to Preset Two/.test(get('Lighting rig').text), 'a thing keeps its status');
+  assert.strictEqual(get('Setting').kind, 'place');
+  assert.strictEqual(get('Thursday').kind, 'lore');
+  assert.strictEqual(get('Daehyun').kind, 'character');
+  assert.strictEqual(get('Tiffany').kind, 'character');
+});
+
 console.log('All ' + passed + ' entry checks passed.');

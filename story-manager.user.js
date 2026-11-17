@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.23.2
+// @version      3.23.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1521,7 +1521,8 @@
       'relationship: <other person>, where things stand: <other person>, possession, promise, secret, goal, nickname, key moment.',
     '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are at this moment.',
     '  A secret says who knows it. A key moment is a short line saying what happened to or because of them in this reply.',
-    '  Only lasting facts: not where someone is or what they wear at this moment. Write FACTS: none if there are none.',
+    '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
+    '  One subject per record: never "Tiffany and Irene" — write a record for each of them. To say what a place or thing is, use kind "type" (place, item, group) or "basics". Write FACTS: none if there are none.',
     '  Example:',
     '  FACTS:',
     '  - Karina | relationship: Winter | comforted Winter after the fight and slept beside her',
@@ -2183,8 +2184,8 @@
 
   // What an entry is when the keeper did not say: a name in its CAST list is
   // a character; otherwise its words decide; anything else is lore.
-  const PLACE_WORDS = /\b(villa|house|home|penthouse|apartment|flat|room|bedroom|suite|pavilion|alcove|garage|bar|club|speakeasy|lounge|beach|city|town|village|island|studio|office|building|tower|street|park|hotel|resort|restaurant|cafe|café|terrace|pool|forest|jungle|cove|dorm|dormitory|school|hospital|kitchen|bathroom|garden|lake|river|mountain|castle|palace|church|temple|mansion|cabin|yacht club|airport|hangar|stage|arena|venue)\b/i;
-  const ITEM_WORDS = /\b(plushie|plush|toy|doll|hammock|jacket|coat|dress|gown|necklace|choker|bracelet|anklet|earrings?|ring|watch|car|motorcycle|ducati|jet|plane|boeing|helicopter|sikorsky|yacht|boat|van|phone|notebook|diary|letter|photo|key|keys|sword|gun|book|gift|box|collar|blanket|pillow|snow ?globe|perfume|bag|scarf)\b/i;
+  const PLACE_WORDS = /\b(villa|house|home|penthouse|apartment|flat|room|bedroom|suite|pavilion|alcove|garage|bar|club|speakeasy|lounge|beach|city|town|village|island|studio|office|building|tower|street|park|hotel|resort|restaurant|cafe|café|terrace|pool|forest|jungle|cove|dorm|dormitory|school|hospital|kitchen|bathroom|garden|lake|river|mountain|castle|palace|church|temple|mansion|cabin|yacht club|airport|hangar|stage|arena|venue|hall|auditorium|annex|university|college|campus|library|lab|laboratory|classroom|lecture hall|dorm room|gym|theatre|theater|cinema|mall|market|shop|store|station)\b/i;
+  const ITEM_WORDS = /\b(plushie|plush|toy|doll|hammock|jacket|coat|dress|gown|necklace|choker|bracelet|anklet|earrings?|ring|watch|car|motorcycle|ducati|jet|plane|boeing|helicopter|sikorsky|yacht|boat|van|phone|notebook|diary|letter|photo|key|keys|sword|gun|book|gift|box|collar|blanket|pillow|snow ?globe|perfume|bag|scarf|rig|speaker|guitar|piano|microphone|camera|laptop|preset|lights?|projector)\b/i;
   const GROUP_WORDS = /\b(team|crew|band|family|company|agency|entertainment|members|group|gang|club members|staff|board)\b/i;
   // Signs that an entry is about a person: "She …", a full name or role.
   const PERSON_RE = /^\s*[-*•]?\s*(she|he)\b|\b(full name|role|age|birthday|her (role|job|title)|his (role|job|title)|personality)\s*[:\-–]|\b(she|he) (is|was|has|delivered|said)\b/im;
@@ -2317,6 +2318,13 @@
       // healer | Ash is a dragon | …" (old-style facts on one line) is not a record.
       if (s.split(/\s+/).length > 5 || /\b(is|was|are|were|has|had|did|does|became|got|gave|said|told)\b/i.test(s) || /^(the|a|an|they|she|he|it|we|i)\b/i.test(s)) continue;
       if (k.kind === 'other' && k.label.split(/\s+/).length > 3) continue;
+      // "Lecture Hall B | place | a raked auditorium…": the kind says what it IS.
+      const isA = k.label.match(/^(place|location type|venue|building|room|item|object|thing|group|organisation|organization|lore|event)$/);
+      if (isA) {
+        out.push({ s, k: 'type', t: '', v: ({ venue: 'place', building: 'place', room: 'place', 'location type': 'place', object: 'item', thing: 'item', organisation: 'group', organization: 'group', event: 'lore' })[isA[1]] || isA[1], label: 'type' });
+        out.push({ s, k: 'basics', t: '', v, label: 'basics' });
+        continue;
+      }
       out.push({ s, k: k.kind, t: k.target, v, label: k.label });
     }
     return out;
@@ -2345,9 +2353,17 @@
       const n = String(name).trim();
       const l = n.toLowerCase();
       return people.find((p) => p.name.toLowerCase() === l || sameButTitle(p.name, n) || p.aliases.some((a) => a.toLowerCase() === l) ||
-        (n.includes(' ') !== p.name.includes(' ') && (n.toLowerCase().startsWith(p.name.toLowerCase() + ' ') || p.name.toLowerCase().startsWith(l + ' '))));
+        (n.includes(' ') !== p.name.includes(' ') && !/\band\b|&|,/i.test(n + ' ' + p.name) && (n.toLowerCase().startsWith(p.name.toLowerCase() + ' ') || p.name.toLowerCase().startsWith(l + ' '))));
     };
+    // "Tiffany and Irene | …": the fact belongs to each of them.
+    const NAMEISH = /^[A-Z\u00C0-\u024F\uAC00-\uD7A3][^\s,&]*(?: [A-Z\u00C0-\u024F][^\s,&]*){0,2}$/;
+    const split = [];
     for (const r of records) {
+      const parts = r.s.split(/\s*(?:,|&|\band\b)\s*/).map((x) => x.trim()).filter(Boolean);
+      if (parts.length > 1 && parts.every((x) => NAMEISH.test(x))) for (const x of parts) split.push(Object.assign({}, r, { s: x }));
+      else split.push(r);
+    }
+    for (const r of split) {
       if (skip.has(r.s.toLowerCase())) continue;
       let p = find(r.s);
       if (!p) { p = { name: r.s, aliases: [], records: [] }; people.push(p); }
@@ -2388,7 +2404,9 @@
       const age = single(by('age')); if (age) basics.push('- Age: ' + age);
       const role = single(by('role')); if (role) basics.push('- Role: ' + role);
       const loc = single(by('location')); if (loc) basics.push('- Lives / based: ' + loc);
-      const st = single(by('status')); if (st) basics.push('- Status: ' + st);
+      // "Status" is for things ("delivered"); for a person it is only the moment.
+      const isPerson = by('type').length ? /character|person/i.test(single(by('type'))) : p.records.some((r) => /^(fullname|age|personality|relationship|stands|nickname)$/.test(r.k));
+      const st = single(by('status')); if (st && !isPerson) basics.push('- Status: ' + st);
       basics.push(...uniq(by('basics')).map((r) => '- ' + r.v));
       section('Basics', basics);
       section('Appearance', uniq(by('appearance')).map((r) => '- ' + r.v));
@@ -2411,7 +2429,10 @@
       section('Other', uniq(by('other')).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
       const typed = single(by('type'));
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
-      const kind = kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase()) : (guessKind(p.name, [], L.join('\n')) || 'character');
+      // Without a type: a person only if something personal is known about them.
+      const personal = p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory)$/.test(r.k));
+      const kind = kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase())
+        : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
       return { name: p.name, kind, aliases: p.aliases, text: L.join('\n'), always: !!(old && old.always), updated: Date.now(), records: p.records.length, recordIds: p.records.map((r) => r.id), fromFacts: true };
     }).sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || b.records - a.records);

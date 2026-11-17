@@ -2,7 +2,7 @@
 
 ## Planned
 - **Redesign: facts as records, entries built by Story Manager.** See
-  [docs/REDESIGN.md](docs/REDESIGN.md). Not started. The version before it is
+  [docs/REDESIGN.md](docs/REDESIGN.md). Built in v3.23.0; to try on a real story. The version before it is
   saved as v3.21.0 (Git tag `v3.21.0-stable`, and
   `releases/story-manager-v3.21.0.user.js`).
 

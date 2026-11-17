@@ -19,11 +19,11 @@ function grab(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const factKey = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
+const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
 const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
-const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'slimMissing', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts, cleanSummary, greetingOf, dedupeSections, isEntryFor, slimMissing, parseRecords, allRecords, buildEntries, splitByLabel };')();
+const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -367,21 +367,6 @@ test('regression: Park Ji-won is a person, and her entry\'s working-out goes', (
   assert.strictEqual(chat.entries[0].text, 'She delivered the official statement.\nNingning: chaotic\nWinter: sentimental\n- Head of PR at SM.');
 });
 
-test('recovering lost facts from an earlier version adds back only what is missing', () => {
-  const oldWinter = ['### Basics', 'Full name: Kim Minjeong. Role: aespa member.', '### Current State', 'Loading bay alcove.', 'Key Moments:',
-    'Took Winter on a date to a bookstore and the Han River.', 'Appearance: Platinum anklet ("My Quiet").', 'We can add this to her entry.',
-    'Goals, Promises & Secrets: Secured Jacek\'s commitment to exclusive "stillness" moments.'].join('\n');
-  const old = { entries: [{ name: 'Winter', kind: 'character', aliases: [], text: oldWinter }, { name: 'Gone Person', kind: 'character', aliases: [], text: '- Was a driver for the group.' }, { name: 'Deleted', kind: 'item', aliases: [], text: '- A thing the user deleted on purpose.' }] };
-  const chat = { ignored: ['deleted'], entries: [{ name: 'Winter', kind: 'character', aliases: [], text: '### Basics\nFull name: Kim Minjeong. Role: aespa member.\n### Appearance\n- Platinum anklet ("My Quiet").' }] };
-  const report = lib.recoverFacts(chat, old);
-  const w = chat.entries[0].text;
-  assert(/### Recovered facts\nTook Winter on a date to a bookstore and the Han River\.\nGoals, Promises & Secrets: Secured/.test(w), w);
-  assert(!/Loading bay|We can add/.test(w) && (w.match(/Platinum anklet/g) || []).length === 1 && (w.match(/Kim Minjeong/g) || []).length === 1);
-  assert.deepStrictEqual(report.map((r) => [r.name, r.count, !!r.added]), [['Winter', 2, false], ['Gone Person', 1, true]]);
-  assert(!chat.entries.some((e) => e.name === 'Deleted'));
-  assert.strictEqual(lib.recoverFacts(chat, old).length, 0, 'recovering twice adds nothing more');
-});
-
 test('a block headed by another character\'s name goes to that character', () => {
   const entries = [{ name: 'Giselle', kind: 'character', aliases: [], text: '- Bold.' }, { name: 'Ningning', kind: 'character', aliases: ['Ning'], text: '- Youngest.' }];
   const r = lib.applyUpdates(entries, [{ name: 'Giselle', aliases: [], add: true, text: '- Bit her lip.\n**Ningning**\n- Packed neon swimwear and an inflatable unicorn horn.' }], []);
@@ -464,16 +449,6 @@ test('regression: consolidation only takes the entry with the right name', () =>
 test('regression: a label with nothing known ("Age: Not stated") is dropped', () => {
   const p = lib.parseKeeperAnswer('=== ENTRY: Wonyoung | character ===\n### Basics\n- Full name: Wonyoung\n- Age: Not stated\nAge: Unknown\n- Role: Member of IVE', []);
   assert.strictEqual(p.updates[0].text, '### Basics\n- Full name: Wonyoung\n- Role: Member of IVE');
-});
-
-test('a slim version must keep every person the full entry mentions; the AI reads the slim one', () => {
-  const karina = { name: 'Karina', kind: 'character', aliases: [], text: '- Leader.\n- Kissed Winter in the rain.\n- Fought with Giselle over the jacket.\n- Called Ningning "maknae".' };
-  const chat = { entries: [karina, { name: 'Winter', aliases: [] }, { name: 'Giselle', aliases: [] }, { name: 'Ningning', aliases: ['maknae'] }] };
-  assert.deepStrictEqual(lib.slimMissing(chat, karina, '- Leader. Close to Winter; rivalry with Giselle.'), ['Ningning']);
-  assert.deepStrictEqual(lib.slimMissing(chat, karina, '- Leader. Close to Winter and Ningning; rivalry with Giselle.'), []);
-  karina.slim = { text: '- Leader (slim).', at: 1, fullLen: karina.text.length };
-  const plan = { prefix: '', suffix: '', head: '', budget: Infinity, log: [], extra: [], core: [{ name: 'Karina', kind: 'character', keys: ['Karina'], text: karina.slim.text }] };
-  assert(/Leader \(slim\)/.test(lib.composeMemory(plan, '').text));
 });
 
 // The facts format (docs/REDESIGN.md).

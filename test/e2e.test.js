@@ -126,6 +126,33 @@ async function main() {
       const r = block.match(/^\[R(\d+)[^\]\n]*\] (?:\[RECAP\] )?STORY AI[^:]*: (.*)/m);
       if (r) replies.push({ n: r[1], user: lastUser, text: r[2] });
     }
+    // The facts format: summaries with FACTS records.
+    if (/JOB: SUMMARISE/.test(input) && /FACTS records/.test(input)) {
+      return replies.map((r) => {
+        const k = Number((r.text.match(/#(\d+)/) || [])[1] || r.n);
+        return '[R' + r.n + '] Mira and Ash travelled on; reply ' + k + '. User: ' + r.user.slice(0, 50) + '\nFACTS:\n' +
+          '- Mira | appearance | silver hair braided with river reeds\n' +
+          '- Mira | key moment | crossed the river in reply ' + k + '\n' +
+          '- Mira | relationship: Ash | trusts him more after reply ' + k + '\n' +
+          '- Mira | where things stand: Ash | close friends (as of reply ' + k + ')\n' +
+          '- Mira | nickname | Miri, unnie\n' +
+          '- unnie | personality | not a person\n' +
+          '- Ash | role | ' + (k >= 3 ? 'captain of the guard' : 'scout') + '\n' +
+          '- Ash | key moment | guarded the camp in reply ' + k;
+      }).join('\n');
+    }
+    if (/JOB: SCENE/.test(input)) {
+      return '=== SECTION: Current Scene ===\n- Mira and Ash rest by the fire (scene ' + n + ').\n=== SECTION: Open Threads ===\n- Find the lost key.\n' +
+        '=== SECTION: World & Timeline ===\nTurning points:\n- Mira met Ash at the river.\n=== CAST ===\nMira, Ash';
+    }
+    if (/JOB: PORTRAIT/.test(input)) {
+      const who = (input.match(/EVERYTHING KNOWN ABOUT ([A-Z ]+) \(/) || [])[1] || 'THEM';
+      return who.charAt(0) + who.slice(1).toLowerCase() + ' is a calm, careful healer who has grown braver on the road. She trusts Ash more with every river they cross. She speaks softly but never backs down. She wants to find the lost key.';
+    }
+    if (/JOB: RECORDS/.test(input)) {
+      const n2 = (input.match(/^\[R\d+\]/gm) || []).length;
+      return Array.from({ length: n2 }, (_, i) => '[R' + (i + 1) + ']\n- Mira | ability | herbal healing\n- Ash | role | messenger').join('\n');
+    }
     if (/JOB: SUMMARISE/.test(input)) {
       // DROPLAST in the chat simulates a keeper that runs out of room.
       const list = /DROPLAST/.test(input) && replies.length > 1 ? replies.slice(0, -1) : replies;
@@ -389,7 +416,7 @@ async function main() {
     });
   });
 
-  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1, attachSet: true, memoryMessage: false, holdBack: 0 };
+  const settings = { provider: 'openai', apiKey: 'test-key', baseUrl: 'https://mock-llm.test/v1', model: 'mock', updateEvery: 2, foldEvery: 2, injectEvery: 1, attachSet: true, memoryMessage: false, holdBack: 0, newFormat: 'classic' };
   // A fake screen wake lock that records when it is taken and released.
   await ctx.addInitScript(() => {
     window.wakeLog = [];
@@ -999,7 +1026,7 @@ async function main() {
     'every reply summarised in order and folded in' + (after33.lastError ? ' (got: ' + after33.lastError + ')' : ''));
   check(after33.log.map((e) => e.id).join() === recapConv.messages.filter((x) => x.origin === 'assistant').map((x) => x.id).join(), 'summaries in story order');
 
-  console.log('34) "Check for missing facts" adds what the entries are missing, and remembers what it checked');
+  console.log('34) (the memory keeper switches back to the OpenAI-compatible one)');
   await page.evaluate(() => {
     const st = JSON.parse(localStorage.getItem('smx:settings'));
     st.provider = 'openai';
@@ -1007,39 +1034,7 @@ async function main() {
   });
   await page.reload();
   await page.waitForTimeout(800);
-  const callsBefore34 = llmCalls.length;
-  const withFacts = (await keyNow()).log.filter((e) => e.facts).length;
   await page.locator('#story-manager-root >> .fab').click();
-  page.once('dialog', (d) => d.accept());
-  await page.getByText('Check for missing facts').click({ timeout: 120000 });
-  await waitFor(async () => (await keyNow()).log.every((e) => !e.facts || e.checked), 60000, 'fact check');
-  await settle();
-  const checked = await keyNow();
-  const checks = llmCalls.slice(callsBefore34).filter((c) => /JOB: CHECK/.test(c));
-  check(checks.length >= 1 && checks.every((c) => /\[F1\] Mira is a healer \| Ash is a dragon/.test(c)), checks.length + ' check request(s) with every summary\'s facts');
-  const mira34 = checked.entries.find((e) => e.name === 'Mira').text;
-  check(/^- Mira: a healer[^\n]*\n- Checked \d+ facts; Mira fears deep water\.$/.test(mira34), 'missing fact added to the end of the right entry, the rest kept');
-  check(checked.log.filter((e) => e.checked).length === withFacts && /Checked the facts of replies 1–/.test(checked.jobs.find((j) => j.kind === 'check').label + checked.jobs.map((j) => j.label).join()),
-    'all ' + withFacts + ' summaries marked as checked; recorded in Activity');
-  check(/Facts checked: \d+ of \d+/.test(await page.locator('#story-manager-root >> .panel').innerText()), 'panel shows how many facts are checked');
-
-  console.log('34b) "Write in full detail" rewrites one entry from every reply that mentions it, keeping what it had');
-  const callsBefore34b = llmCalls.length;
-  await page.locator('#story-manager-root >> summary', { hasText: /^Mira · / }).click();
-  await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
-  await page.waitForTimeout(300);
-  check(await page.locator('#story-manager-root >> details[open] > summary', { hasText: /^Mira · / }).count() === 1, 'an entry the user opened stays open when the panel is redrawn');
-  page.once('dialog', (d) => d.accept());
-  await page.locator('#story-manager-root >> details[open] >> text=Write in full detail').click();
-  await waitFor(async () => /Rewritten in full detail/.test(((await keyNow()).entries.find((e) => e.name === 'Mira') || {}).text || ''), 60000, 'entry rewrite');
-  await settle();
-  const after34b = await keyNow();
-  const mira34b = after34b.entries.find((e) => e.name === 'Mira');
-  const asks = llmCalls.slice(callsBefore34b).filter((c) => /ONE ENTRY ONLY/.test(c));
-  check(asks.length >= 1 && asks.every((c) => /\[R1\] /.test(c)), asks.length + ' request(s) with the replies that mention Mira');
-  check(mira34b.text.includes(mira34) && /^### Basics/.test(mira34b.text) && !/Looking at|I think we/.test(mira34b.text) && mira34b.aliases.includes('the healer'),
-    'entry rewritten and organised, old facts kept, no bot notes');
-  check(after34b.jobs.some((j) => /Wrote Mira in full detail/.test(j.label)), 'recorded in Activity');
 
   console.log('35) A chat that got too long for the AI carries on in a new chat, with its memory');
   await page.evaluate(() => {
@@ -1263,7 +1258,7 @@ async function main() {
   await page.getByText('Diagnostics', { exact: true }).click();
   const diag39 = await page.locator('#story-manager-root >> textarea.diag').inputValue();
   check(/summaries \(\d+ with facts, \d+ none/.test(diag39), 'Diagnostics shows which summaries have facts');
-  check(/Memory health: OK · \d+ entr(y|ies) waiting to be consolidated/.test(diag39), 'Diagnostics shows the memory is healthy after tidying');
+  check(/Memory health: OK · (classic format|\d+ facts)/.test(diag39), 'Diagnostics shows the memory is healthy after tidying');
 
   console.log('39b) A deleted reply inside a chapter: the chapter is written again without it');
   const inCh = redone39.log.find((e) => e.chapter != null && newConv.messages.some((x) => x.id === e.id));
@@ -1321,36 +1316,6 @@ async function main() {
     llmCalls.slice(calls39d).some((c) => /JOB: CORRECT/.test(c) && c.includes(victim.text.slice(0, 50))), 'recorded in Activity, and the memory corrected for it');
   check(after39d.knownReplies === newConv.messages.filter((x) => x.origin === 'assistant').length && after39d.knownMessages === newConv.messages.length, 'reply and message counts come from the whole chat');
 
-  console.log('39e) Every few updates, entries that grew by additions are consolidated in full');
-  await page.evaluate(() => {
-    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
-    const c = JSON.parse(localStorage.getItem(key));
-    const e = c.entries.find((x) => x.name === 'Ash');
-    e.text = '### Basics\n- Ash is a dragon.\n- Role: messenger of the king.\n' + Array.from({ length: 24 }, (_, i) => '- Key Moments: Flew over valley number ' + i + ' at dusk.').join('\n') +
-      '\n- Ash is a dragon.\n- Role: guard of the old mill.';
-    e.updated = Date.now();
-    delete e.consolidated;
-    c.foldsSinceConsolidate = 2;
-    localStorage.setItem(key, JSON.stringify(c));
-  });
-  await page.reload();
-  await page.waitForTimeout(800);
-  const calls39e = llmCalls.length;
-  await waitFor(() => !newConv.generating, 8000, 'idle');
-  await page.evaluate(() => window.sendMsg('We fly on.'));
-  await waitFor(() => !newConv.generating && newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
-  await page.evaluate(() => window.sendMsg('And land.'));
-  await waitFor(() => !newConv.generating && newConv.messages[newConv.messages.length - 1].origin === 'assistant', 8000, 'reply');
-  await page.locator('#story-manager-root >> .fab').click();
-  await page.getByText('Update now').click({ timeout: 120000 });
-  await waitFor(() => llmCalls.slice(calls39e).some((c) => /JOB: CONSOLIDATE/.test(c) && /=== ENTRY: Ash/.test(c)), 60000, 'consolidation of Ash');
-  await settle();
-  const ash39e = (await keyNow()).entries.find((x) => x.name === 'Ash');
-  check(/- Consolidated\.$/.test(ash39e.text) && (ash39e.text.match(/Ash is a dragon/g) || []).length === 1 && ash39e.consolidated >= ash39e.updated - 5,
-    'Ash was rewritten in full: duplicates merged, marked as consolidated');
-  check((await keyNow()).jobs.some((j) => /Consolidated Ash/.test(j.label)), 'recorded in Activity');
-  await page.locator('#story-manager-root >> .x').click().catch(() => {});
-
   console.log('39f) "Check summaries" compares summaries with the replies and corrects wrong ones');
   await settle();
   const here39f = newConv.messages.map((x) => x.id);
@@ -1400,29 +1365,6 @@ async function main() {
   await waitFor(async () => (await keyNow()).jobs.some((j) => new RegExp('Rewrote chapter ' + (flaggedCh[1] + 1) + ' from its summaries').test(j.label)), 60000, 'chapter rewritten');
   const re39 = llmCalls.slice(calls39h).find((c) => /JOB: CHAPTER/.test(c));
   check(re39 && /FOUND THESE PROBLEMS[\s\S]*Ash, not Mira/.test(re39) && (await keyNow()).chapters[flaggedCh[1]].needsCheck, 'rewritten with the problems pointed out, and marked to be checked again');
-  await page.locator('#story-manager-root >> .x').click().catch(() => {});
-
-  console.log('39e2) "Consolidate now" files every changed entry, and moves facts about someone else to them');
-  await page.evaluate(() => {
-    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
-    const c = JSON.parse(localStorage.getItem(key));
-    const e = c.entries.find((x) => x.name === 'Ash');
-    e.text += '\n- MISPLACED Mira: Packed her herb satchel for the trip.';
-    e.updated = Date.now() + 5000;
-    localStorage.setItem(key, JSON.stringify(c));
-  });
-  await page.reload();
-  await page.waitForTimeout(800);
-  await page.locator('#story-manager-root >> .fab').click();
-  page.once('dialog', (d) => d.accept());
-  await page.getByText('Consolidate now').click();
-  await waitFor(async () => /Packed her herb satchel/.test((await keyNow()).entries.find((x) => x.name === 'Mira').text), 60000, 'fact moved to Mira');
-  await settle();
-  const k39e2 = await keyNow();
-  check(!/herb satchel/.test(k39e2.entries.find((x) => x.name === 'Ash').text) && /### Moved here from Ash\n- Packed her herb satchel for the trip\./.test(k39e2.entries.find((x) => x.name === 'Mira').text),
-    'the fact left Ash and went to Mira');
-  check(k39e2.jobs.some((j) => /Moved facts from Ash to Mira/.test(j.label)) && llmCalls.some((c) => /JOB: CONSOLIDATE/.test(c) && /WHAT HAPPENED \(summaries/.test(c) && /OTHER CHARACTERS: /.test(c)),
-    'the keeper got the summaries as evidence; recorded in Activity');
   await page.locator('#story-manager-root >> .x').click().catch(() => {});
 
   console.log('40) Pins wait for the story AI to finish; the newest replies are held back until newer ones follow');
@@ -1510,28 +1452,6 @@ async function main() {
   await page.reload(); // as when the link is opened on another device
   await waitFor(async () => (await page.evaluate(() => JSON.parse(localStorage.getItem('smx:settings')).githubToken)) === 'gh-test-token', 15000, 'token from the sync link');
   check(!(await page.evaluate(() => location.href)).includes('smx-sync'), 'opening the sync link sets up sync, and the token leaves the address bar');
-
-  console.log('42b) "Recover lost facts" adds back facts an earlier saved version had');
-  // An earlier version (as GitHub keeps it) where Mira had more facts.
-  const g42 = Object.values(gists)[0];
-  const old42 = JSON.parse(g42.files['chat-' + newId + '.json'].content);
-  const mira42 = old42.entries.find((e) => e.name === 'Mira');
-  mira42.text += '\n- Grew up in the river village of Elm.\n- We can add this to her entry.';
-  const files42 = JSON.parse(JSON.stringify(g42.files));
-  files42['chat-' + newId + '.json'] = { content: JSON.stringify(old42) };
-  g42.history.unshift({ version: 'v0', at: Date.now() - 2 * 86400000, files: files42 });
-  await page.reload();
-  await page.waitForTimeout(800);
-  await page.locator('#story-manager-root >> .fab').click();
-  let asked42 = '';
-  page.once('dialog', (d) => { asked42 = d.message(); d.accept(String((d.message().match(/(\d+)\) [^\n]*\n\nType/) || [])[1] || '')); });
-  await page.getByText('Recover lost facts').click();
-  await waitFor(async () => /Grew up in the river village of Elm/.test((await keyNow()).entries.find((e) => e.name === 'Mira').text), 30000, 'fact recovered');
-  const mira42now = (await keyNow()).entries.find((e) => e.name === 'Mira').text;
-  check(/Recover facts from which saved version/.test(asked42) && /### Recovered facts\n- Grew up in the river village of Elm\.$/.test(mira42now) && !/We can add/.test(mira42now),
-    'the lost fact is back under "Recovered facts", without working-out');
-  check((await keyNow()).jobs.some((j) => /Recovered 1 facts from the version saved on/.test(j.label)), 'recorded in Activity');
-  await page.locator('#story-manager-root >> .x').click().catch(() => {});
 
   console.log('42c) "Compare bots" runs the same jobs on the first replies with each bot and makes one report');
   const mem42c = JSON.stringify((await keyNow()).entries) + (await keyNow()).memory;
@@ -1693,6 +1613,95 @@ async function main() {
   await page.evaluate((id) => history.replaceState({ app: 'state' }, '', '/c/' + id + '?view=1'), newId);
   check(/view=1/.test(await page.evaluate(() => location.search)), 'the site can still change the address of the open chat');
   check((await listed()).items.some((x) => x.id === newId), 'the open chat stays in the site\'s chat list');
+
+  console.log('51) The facts format: a new story keeps facts as records and Story Manager builds the characters');
+  const classicId = convId; // the first story (classic); newId was marked a helper chat in 50)
+  await page.evaluate(() => {
+    const st = JSON.parse(localStorage.getItem('smx:settings'));
+    st.newFormat = 'facts';
+    st.provider = 'openai';
+    st.holdBack = 0;
+    st.memoryMessage = false;
+    localStorage.setItem('smx:settings', JSON.stringify(st));
+  });
+  await page.goto('https://miniapps.ai/');
+  await page.waitForTimeout(800);
+  const calls51 = llmCalls.length;
+  for (const t of ['FACTSTORY: I am Mira, a healer.', 'We reach the river.', 'We cross it.', 'We make camp.', 'Ash keeps watch.']) {
+    await page.evaluate((x) => window.sendMsg(x), t);
+    await waitFor(async () => { const id = await page.evaluate(() => location.pathname.split('/c/')[1]); return id && convs[id] && !convs[id].generating && convs[id].messages[convs[id].messages.length - 1].origin === 'assistant'; }, 15000, 'reply');
+  }
+  const factsId = await page.evaluate(() => location.pathname.split('/c/')[1]);
+  const factsConv = convs[factsId];
+  const keyOf = (id) => page.evaluate((x) => JSON.parse(localStorage.getItem('smx:chat:' + x) || 'null'), id);
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.getByText('Update now').click({ timeout: 120000 });
+  await settle();
+  let f51 = await keyOf(factsId);
+  check(f51 && f51.format === 'facts' && f51.log.length >= 4 && f51.log.every((e) => (e.records || []).length >= 6), 'a new story uses the facts format; every summary carries its records');
+  const calls = llmCalls.slice(calls51);
+  check(calls.some((c) => /JOB: SCENE/.test(c)) && !calls.some((c) => /JOB: UPDATE/.test(c)) && calls.some((c) => /FACTS records/.test(c)), 'the AI only updates the story; it never edits the characters');
+  const mira51 = f51.entries.find((e) => e.name === 'Mira');
+  const ash51 = f51.entries.find((e) => e.name === 'Ash');
+  check(mira51 && ash51 && !f51.entries.some((e) => /^unnie$/i.test(e.name)) && mira51.aliases.includes('Miri') && !mira51.aliases.includes('unnie'), 'characters are built from the records; "unnie" is neither a person nor a nickname');
+  check(/- Role: captain of the guard \(before: scout, until reply \d+\)/.test(ash51.text), 'the newest fact wins and the older one is kept as history');
+  check(/### Relationships\n- Ash: trusts him more[^\n]*Where things stand: close friends \(as of reply \d+\)/.test(mira51.text) && (mira51.text.match(/silver hair/g) || []).length === 1, 'relationships with where things stand; repeated facts appear once');
+  check(f51.portraits && f51.portraits.mira && /### Who they are now\nMira is a calm, careful healer/.test(mira51.text), 'a main character gets a "who they are now" portrait');
+  // The layout of the memory the AI reads.
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+  await page.evaluate(() => window.sendMsg('Onwards to the hills.'));
+  const sent51 = chatBodies[chatBodies.length - 1].elements[0].text;
+  const at = (h) => sent51.indexOf(h);
+  check(at('## Now\n### Current Scene') > 0 && at('## Now') < at('## Characters, places & things') && at('## Characters, places & things') < at('## World & turning points') &&
+    at('### Mira (character)') < at('### Ash (character)'), 'the memory reads: Now → Characters (main ones first) → World & turning points');
+  // Facts in the panel: remove one, add one.
+  await waitFor(() => !factsConv.generating, 15000, 'idle');
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.locator('#story-manager-root >> summary', { hasText: /^Ash · / }).click();
+  // "scout" was recorded in more than one reply: every copy is removed.
+  for (let i = 0; i < 6 && await page.locator('#story-manager-root >> details[open] >> .row', { hasText: 'role — scout' }).count(); i++) {
+    await page.locator('#story-manager-root >> details[open] >> .row', { hasText: 'role — scout' }).first().locator('button').click();
+    await page.waitForTimeout(400);
+  }
+  await waitFor(async () => !/before: scout/.test(((await keyOf(factsId)).entries.find((e) => e.name === 'Ash') || {}).text || ''), 15000, 'fact removed');
+  await page.locator('#story-manager-root >> details[open] >> input[placeholder^="kind"]').fill('likes');
+  await page.locator('#story-manager-root >> details[open] >> input[placeholder="the fact"]').fill('honey cakes');
+  await page.locator('#story-manager-root >> details[open] >> button', { hasText: 'Add fact' }).click();
+  await waitFor(async () => /- Likes: honey cakes/.test(((await keyOf(factsId)).entries.find((e) => e.name === 'Ash') || {}).text || ''), 15000, 'fact added');
+  check(true, 'a wrong fact can be removed and a new one added in the panel');
+  // A deleted reply takes its facts along (no correction request needed for the characters).
+  f51 = await keyOf(factsId);
+  const lastWithRecords = f51.log.filter((e) => factsConv.messages.some((m) => m.id === e.id)).slice(-1)[0];
+  const kNum = (lastWithRecords.records.find((r) => r.k === 'moment') || { v: '' }).v.match(/reply (\d+)/)[1];
+  factsConv.messages = factsConv.messages.filter((m) => m.id !== lastWithRecords.id);
+  await page.evaluate(([cid, mid]) => document.dispatchEvent(new CustomEvent('smx:ws', { detail: JSON.stringify({ dir: 'in', event: 'cmd', text: JSON.stringify([{ conversationId: cid, ids: [mid] }]) }) })), [factsId, lastWithRecords.id]);
+  await waitFor(async () => !new RegExp('crossed the river in reply ' + kNum + '\\b').test(((await keyOf(factsId)).entries.find((e) => e.name === 'Mira') || {}).text || ''), 15000, 'facts of the deleted reply gone');
+  check(true, 'a deleted reply takes its facts along');
+  await page.locator('#story-manager-root >> .x').click().catch(() => {});
+
+  console.log('52) An existing classic story can switch to the facts format, take the facts from its summaries, and switch back');
+  await page.goto('https://miniapps.ai/c/' + classicId);
+  await page.waitForTimeout(1500);
+  const before52 = await keyOf(classicId);
+  check(before52.format === 'classic', 'stories saved before stay classic');
+  await page.locator('#story-manager-root >> .fab').click();
+  page.once('dialog', (d) => d.accept());
+  await page.getByRole('button', { name: 'Switch to the facts format' }).click();
+  await waitFor(async () => (await keyOf(classicId)).format === 'facts', 10000, 'switched');
+  const sw = await keyOf(classicId);
+  check(sw.entries.length >= before52.entries.length && sw.entries.every((e) => e.fromClassic), 'right after switching the characters are still there (from before)');
+  page.once('dialog', (d) => d.accept());
+  await page.getByRole('button', { name: 'Take facts from summaries' }).click();
+  await waitFor(async () => (await keyOf(classicId)).log.every((e) => e.records), 60000, 'facts taken');
+  await settle();
+  const conv52 = await keyOf(classicId);
+  check(llmCalls.some((c) => /JOB: RECORDS/.test(c)) && conv52.entries.some((e) => e.name === 'Ash' && /- Role: messenger/.test(e.text) && e.fromFacts) && !conv52.entries.some((e) => e.fromClassic),
+    'the facts are taken from the summaries and the characters are built from them');
+  page.once('dialog', (d) => d.accept());
+  await page.getByRole('button', { name: 'Switch back to classic' }).click();
+  await waitFor(async () => (await keyOf(classicId)).format === 'classic', 10000, 'switched back');
+  const back = await keyOf(classicId);
+  check(JSON.stringify(back.entries.map((e) => e.name).sort()) === JSON.stringify(before52.entries.map((e) => e.name).sort()), 'switching back brings the classic characters back');
 
   await browser.close();
   console.log('\nAll checks passed.');

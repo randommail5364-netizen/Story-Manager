@@ -1,7 +1,6 @@
 # Redesign plan: facts as records, entries built by Story Manager
 
-Status: **stages 1–5 built in v3.22.0** as a per-story switch ("Memory format:
-Facts (new)" in the panel); not yet tried on a real story. The last version
+Status: **built (v3.23.0)**; not yet tried on a real story. The last version
 before this work is saved as `v3.21.0` (`releases/story-manager-v3.21.0.user.js`,
 commit `d8ce60e`).
 
@@ -71,13 +70,16 @@ promise, secret (+ who knows), role, status, nickname, key moment) ·
 
 ## Stages (each tested before the next)
 
-Done in v3.22.0: 2 (records stored in the summaries, synced with them),
-3 (entry builder; facts panel with remove / add), 4 (new replies produce
-records; story-only update), 5 ("Take facts from summaries" converts a story
-without reading the chat again; Rebuild from whole chat also works).
-Still to do: 1 (a "facts format" option in Compare bots), 6 (retire the
-classic-only tools once the new format has proven itself), and a limit on
-Key Moments per character in the pinned message.
+Done in v3.22.0–v3.23.0: all stages. Compare bots now runs in the facts
+format (stage 1); new stories use the facts format (setting "Memory format for
+new stories"); the classic-only tools are retired (Consolidate now, Slim down,
+Recover lost facts, Write in full detail, Check for missing facts, automatic
+consolidation); main characters get a "Who they are now" portrait; the pinned
+message has the new layout (Must remember → Now → Characters, places & things →
+World & turning points → History → Recent events). Tested: unit tests and the
+full browser suite, with scenarios 51–52 for the facts format.
+Not done (not needed for now): a limit on Key Moments per character in the
+pinned message.
 
 
 1. **Prototype / report only**: run the new extraction on the first 20 replies

@@ -20,8 +20,8 @@ function grab(name) {
   throw new Error('unbalanced ' + name);
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const factKey = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
-const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts, cleanSummary, greetingOf, dedupeSections };')();
+const lib = new Function(consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'recoverFacts', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor']
+  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, recoverFacts, cleanSummary, greetingOf, dedupeSections, isEntryFor };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -446,6 +446,22 @@ test('regression: another character\'s name is never added as a nickname', () =>
   const chat = { memory: '', entries: [{ name: 'Karina', kind: 'character', aliases: ['unnie', 'Giselle', 'Yujin-unnie', 'Jimin'], text: '- Leader.' }, { name: 'Giselle', kind: 'character', aliases: [], text: '- Rapper.' }, { name: 'Yujin', kind: 'character', aliases: [], text: '- IVE.' }], ignored: [], log: [], chapters: [] };
   lib.organize(chat);
   assert.deepStrictEqual(chat.entries.find((e) => e.name === 'Karina').aliases, ['unnie', 'Jimin']);
+});
+
+// From the user's rebuilt memory: consolidating Karina took the keeper's
+// entry for Yujin (both "unnie") as hers.
+test('regression: consolidation only takes the entry with the right name', () => {
+  const karina = { name: 'Karina', kind: 'character', aliases: ['unnie', 'Karina-unnie', 'Yu Jimin'], text: '- Leader of aespa.' };
+  assert(!lib.isEntryFor(karina, { name: 'Yujin', aliases: ['unnie', 'Yujin-unnie'] }));
+  assert(!lib.isEntryFor(karina, { name: 'unnie', aliases: [] }));
+  assert(lib.isEntryFor(karina, { name: 'Karina', aliases: [] }));
+  assert(lib.isEntryFor(karina, { name: 'Yu Jimin', aliases: [] }));
+  assert(lib.isEntryFor({ name: 'Choi', aliases: [] }, { name: 'Ms. Choi', aliases: [] }));
+});
+
+test('regression: a label with nothing known ("Age: Not stated") is dropped', () => {
+  const p = lib.parseKeeperAnswer('=== ENTRY: Wonyoung | character ===\n### Basics\n- Full name: Wonyoung\n- Age: Not stated\nAge: Unknown\n- Role: Member of IVE', []);
+  assert.strictEqual(p.updates[0].text, '### Basics\n- Full name: Wonyoung\n- Role: Member of IVE');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

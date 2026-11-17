@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.20.2
+// @version      3.20.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1954,6 +1954,16 @@
     return entries.map((e) => Object.assign({}, e, { aliases: (e.aliases || []).slice() }));
   }
 
+  // Is this answer's entry the one we asked about? Only by its name (or a
+  // real nickname of it, or the name with a title), never a shared term of
+  // address: while consolidating Karina, an entry for Yujin ("unnie" too)
+  // must not replace hers.
+  function isEntryFor(e, u) {
+    const n = String(u.name || '').trim().toLowerCase();
+    if (!n || isGeneric(n)) return false;
+    return n === e.name.toLowerCase() || sameButTitle(e.name, u.name) || (e.aliases || []).some((a) => !isGeneric(a) && a.toLowerCase() === n);
+  }
+
   // Terms of address the characters use for each other ("unnie", "oppa",
   // "little one"): they are not names, and never identify one person.
   const GENERIC_ALIAS_RE = /^(the )?(unnie|eonni|eonnie|onnie|oppa|hyung|hyungnim|noona|nuna|sunbae|sunbaenim|hoobae|maknae|babe|baby|bae|honey|hon|sweetheart|sweetie|sugar|darling|darlin'?|dear|dearest|love|my love|lover|little one|little bird|princess|prince|queen|king|kitten|pet|puppy|angel|beautiful|gorgeous|pretty|sir|ma'?am|madam|boss|leader|captain|master|mistress|daddy|mommy|sis|sister|bro|brother|girl|boy|kid|you|her|him|them)$/i;
@@ -2166,7 +2176,7 @@
 
   // "None stated" and the like are not facts; a heading with nothing under
   // it is dropped too.
-  const EMPTY_FACT_RE = /^\s*[-*•]?\s*(none|nothing|n\/?a|unknown|not (stated|mentioned|known|specified|given)|none (stated|known|yet|mentioned|specified|given|so far))\.?\s*$/i;
+  const EMPTY_FACT_RE = /^\s*[-*•]?\s*(\*{0,2}[A-Za-z][\w &,'’/()-]{0,40}\*{0,2}\s*:\s*)?(none|nothing|n\/?a|unknown|not (stated|mentioned|known|specified|given)|none (stated|known|yet|mentioned|specified|given|so far))\.?\s*$/i;
   function dropEmpty(t) {
     const lines = String(t || '').split('\n').filter((l) => !EMPTY_FACT_RE.test(l));
     return lines.filter((l, i) => {
@@ -2728,7 +2738,7 @@
           'remove anything that is not a fact about ' + entry.name + ' (notes, reasoning, instructions), and add every new detail about ' + entry.name + ' from the events. ' +
           (kind === 'character' ? 'Main characters can be long: detail matters more than length.' : '') + ' Output only that one entry.';
         const out = cleanOutput(await callLLM(updateSystem(), user));
-        const u = parseKeeperAnswer(out, []).updates.find((x) => keys.includes(x.name.toLowerCase()) || x.aliases.some((a) => keys.includes(a.toLowerCase())));
+        const u = parseKeeperAnswer(out, []).updates.find((x) => isEntryFor(entry, x));
         const text = u && dropReasoning(u.text);
         if (text && text.length >= dropReasoning(entry.text).length * 0.8) {
           entry.text = text;
@@ -3542,8 +3552,7 @@
         // MOVE blocks: facts for other entries.
         const moves = [];
         const body = out.replace(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*MOVE[^\S\n]*:[^\S\n]*([^\n=]+?)[^\S\n]*=+[^\n]*\n([\s\S]*?)(?=^[^\S\n]*[*#_]*[^\S\n]*=+|(?![\s\S]))/gim, (m, name, text) => { moves.push({ name: name.trim(), text: text.trim() }); return ''; });
-        const keys = entryKeys(e).map((k) => k.toLowerCase());
-        const u = parseKeeperAnswer(body, []).updates.find((x) => !x.add && (keys.includes(x.name.toLowerCase()) || x.aliases.some((a) => keys.includes(a.toLowerCase()))));
+        const u = parseKeeperAnswer(body, []).updates.find((x) => !x.add && isEntryFor(e, x));
         return u ? Object.assign(u, { moves }) : null;
       });
       e.consolidated = Date.now();

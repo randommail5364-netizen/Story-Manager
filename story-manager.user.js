@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.26.4
+// @version      3.26.5
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4342,14 +4342,15 @@
       history.replaceState(null, '', location.pathname + location.search);
       setTimeout(() => toast('Sync is set up on this device ✓'), 1500);
     }
-    // The first sync finishes before any chat is read here, so a device that
-    // has not got a chat yet loads it from GitHub instead of starting it anew.
-    await Promise.race([runSync().catch(() => {}), new Promise((r) => setTimeout(r, 20000))]);
     publishInjectMap();
   })();
+  // The first sync finishes before any chat is read here, so a device that
+  // has not got a chat yet loads it from GitHub instead of starting it anew.
+  // (The button does not wait for it: it only waits for `ready`.)
+  const synced = ready.then(() => Promise.race([runSync().catch(() => {}), new Promise((r) => setTimeout(r, 30000))]));
 
   on('conv', async (d) => {
-    await ready;
+    await synced;
     if (helperIds.has(d.id)) return;
     let data;
     try { data = JSON.parse(d.text); } catch (e) { return; }
@@ -4362,7 +4363,7 @@
   });
 
   on('api', async (d) => {
-    await ready;
+    await synced;
     let data = null;
     try { data = d.text ? JSON.parse(d.text) : null; } catch (e) { /* not JSON */ }
     logApi(d.method, d.url, d.status, data, 'site');
@@ -4387,7 +4388,7 @@
 
   // Messages that arrive over the live connection (history or new replies).
   on('ws', async (d) => {
-    await ready;
+    await synced;
     let args = null;
     try { args = d.text ? JSON.parse(d.text) : null; } catch (e) { /* ignore */ }
     logSocket(d.dir, d.event, args);
@@ -4500,7 +4501,7 @@
       lastSentInfo[d.conversationId] = 'story' + (d.included && d.included.length ? ', ' + d.included.join(', ') : '') +
         ' (' + Number(d.size || 0).toLocaleString() + ' characters)';
     }
-    await ready;
+    await synced;
     lastSent = d;
     if (!d.conversationId) return;
     const chat = await getChat(d.conversationId, true);
@@ -4513,7 +4514,7 @@
   });
 
   on('sendResult', async (d) => {
-    await ready;
+    await synced;
     let data;
     try { data = JSON.parse(d.text); } catch (e) { return; }
     const id = data.conversationId || (data.conversation && data.conversation.id);
@@ -4793,7 +4794,7 @@
     if (location.href === lastHref) return;
     lastHref = location.href;
     const m = location.href.match(UUID_RE);
-    if (m) ready.then(() => setCurrent(m[0].toLowerCase()));
+    if (m) synced.then(() => setCurrent(m[0].toLowerCase()));
   }, 1000);
 
   // ---------------------------------------------------------------------------

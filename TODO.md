@@ -1,10 +1,27 @@
 # Story Manager to-do list
 
-Nothing planned right now.
+## Planned
+- **Redesign: facts as records, entries built by Story Manager.** See
+  [docs/REDESIGN.md](docs/REDESIGN.md). Not started. The version before it is
+  saved as v3.21.0 (Git tag `v3.21.0-stable`, and
+  `releases/story-manager-v3.21.0.user.js`).
+
+## Open questions
+- **The story AI repeats the latest scene.** Possible cause: the pinned
+  message's Current Scene and Recent events describe a moment X replies old
+  (X = Hold back) as "now". To test: untick Auto-manage, unpin the memory
+  message, regenerate. Possible fixes: leave the newest X summaries out of
+  Recent events; label both as "as of X replies ago".
+- **Pinned message size** (about 500,000 characters after a rebuild with a
+  detailed keeper). "Slim down" helps; a size limit for the pinned message is
+  an option if needed.
 
 ## Done
-- **Check summaries** (v3.15.0): compares summaries with the actual replies, corrects wrong ones and their facts lists, corrects the story & characters, and marks their chapters to check. Checks the latest 30 unchecked at a time and remembers which were checked.
-- **Check chapters** (v3.15.0): grades each chapter against its summaries (score, wrong, missing, padding), shows the results in the panel, and has a Rewrite button for each chapter.
+- Check summaries and Check chapters (v3.15.0).
+- Recover lost facts, Consolidate now, misplaced-fact moves (v3.16–v3.18).
+- Compare bots (v3.19.0).
+- Slim down (v3.21.0).
 
 ## Ideas, not decided
-- A setting "Older chapters: full / short" for a smaller pinned memory message (the full chapters would always be kept).
+- "Older chapters: full / short" for a smaller pinned memory message (the full
+  chapters would always be kept).

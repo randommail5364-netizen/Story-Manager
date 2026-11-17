@@ -21,7 +21,7 @@ function grab(name) {
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
-const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
 const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel']
   .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel };')();
 
@@ -530,10 +530,31 @@ test('regression (first facts rebuild): joint subjects, places filed as characte
   assert.strictEqual(get('Lecture Hall B').kind, 'place');
   assert.strictEqual(get('Lighting rig').kind, 'item');
   assert(/Status: reset to Preset Two/.test(get('Lighting rig').text), 'a thing keeps its status');
-  assert.strictEqual(get('Setting').kind, 'place');
+  assert(!es.some((e) => e.name === 'Setting'), '"Setting" is not an entry of its own');
   assert.strictEqual(get('Thursday').kind, 'lore');
   assert.strictEqual(get('Daehyun').kind, 'character');
   assert.strictEqual(get('Tiffany').kind, 'character');
+});
+
+// From the user's second rebuild in the facts format (lines as the keeper wrote them).
+test('regression (second facts rebuild): moment looks, activities as roles, empty and placeholder entries', () => {
+  const recs = lib.parseRecords([
+    '- Tiffany | appearance | cream sweater dress, heeled boots, dark hair, bright smile, smells of vanilla and peonies',
+    '- Tiffany | appearance | wearing lacy champagne-colored bra and matching panties after her dress was removed',
+    '- Tiffany | appearance | breasts exposed, nipples peaked; wearing torn lace panties',
+    '- Tiffany | appearance | wearing cream sweater dress with back zipper undone; angry red marks on wrists and arms',
+    '- Tiffany | role | lecturer in Performing Arts at Seoul University',
+    '- Tiffany | role | has an afternoon class to teach',
+    '- Tiffany | personality | bubbly, outgoing, affectionate',
+    '- Setting | type | place',
+    '- Archival Annex | type | place',
+    '- Story | key moment | everyone went to the party',
+  ].join('\n'));
+  const es = lib.buildEntries({ ignored: [], entries: [], log: [{ id: 'r1', text: 'x', records: recs }] });
+  const t = (es.find((e) => e.name === 'Tiffany') || {}).text || '';
+  assert(/dark hair, bright smile/.test(t) && !/lacy champagne|breasts exposed|zipper undone/.test(t), 'lasting looks kept, passing ones left out: ' + t);
+  assert(/- Role: lecturer in Performing Arts at Seoul University$/m.test(t) && !/afternoon class/.test(t), 'an activity is not a role');
+  assert.deepStrictEqual(es.map((e) => e.name), ['Tiffany'], 'no empty or placeholder entries');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

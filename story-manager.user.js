@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.23.3
+// @version      3.23.4
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2341,6 +2341,15 @@
     return out.filter((r) => !hidden.has(r.id));
   }
 
+  // An "appearance" fact about a passing moment (what someone is wearing or
+  // how they look in one scene) is not their lasting look. Keepers write
+  // these despite being told not to, so they are filtered here.
+  const MOMENT_LOOK_RE = /^\s*(now|currently|still|wearing|wore|dressed in|in (her|his|their|a|an|the) (\w+ )?(bra|panties|underwear|lingerie|robe|towel|dress|shirt)\b)|\b(exposed|undone|unzipped|unbuttoned|torn|ripped|naked|nude|topless|bound|tied|taped|cuffed|gagged|blindfolded|covered in|dripping|soaked|smeared|disheveled|dishevelled|flushed|trembling|panting|after (her|his|their|the|being)|left (her|him|them) in|pulled (up|down|off|aside)|removed)\b/i;
+  // A "role" that is really an activity ("has an afternoon class to teach").
+  const NOT_ROLE_RE = /^\s*(has|have|had|is|was|will|going to|needs? to|must|wants? to|plans? to|about to|just|currently|now)\b/i;
+  // Subjects that are not a person, place or thing of their own; the story's
+  // World & Timeline section covers them.
+  const PLACEHOLDER_SUBJECT_RE = /^(the )?(setting|scene|location|world|story|timeline|narrator|narration|user|you|me|everyone|everybody|all|the group|group|others|them|they)$/i;
   const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
   function buildEntries(chat) {
@@ -2364,7 +2373,9 @@
       else split.push(r);
     }
     for (const r of split) {
-      if (skip.has(r.s.toLowerCase())) continue;
+      if (skip.has(r.s.toLowerCase()) || PLACEHOLDER_SUBJECT_RE.test(r.s.trim())) continue;
+      if (r.k === 'appearance' && MOMENT_LOOK_RE.test(r.v)) continue;
+      if (r.k === 'role' && NOT_ROLE_RE.test(r.v)) continue;
       let p = find(r.s);
       if (!p) { p = { name: r.s, aliases: [], records: [] }; people.push(p); }
       // The fuller name is the entry's name ("Jacek Kowalski" over "Jacek").
@@ -2435,7 +2446,8 @@
         : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
       return { name: p.name, kind, aliases: p.aliases, text: L.join('\n'), always: !!(old && old.always), updated: Date.now(), records: p.records.length, recordIds: p.records.map((r) => r.id), fromFacts: true };
-    }).sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || b.records - a.records);
+    }).filter((e) => e.text.trim()) // an entry with nothing but its type says nothing
+      .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || b.records - a.records);
   }
   const factsMode = (chat) => chat && chat.format === 'facts';
 

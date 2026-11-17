@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.23.6
+// @version      3.24.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -77,6 +77,42 @@
     const sandboxed = typeof exportFunction === 'function' && typeof cloneInto === 'function';
     const expFn = (fn, target) => (sandboxed ? exportFunction(fn, target) : fn);
     const toPage = (obj) => (sandboxed ? cloneInto(obj, win) : obj);
+
+    // MiniApps' own sounds (ringtones, notification sounds from /sounds/) and
+    // audio channels it opens can take the phone's audio focus, pausing the
+    // user's music. Unless turned off in Settings: those sounds never play,
+    // and an audio channel only starts right after the user taps something
+    // (so MiniApps' voice features still work when used).
+    let blockSounds = true;
+    try { blockSounds = win.localStorage.getItem('smx:blockSounds') !== '0'; } catch (e) { /* ignore */ }
+    doc.addEventListener('smx:sounds', (ev) => { blockSounds = ev.detail !== '0'; });
+    let gestureAt = 0;
+    const gesture = () => { gestureAt = Date.now(); };
+    win.addEventListener('pointerdown', expFn(gesture, win), true);
+    win.addEventListener('keydown', expFn(gesture, win), true);
+    const justTapped = () => Date.now() - gestureAt < 1500;
+    try {
+      const MP = win.HTMLMediaElement && win.HTMLMediaElement.prototype;
+      if (MP && MP.play) {
+        const origPlay = MP.play;
+        MP.play = expFn(function () {
+          try {
+            const src = String(this.currentSrc || this.src || (this.querySelector && this.querySelector('source') && this.querySelector('source').src) || '');
+            if (blockSounds && /\/sounds\//i.test(src)) { this.muted = true; return win.Promise.resolve(); }
+          } catch (e) { /* play normally */ }
+          return origPlay.apply(this, arguments);
+        }, MP);
+      }
+      for (const name of ['AudioContext', 'webkitAudioContext']) {
+        const AC = win[name];
+        if (!AC || !AC.prototype || !AC.prototype.resume) continue;
+        const origResume = AC.prototype.resume;
+        AC.prototype.resume = expFn(function () {
+          if (blockSounds && !justTapped()) return win.Promise.resolve();
+          return origResume.apply(this, arguments);
+        }, AC.prototype);
+      }
+    } catch (e) { /* the page's audio is left as it is */ }
 
     const origFetch = win.fetch.bind(win);
     const state = { headers: {}, apiBase: 'https://api.miniapps.ai' };
@@ -599,6 +635,7 @@
     hideHelpers: true, // leave Story Manager's helper chats out of MiniApps' chat lists
     autoEnable: true, // manage new chats automatically
     newFormat: 'facts', // memory format for new stories: 'facts' or 'classic'
+    blockSounds: true, // keep MiniApps' own sounds from taking the phone's audio
     buttonSide: 'right',
   };
 
@@ -1262,6 +1299,14 @@
     scheduleSync();
   }
   let notHelpers = []; // chats the user said are theirs (synced, so other devices forget them too)
+
+  // The page part reads this at once when the page loads (before the
+  // script's own storage is ready), and hears changes as an event.
+  function publishSounds() {
+    const v = settings.blockSounds === false ? '0' : '1';
+    try { localStorage.setItem('smx:blockSounds', v); } catch (e) { /* private mode etc. */ }
+    document.dispatchEvent(new CustomEvent('smx:sounds', { detail: v }));
+  }
 
   function publishHidden() {
     const ids = settings.hideHelpers === false ? [] : [...new Set(helperAll.concat([...helperIds], helperRequests))].filter((h) => !notHelpers.includes(h));
@@ -4091,6 +4136,7 @@
 
   const ready = (async () => {
     settings = Object.assign({}, DEFAULT_SETTINGS, await Store.get('settings', {}));
+    publishSounds();
     // Each attached block stays in the chat for good, and MiniApps sends the
     // whole chat to the AI: attach less, less often (once, for old settings).
     if (!settings.attachSet) {
@@ -5566,6 +5612,8 @@
     f.hideHelpers.checked = s.hideHelpers !== false;
     f.autoEnable = el('input', { type: 'checkbox', id: 'smx-auto' });
     f.autoEnable.checked = s.autoEnable;
+    f.blockSounds = el('input', { type: 'checkbox', id: 'smx-sounds' });
+    f.blockSounds.checked = s.blockSounds !== false;
     f.newFormat = el('select', {}, el('option', { value: 'facts' }, 'Facts (new): characters built from facts'), el('option', { value: 'classic' }, 'Classic'));
     f.newFormat.value = s.newFormat === 'classic' ? 'classic' : 'facts';
     f.buttonSide = el('select', {},
@@ -5614,6 +5662,7 @@
       attachSet: true,
       autoEnable: f.autoEnable.checked,
       newFormat: f.newFormat.value,
+      blockSounds: f.blockSounds.checked,
       hideHelpers: f.hideHelpers.checked,
       githubToken: f.githubToken.value.trim(),
       // A different token may belong to another GitHub account: find its gist again.
@@ -5625,6 +5674,7 @@
 
     const save = async () => {
       settings = Object.assign({}, DEFAULT_SETTINGS, collect());
+      publishSounds();
       toolCache = null;
       await Store.set('settings', settings);
       ui.fab.className = 'fab ' + settings.buttonSide;
@@ -5693,6 +5743,8 @@
       el('div', { class: 'row' }, f.hideHelpers, el('label', { for: 'smx-hide' }, 'Hide the helper chats from MiniApps\' chat lists')),
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),
       el('label', {}, 'Memory format for new stories'), f.newFormat,
+      el('div', { class: 'row' }, f.blockSounds, el('label', { for: 'smx-sounds' }, 'Block MiniApps\' own sounds (so your music is not paused)')),
+      el('div', { class: 'hint' }, 'Stops MiniApps\' ringtones and notification sounds, and keeps its audio channel off until you tap something. Turn off if a MiniApps voice feature stops working.'),
       el('label', {}, 'Button position'), f.buttonSide,
       el('div', { class: 'btns' },
         el('button', { class: 'btn primary', onclick: save }, 'Save settings'),

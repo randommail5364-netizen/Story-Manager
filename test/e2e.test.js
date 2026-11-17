@@ -1744,6 +1744,29 @@ async function main() {
     'facts the user added are kept; old removals (by position) are cleared');
   check(r53.portraits && r53.portraits.mira && !/old portrait/.test(r53.portraits.mira.text), 'portraits are written fresh from the new facts');
 
+  console.log('54) MiniApps\' own sounds do not take the phone\'s audio (unless turned off)');
+  const sound = () => page.evaluate(async () => {
+    const a = new Audio('https://miniapps.ai/sounds/ringtones/ringtone2.mp3');
+    let played = false;
+    try { await a.play(); played = !a.paused; } catch (e) { played = 'error'; }
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.suspend();
+    await ctx.resume();
+    const state = ctx.state;
+    await ctx.close();
+    return { muted: a.muted, played, state };
+  });
+  const on54 = await sound();
+  check(on54.muted === true && on54.played === false && on54.state === 'suspended', 'a MiniApps ringtone is not played, and an audio channel stays off without a tap');
+  await page.locator('#msg').click();
+  const tapped = await page.evaluate(async () => { const ctx = new AudioContext(); await ctx.suspend(); await ctx.resume(); const st = ctx.state; await ctx.close(); return st; });
+  check(tapped === 'running', 'right after the user taps, an audio channel can start (voice features still work)');
+  await page.evaluate(() => { const st = JSON.parse(localStorage.getItem('smx:settings')); st.blockSounds = false; localStorage.setItem('smx:settings', JSON.stringify(st)); });
+  await page.reload();
+  await page.waitForTimeout(1500);
+  const off54 = await sound();
+  check(off54.muted === false, 'with the setting off, MiniApps\' sounds are left alone');
+
   await browser.close();
   console.log('\nAll checks passed.');
 }

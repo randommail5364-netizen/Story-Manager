@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.26.0
+// @version      3.26.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -923,7 +923,8 @@
         sync.at = Date.now();
         sync.error = '';
         if (loaded) { if (currentId && remote[currentId]) toast('Loaded the newer memory from your other device'); renderPanel(); }
-        if (settingsLoaded) { toast('Loaded your settings from your other device'); renderPanel(); }
+        // Redrawn at once, so the Settings form shows them (and cannot save the old values back).
+        if (settingsLoaded) { toast('Loaded your settings from your other device'); renderPanel(true); }
       } catch (e) {
         sync.state = 'error';
         sync.error = String(e.message || e).slice(0, 200);
@@ -5873,8 +5874,16 @@
       buttonSide: f.buttonSide.value,
     });
 
-    const save = async () => {
-      settings = Object.assign({}, DEFAULT_SETTINGS, collect(), { settingsAt: Date.now() });
+    // explicit: the "Save settings" button. Only a real change to a setting
+    // that follows the user between devices makes these the newest settings
+    // (or the first explicit save, so a device can share its settings once);
+    // "Sync now" and "Test connection" save too, but must not send the form's
+    // old values over settings that just came from the other device.
+    const save = async (explicit) => {
+      const next = Object.assign({}, DEFAULT_SETTINGS, collect());
+      const changed = SHARED_SETTINGS.some((k) => JSON.stringify(next[k]) !== JSON.stringify(settings[k]));
+      next.settingsAt = changed || (explicit === true && !settings.settingsAt) ? Date.now() : settings.settingsAt;
+      settings = next;
       publishSounds();
       scheduleSync(); // the settings follow to your other devices
       toolCache = null;
@@ -5949,7 +5958,7 @@
       el('div', { class: 'hint' }, 'Stops MiniApps\' ringtones and notification sounds, and keeps its audio channel off until you tap something. Turn off if a MiniApps voice feature stops working.'),
       el('label', {}, 'Button position'), f.buttonSide,
       el('div', { class: 'btns' },
-        el('button', { class: 'btn primary', onclick: save }, 'Save settings'),
+        el('button', { class: 'btn primary', onclick: () => save(true) }, 'Save settings'),
         el('button', { class: 'btn', onclick: test }, 'Test connection')),
       compareBox(),
       el('label', {}, 'Sync between your devices (GitHub)'), f.githubToken,

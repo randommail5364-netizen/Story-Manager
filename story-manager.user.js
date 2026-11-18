@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.29.0
+// @version      3.29.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4983,6 +4983,8 @@
   let ui = {};
   let tab = 'memory';
   let memTab = 'story'; // Memory: Story / Chapters / Characters
+  // Tests show all three at once (as before the tabs).
+  const allMemTabs = (() => { try { return localStorage.getItem('smx:allMemTabs') === '1'; } catch (e) { return false; } })();
 
   const CSS = `
     :host { all: initial; }
@@ -5478,14 +5480,14 @@
         } }, label)));
         return bar;
       })(),
-      el('div', { 'data-memtab': 'story', style: memTab === 'story' ? undefined : 'display:none' },
+      el('div', { 'data-memtab': 'story', style: memTab === 'story' || allMemTabs ? undefined : 'display:none' },
       el('label', {}, '📌 Pinned facts (never changed automatically, always sent)'),
       pinned,
       el('label', {}, '📖 The story now (current scene, open threads, world & timeline; always sent)'),
       mem,
       el('div', { class: 'hint' }, mem.value.length + ' characters.'),
       logView(chat)),
-      el('div', { 'data-memtab': 'chapters', style: memTab === 'chapters' ? undefined : 'display:none' },
+      el('div', { 'data-memtab': 'chapters', style: memTab === 'chapters' || allMemTabs ? undefined : 'display:none' },
       el('label', {}, '📚 Chapters (' + chat.chapters.length + ')'),
       el('div', { class: 'hint' }, chat.chapters.length && memoryInMessage(chat) && !chat.memoryMsgCut
         ? 'The story\'s history. Every chapter is in the pinned memory message in full.'
@@ -5493,7 +5495,7 @@
         ? 'The story\'s history. The newest chapters are sent in full, older ones by title once they no longer fit.'
         : 'Every ' + chapterSize() + ' AI replies become a chapter of the story\'s history.'),
       chapterEds.map((ed) => ed.node)),
-      el('div', { 'data-memtab': 'characters', style: memTab === 'characters' ? undefined : 'display:none' },
+      el('div', { 'data-memtab': 'characters', style: memTab === 'characters' || allMemTabs ? undefined : 'display:none' },
       factsMode(chat) ? secretsView(chat) : null,
       el('label', {}, '👥 Entries (' + chat.entries.length + ')'),
       el('div', { class: 'hint' }, chat.entries.length && memoryInMessage(chat) && !chat.memoryMsgCut

@@ -440,7 +440,7 @@ async function main() {
     } } });
   });
   // Shorter waits inside Story Manager (E2E_SLOW=1 runs at real speed), and a version like the userscript manager's.
-  await ctx.addInitScript((scale) => { localStorage.setItem('smx:timeScale', scale); window.GM_info = { script: { version: '9.9.9' } }; }, process.env.E2E_SLOW ? '1' : '0.25');
+  await ctx.addInitScript((scale) => { localStorage.setItem('smx:timeScale', scale); if (!sessionStorage.getItem('smx:realTabs')) localStorage.setItem('smx:allMemTabs', '1'); window.GM_info = { script: { version: '9.9.9' } }; }, process.env.E2E_SLOW ? '1' : '0.25');
   await ctx.addInitScript((s) => { if (!localStorage.getItem('smx:settings')) localStorage.setItem('smx:settings', JSON.stringify(s)); }, settings);
   // 'lateStart' simulates a userscript manager that starts the script only
   // after the site has already loaded the chat (seen on Firefox for Android).
@@ -1714,7 +1714,7 @@ async function main() {
   check(at('## Now\n### Current Scene') > 0 && at('## Now') < at('## Characters, places & things') && at('## Characters, places & things') < at('## World & turning points') &&
     at('### Mira (character)') < at('### Ash (character)'), 'the memory reads: Now → Characters (main ones first) → World & turning points');
   check(at('## Who knows what') > at('## Now') && at('## Who knows what') < at('## Characters, places & things') &&
-    /- \[the key\] hid the lost key in her satchel\n  Knows: Mira, Ash \(saw her hide it, reply \d+\) · Cover story: the key was lost in the river/.test(sent51),
+    /- \[the key\] Mira’s secret: hid the lost key in her satchel\n  Knows: Mira, Ash \(saw her hide it, reply \d+\) · Cover story: the key was lost in the river/.test(sent51),
     'the memory has "Who knows what" right after Now: who knows each secret (newest wins) and the cover story');
   // The user corrects who knows, in the panel.
   await waitFor(() => !factsConv.generating, 15000, 'idle');
@@ -1859,6 +1859,21 @@ async function main() {
   await page.waitForTimeout(1500);
   const off54 = await sound();
   check(off54.muted === false, 'with the setting off, MiniApps\' sounds are left alone');
+
+  console.log('55) The Memory panel has Story / Chapters / Characters tabs');
+  await page.evaluate(() => { sessionStorage.setItem('smx:realTabs', '1'); localStorage.removeItem('smx:allMemTabs'); });
+  await page.reload();
+  await page.waitForTimeout(1500);
+  await page.locator('#story-manager-root >> .fab').click();
+  await page.waitForTimeout(500);
+  const t55a = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/The story now/.test(t55a) && !/Entries \(/.test(t55a) && /Characters \(\d+\)/.test(t55a), 'the Story tab shows first; characters are on their own tab');
+  await page.locator('#story-manager-root >> nav.subtabs button', { hasText: 'Characters' }).click();
+  const t55b = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/Entries \(/.test(t55b) && !/The story now/.test(t55b) && /Save/.test(t55b), 'the Characters tab shows the entries; Save is still there');
+  await page.locator('#story-manager-root >> nav.subtabs button', { hasText: 'Chapters' }).click();
+  const t55c = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/📚 Chapters \(/.test(t55c) && !/Entries \(/.test(t55c), 'the Chapters tab shows the chapters');
 
   await browser.close();
   console.log('\nAll checks passed.');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.29.1
+// @version      3.29.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -585,28 +585,32 @@
     return Promise.race([promise, new Promise((resolve, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
   }
 
+  // Saved data lives in Tampermonkey's storage. It is never swapped for the
+  // browser's own storage (an old copy there once made a story look like a
+  // helper chat and turned sync off): a slow read is waited for and tried
+  // again; if it still fails, nothing is saved this visit and the panel says
+  // to reload, so the real data is never overwritten with defaults.
+  let storageFailed = '';
   const Store = {
     async get(key, def) {
-      try {
-        let raw;
-        try {
-          if (hasGM) raw = await withTimeout(GM.getValue(key), 3000);
-          else if (hasGMLegacy) raw = GM_getValue(key);
-          else raw = localStorage.getItem('smx:' + key);
-        } catch (e) {
-          if (!hasGM && !hasGMLegacy) throw e;
-          console.warn('[Story Manager] userscript storage failed, using browser storage', e);
-          hasGM = hasGMLegacy = false;
-          raw = localStorage.getItem('smx:' + key);
+      let raw;
+      if (hasGM) {
+        for (let attempt = 1; ; attempt++) {
+          try { raw = await withTimeout(GM.getValue(key), 15000); break; }
+          catch (e) {
+            if (attempt >= 3) { storageFailed = 'could not read "' + key + '" from Tampermonkey (' + String(e.message || e) + ')'; console.warn('[Story Manager] ' + storageFailed); return def; }
+          }
         }
-        if (raw === undefined || raw === null) return def;
-        return typeof raw === 'string' ? JSON.parse(raw) : raw;
-      } catch (e) { return def; }
+      } else if (hasGMLegacy) raw = GM_getValue(key);
+      else raw = localStorage.getItem('smx:' + key);
+      if (raw === undefined || raw === null) return def;
+      try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return def; }
     },
     async set(key, value) {
+      if (storageFailed) return; // never overwrite the real data with what a failed read gave
       const raw = JSON.stringify(value);
       try {
-        if (hasGM) await withTimeout(GM.setValue(key, raw), 3000);
+        if (hasGM) await withTimeout(GM.setValue(key, raw), 15000);
         else if (hasGMLegacy) GM_setValue(key, raw);
         else localStorage.setItem('smx:' + key, raw);
       } catch (e) { console.warn('[Story Manager] could not save', e); }
@@ -845,6 +849,7 @@
 
   // Loads newer chats from the gist, then saves chats changed here.
   async function runSync() {
+    if (storageFailed) return; // saved data could not be read: never upload or load over it
     if (!settings.githubToken || !settings.githubToken.trim()) { sync.state = 'off'; return; }
     if (sync.running) return sync.running;
     sync.running = (async () => {
@@ -5179,6 +5184,7 @@
   }
 
   function memoryView() {
+    if (storageFailed) return el('div', { class: 'status' }, el('div', { class: 'error' }, '⚠ Story Manager could not read its saved data from Tampermonkey this time, so it is paused to keep your memory safe. Reload the page.'));
     // The page shows a helper chat (Story Manager never makes those "current").
     const onPage = ((location.href.match(UUID_RE) || [])[0] || '').toLowerCase();
     const chat = onPage && helperIds.has(onPage) ? (chats[onPage] || newChat(onPage)) : currentId && chats[currentId];
@@ -5843,6 +5849,7 @@
           (helperWait.readOk ? '' : ', last read failed') + ', answer ' + helperWait.answerChars + ' chars' +
           (helperWait.done ? ', done' : '') +
           ', bot last active ' + (helperWait.lastActivity ? Math.round((Date.now() - helperWait.lastActivity) / 1000) + 's ago' : 'never') : ''),
+      'Storage: ' + (storageFailed ? 'FAILED — ' + storageFailed + '; nothing is saved until you reload' : hasGM ? 'Tampermonkey' : hasGMLegacy ? 'Tampermonkey (old style)' : 'browser') + '\n' +
       'Settings: saved here ' + (settings.settingsAt ? ago(settings.settingsAt) + ' (' + new Date(settings.settingsAt).toLocaleString() + ')' : 'never') +
         ' · on GitHub: ' + (!settings.githubToken ? 'sync off' : sync.remoteSettings ? 'saved ' + new Date(sync.remoteSettings.at).toLocaleString() + ', keeper ' + sync.remoteSettings.keeper : 'none yet') + '\n' +
       'Memory health: ' + (chat ? memoryHealth(chat) : 'no chat') + '\n' +

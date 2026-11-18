@@ -21,7 +21,7 @@ function grab(name) {
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
-const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
 const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment']
   .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
 
@@ -640,6 +640,32 @@ test('duplicates: a title before a name is the same person; near-identical posse
   assert.strictEqual(kind('CEO Lee'), 'character');
   assert.strictEqual(kind('Dispatch'), 'group');
   assert.strictEqual(kind('IVE'), 'group');
+});
+
+test('pinned version: relationships in one line, no "before" histories; minor characters in a few lines', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const log = [];
+  for (let i = 1; i <= 8; i++) log.push(R(i, ['- Jacek | relationship: Winter | ' + ['kissed', 'dated', 'argued', 'reconciled', 'travelled', 'cooked', 'painted', 'danced'][i - 1] + ' together scene number ' + i, '- Jacek | where things stand: Winter | state ' + i, '- Jacek | role | job ' + i]));
+  log.push(R(9, ['- Irene | role | leader of Red Velvet', '- Irene | relationship: Jacek | dating for four years', '- Irene | where things stand: Jacek | trusting partners', '- Irene | appearance | tall', '- Irene | key moment | washed his hair one evening']));
+  const e = lib.buildEntries({ ignored: [], entries: [], log }).find((x) => x.name === 'Jacek');
+  assert(/\(before:/.test(e.text) && !/\(before:/.test(e.pinText), e.pinText);
+  const line = e.pinText.split('\n').find((l) => l.startsWith('- Winter:'));
+  assert.strictEqual((line.match(/scene number/g) || []).length, 3, line);
+  assert(/Where things stand: state 8$/.test(line) && /Role: job 8$/m.test(e.pinText));
+  const irene = lib.buildEntries({ ignored: [], entries: [], log }).find((x) => x.name === 'Irene');
+  assert(/Role: leader of Red Velvet/.test(irene.miniText) && /- Jacek: trusting partners/.test(irene.miniText) && !/tall|washed/.test(irene.miniText), irene.miniText);
+});
+
+test('secrets: the same secret under different names becomes one', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const chat = { ignored: [], entries: [], log: [R(1, [
+    '- Giselle | secret | [giselle-ningning-fantasy] Masturbated to fantasies of being with Ningning while Jacek watched and directed',
+    '- Ningning | secret | [ningning-giselle-fantasy] Masturbated to fantasies of being with Giselle while Jacek watched and directed',
+    '- Ningning and Giselle | secret | [shared fantasies] Admitted masturbating to fantasies of being with Giselle while Jacek watched and directed',
+    '- Leeseo | secret | [crush] has a crush on a backup dancer named Minsoo'])] };
+  const sec = lib.buildSecrets(chat);
+  assert.strictEqual(sec.length, 2, sec.map((x) => x.name).join(', '));
+  assert.deepStrictEqual(sec[0].owners.sort(), ['Giselle', 'Ningning']);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

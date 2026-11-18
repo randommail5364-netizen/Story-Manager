@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.27.3
+// @version      3.28.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -977,12 +977,17 @@
   // from it when the message is sent, adding entries the message mentions.
   // The history for the storyteller: the newest chapters in full, older ones
   // by title only once they no longer fit.
+  // The newest chapters are in the pinned message in full; older ones short.
+  const FULL_CHAPTERS = 8;
+  const SHORTEN_PER_UPDATE = 6;
   function chaptersText(chat, budget) {
     const lines = [];
     let size = 0;
     for (let i = chat.chapters.length - 1; i >= 0; i--) {
       const c = chat.chapters[i];
-      const full = 'Chapter ' + (i + 1) + ': ' + c.title + '\n' + c.text;
+      // Older chapters: their short version (the full one stays stored).
+      const old = c.short && i < chat.chapters.length - FULL_CHAPTERS && settings.momentsShown !== 'all';
+      const full = 'Chapter ' + (i + 1) + ': ' + c.title + '\n' + (old ? c.short : c.text);
       const short = 'Chapter ' + (i + 1) + ': ' + c.title;
       const t = size + full.length <= budget ? full : short;
       lines.unshift(t);
@@ -1039,7 +1044,15 @@
     const inPlay = new Set(entriesInPlay(chat));
     const main = new Set(mainCharacters(chat));
     const order = chat.entries.slice().sort((a, b) => (main.has(b) - main.has(a)) || ((a.kind || 'character') === 'character' ? 0 : 1) - ((b.kind || 'character') === 'character' ? 0 : 1) || (b.records || 0) - (a.records || 0));
-    const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: settings.momentsShown !== 'all' && e.pinText ? e.pinText : e.text });
+    // The pinned message's shorter versions (the full entries stay stored):
+    // main characters and anyone in the current scene get the pinned version,
+    // other characters only their few lines (unless "All" is chosen in Settings).
+    const pinnedText = (e) => {
+      if (settings.momentsShown === 'all') return e.text;
+      if (!main.has(e) && !inPlay.has(e) && e.miniText) return e.miniText;
+      return e.pinText || e.text;
+    };
+    const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: pinnedText(e) });
     const plan = {
       prefix: MEM_START + '\n(Background notes for story continuity. Use them silently; do not quote, mention or reply to them.)\n\n',
       suffix: '\n' + MEM_END,
@@ -1625,11 +1638,13 @@
     '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
     '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
       'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, nickname, key moment, major moment.',
-    '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are at this moment.',
+    '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are or what they did in this scene.',
+    '  "relationship: X" is a lasting fact about the two of them (dating, engaged, rivals, what they call each other), not a scene; a scene is a key moment. Outfits worn in a scene are not possessions.',
     '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
     '  "- Person | knows | [short name] how they found out" when someone learns, is told or overhears it; "- Person | does not know | [short name]" for someone it is kept from;',
     '  "- Everyone | knows | [short name]" when it comes out; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
-    '  A key moment is a short line saying what happened to or because of them in this reply. Use "major moment" instead when it changes the story or a relationship for good:',
+    '  A key moment is a short line saying what happened to or because of them in this reply that will matter later (it changes a relationship, a plan, a promise, what someone knows, or where they live or work).',
+    '  Small gestures, banter, chores, who slept where, texts and emojis are not key moments: leave them out. Use "major moment" instead when it changes the story or a relationship for good:',
     '  a first time, a confession, a promise or vow, a secret coming out, a break-up or making up, a new relationship, a move, a big decision. Routine scenes are "key moment".',
     '  A secret is something a character hides from someone in the story, always with what it is after its [short name]; an intimate scene is a key moment, not a secret.',
     '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
@@ -2480,6 +2495,9 @@
   const PLACEHOLDER_SUBJECT_RE = /^(the )?(setting|scene|location|world|story|timeline|narrator|narration|user|you|me|everyone|everybody|all|the group|group|others|them|they)$/i;
   // Key moments: how many of the newest always go into the pinned message.
   const MOMENTS_RECENT = 15;
+  // The pinned message: lasting facts per relationship, possessions.
+  const RELATION_FACTS = 3;
+  const POSSESSIONS_PINNED = 10;
   const STOP_WORDS = new Set('that this with from into their there they them then than were have been what when where which while about after before over under again just very also only your more most some such each other back down onto upon his her hers him she he it its the and for was are but not all any one two'.split(' '));
   function sigWords(t) {
     return new Set(normValue(t).split(' ').filter((w) => w.length > 3 && !STOP_WORDS.has(w) && !/^\d+$/.test(w)));
@@ -2505,7 +2523,7 @@
   const BIG_MOMENT_RE = /\b(first (time|kiss|date|night)|for the first time|confess(ed|ion|es)?|propos(ed|al)|engaged|married|wedding|pregnan|vow(ed|s)?|promis(ed|e)|reveal(ed|s)?|found out|discover(ed|s)|learn(ed|s|t) (that|about|the truth)|exposed|broke up|break-?up|made up|reconcil|forgave|betray|moved (in|out|to)|quit|fired|died|death|virginity|deflower|i love you|in love|claimed? (her|him|them) as|became (his|her|their)|agreed to|decided to|pact)\b/i;
   function importantMoment(chat, p, r, turning, weighty) {
     if (r.imp || r.manual || (chat.keptMoments || []).includes(r.id)) return true;
-    if (r.at !== Infinity && (p.records.some((x) => x.at === r.at && /^(promise|secret|stands)$/.test(x.k)) ||
+    if (r.at !== Infinity && (p.records.some((x) => x.at === r.at && /^(promise|secret)$/.test(x.k)) ||
       [p.name].concat(p.aliases).some((n) => weighty.has(n.toLowerCase() + '#' + r.at)))) return true;
     if (BIG_MOMENT_RE.test(r.v)) return true;
     const w = sigWords(r.v);
@@ -2562,7 +2580,7 @@
     // For choosing key moments: the turning points, and which replies brought a
     // promise, secret, change in who knows or in where things stand, per person.
     const turning = (sectionOf(chat.memory, 'World & Timeline').split(/turning points?:/i)[1] || '').split('\n').map((x) => sigWords(x)).filter((w) => w.size >= 2);
-    const weighty = new Set(allRecords(chat).filter((r) => /^(promise|secret|knows|notknows|stands)$/.test(r.k)).map((r) => r.s.toLowerCase() + '#' + r.at));
+    const weighty = new Set(allRecords(chat).filter((r) => /^(promise|secret|knows|notknows)$/.test(r.k)).map((r) => r.s.toLowerCase() + '#' + r.at));
     const built = people.filter((p) => !p.aliases.some((a) => skip.has(a.toLowerCase()))).map((p) => {
       const by = (k) => p.records.filter((r) => r.k === k);
       const uniq = (list) => {
@@ -2582,47 +2600,70 @@
         const older = uniq(list.slice(0, -1)).filter((r) => normValue(r.v) !== normValue(last.v));
         return last.v + (older.length ? ' (before: ' + older.map((r) => r.v + (r.at !== Infinity ? ', until reply ' + list[list.indexOf(r) + 1].at : '')).join('; ') + ')' : '');
       };
+      // L: the full entry (panel, storage). P: the pinned message's shorter
+      // version (no "before" histories, relationships in one line, important
+      // key moments). M: a minor character's few lines.
       const L = [];
-      const section = (title, lines) => { if (lines.length) L.push('### ' + title, ...lines); };
+      const P = [];
+      const M = [];
+      const section = (title, lines, pin = lines, mini) => {
+        if (lines.length) L.push('### ' + title, ...lines);
+        if (pin && pin.length) P.push('### ' + title, ...pin);
+        if (mini && mini.length) M.push('### ' + title, ...mini);
+      };
+      const now = (list) => (list.length ? list[list.length - 1].v : null);
       // "Who they are now": the keeper's short portrait of a main character.
       const portrait = (chat.portraits || {})[p.name.toLowerCase()];
       if (portrait && portrait.text) section('Who they are now', [portrait.text]);
-      const basics = [];
-      const fn = single(by('fullname')); if (fn) basics.push('- Full name: ' + fn);
-      const age = single(by('age')); if (age) basics.push('- Age: ' + age);
-      const role = single(by('role')); if (role) basics.push('- Role: ' + role);
-      const loc = single(by('location')); if (loc) basics.push('- Lives / based: ' + loc);
+      const basics = [], basicsNow = [];
+      const one = (label, k) => {
+        const v = single(by(k));
+        if (v) { basics.push('- ' + label + ': ' + v); basicsNow.push('- ' + label + ': ' + now(by(k))); }
+      };
+      one('Full name', 'fullname'); one('Age', 'age'); one('Role', 'role'); one('Lives / based', 'location');
       // "Status" is for things ("delivered"); for a person it is only the moment.
       const isPerson = by('type').length ? /character|person/i.test(single(by('type'))) : p.records.some((r) => /^(fullname|age|personality|relationship|stands|nickname)$/.test(r.k));
-      const st = single(by('status')); if (st && !isPerson) basics.push('- Status: ' + st);
-      basics.push(...uniq(by('basics')).map((r) => '- ' + r.v));
-      section('Basics', basics);
+      if (!isPerson) one('Status', 'status');
+      const extraBasics = uniq(by('basics')).map((r) => '- ' + r.v);
+      section('Basics', basics.concat(extraBasics), basicsNow.concat(extraBasics), basicsNow.concat(extraBasics.slice(-2)));
       section('Appearance', alike(uniq(by('appearance')), 0.75).map((r) => '- ' + r.v));
       section('Personality & Voice', uniq(by('personality')).map((r) => '- ' + r.v));
       section('Abilities & Skills', uniq(by('ability')).map((r) => '- ' + r.v));
       section('Likes, Dislikes & Boundaries', [].concat(uniq(by('likes')).map((r) => '- Likes: ' + r.v), uniq(by('dislikes')).map((r) => '- Dislikes: ' + r.v), uniq(by('boundary')).map((r) => '- Boundary: ' + r.v)));
       section('Backstory', uniq(by('backstory')).map((r) => '- ' + r.v));
-      // Relationships: one line per person, with where things stand now.
+      // Relationships: one line per person, with where things stand now. The
+      // pinned message keeps where things stand and the 3 newest lasting facts.
       const targets = [];
       for (const r of p.records) if ((r.k === 'relationship' || r.k === 'stands') && r.t && !targets.some((t) => t.toLowerCase() === r.t.toLowerCase())) targets.push(r.t);
-      section('Relationships', targets.map((t) => {
+      const rel = targets.map((t) => {
         const of = (k) => p.records.filter((r) => r.k === k && r.t.toLowerCase() === t.toLowerCase());
         const hist = uniq(of('relationship')).map((r) => r.v);
-        const now = single(of('stands'));
-        return '- ' + t + ': ' + hist.join('; ') + (now ? (hist.length ? '. ' : '') + 'Where things stand: ' + now : '');
-      }).concat(uniq(by('relationship').filter((r) => !r.t)).map((r) => '- ' + r.v)));
-      section('Possessions', alike(uniq(by('possession')), 0.5).map((r) => '- ' + r.v));
+        const full = single(of('stands'));
+        const last = now(of('stands'));
+        const short = alike(uniq(of('relationship')), 0.85).slice(-RELATION_FACTS).map((r) => r.v);
+        return {
+          full: '- ' + t + ': ' + hist.join('; ') + (full ? (hist.length ? '. ' : '') + 'Where things stand: ' + full : ''),
+          pin: '- ' + t + ': ' + (short.length ? short.join('; ') + (last ? '. ' : '') : '') + (last ? 'Where things stand: ' + last : ''),
+          mini: '- ' + t + ': ' + (last ? last : short.slice(-1).join('')),
+        };
+      });
+      const loose = uniq(by('relationship').filter((r) => !r.t));
+      section('Relationships', rel.map((x) => x.full).concat(loose.map((r) => '- ' + r.v)), rel.map((x) => x.pin).concat(loose.slice(-RELATION_FACTS).map((r) => '- ' + r.v)), rel.map((x) => x.mini));
+      const things = alike(uniq(by('possession')), 0.5);
+      section('Possessions', things.map((r) => '- ' + r.v), things.slice(-POSSESSIONS_PINNED).map((r) => '- ' + r.v));
       // What they know (from "Who knows what"): the secrets' short names.
       const knownNames = (chat.__secrets || []).filter((x) => x.knows.some((k) => k.who.toLowerCase() === p.name.toLowerCase() || p.aliases.some((a) => a.toLowerCase() === k.who.toLowerCase()))).map((x) => '[' + x.name + ']');
       const unknownNames = (chat.__secrets || []).filter((x) => x.notKnows.some((k) => k.who.toLowerCase() === p.name.toLowerCase())).map((x) => '[' + x.name + ']');
-      section('Goals, Promises & Secrets', [].concat(uniq(by('goal')).map((r) => '- Goal: ' + r.v), uniq(by('promise')).map((r) => '- Promise: ' + r.v), uniq(by('secret')).map((r) => '- Secret: ' + r.v),
-        knownNames.length ? ['- Knows: ' + knownNames.join(', ')] : [], unknownNames.length ? ['- Does NOT know: ' + unknownNames.join(', ')] : []));
+      const goals = [].concat(uniq(by('goal')).map((r) => '- Goal: ' + r.v), uniq(by('promise')).map((r) => '- Promise: ' + r.v), uniq(by('secret')).map((r) => '- Secret: ' + r.v),
+        knownNames.length ? ['- Knows: ' + knownNames.join(', ')] : [], unknownNames.length ? ['- Does NOT know: ' + unknownNames.join(', ')] : []);
+      section('Goals, Promises & Secrets', goals, goals, goals.filter((x) => /^- (Promise|Secret|Does NOT know)/.test(x)));
       const moments = uniq(by('moment'));
       const momentLine = (r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + r.v;
-      section('Key Moments', moments.map(momentLine));
       // The pinned message: the important moments and the newest ones (see importantMoment).
       const shown = moments.filter((r, i) => i >= moments.length - MOMENTS_RECENT || importantMoment(chat, p, r, turning, weighty));
-      const momentsShort = shown.length < moments.length ? ['(' + (moments.length - shown.length) + ' earlier routine moments are left out here; History covers them.)'].concat(shown.map(momentLine)) : null;
+      section('Key Moments', moments.map(momentLine),
+        (shown.length < moments.length ? ['(' + (moments.length - shown.length) + ' earlier routine moments are left out here; History covers them.)'] : []).concat(shown.map(momentLine)),
+        moments.filter((r) => importantMoment(chat, p, r, turning, weighty)).slice(-3).map(momentLine));
       section('Other', uniq(by('other')).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
       const typed = single(by('type'));
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
@@ -2631,13 +2672,9 @@
       const kind = kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase())
         : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : GROUP_HINT_RE.test(p.name + '\n' + L.join('\n')) || /^[A-Z0-9]{2,6}$/.test(p.name) ? 'group' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
-      let pinText;
-      if (momentsShort) {
-        const i = L.indexOf('### Key Moments');
-        const end = L.findIndex((x, j) => j > i && /^### /.test(x));
-        pinText = L.slice(0, i + 1).concat(momentsShort, end < 0 ? [] : L.slice(end)).join('\n');
-      }
-      return { name: p.name, kind, aliases: p.aliases, text: L.join('\n'), pinText, always: !!(old && old.always), updated: Date.now(), records: p.records.length, recordIds: p.records.map((r) => r.id), fromFacts: true };
+      const pinText = P.join('\n');
+      const miniText = M.join('\n');
+      return { name: p.name, kind, aliases: p.aliases, text: L.join('\n'), pinText: pinText !== L.join('\n') ? pinText : undefined, miniText, always: !!(old && old.always), updated: Date.now(), records: p.records.length, recordIds: p.records.map((r) => r.id), fromFacts: true };
     }).filter((e) => e.text.trim()); // an entry with nothing but its type says nothing
     // The tidy-up's nickname rules, applied here so built entries are already
     // tidy (otherwise every save would "clean" the same nickname again).
@@ -2693,12 +2730,29 @@
         }
       }
     }
+    // The same secret under different names ("[giselle-ningning-fantasy]",
+    // "[shared fantasies]"): one secret, with everyone from all of them.
+    for (let a = 0; a < secrets.length; a++) {
+      const wa = sigWords(secrets[a].text);
+      if (wa.size < 3) continue;
+      for (let b = secrets.length - 1; b > a; b--) {
+        const wb = sigWords(secrets[b].text);
+        if (wb.size < 3) continue;
+        let n = 0; for (const w of wa) if (wb.has(w)) n++;
+        if (n / Math.min(wa.size, wb.size) < 0.6) continue;
+        const x = secrets[a], y = secrets[b];
+        for (const [k, v] of y.people) { const prev = x.people.get(k); if (!prev || prev.at <= v.at) x.people.set(k, v); }
+        if (y.text.length > x.text.length) x.text = y.text;
+        x.cover = x.cover || y.cover;
+        secrets.splice(b, 1);
+      }
+    }
     // A secret that is only a label ("[car play]") says nothing to the story AI.
     return secrets.filter((x) => x.text && normValue(x.text) !== normValue(x.name)).map((x) => {
       const people = [...x.people.values()];
       const everyone = people.some((p) => p.knows && EVERYONE_RE.test(p.who));
       return {
-        name: x.name || x.text.split(/[.;,]/)[0].slice(0, 40),
+        name: x.name || x.text.split(/[.;,]/)[0].split(/\s+/).slice(0, 5).join(' '),
         text: x.text,
         owners: people.filter((p) => p.how === 'their secret').map((p) => p.who),
         everyone,
@@ -3947,7 +4001,7 @@
   async function writeChapters(chat, job) {
     for (;;) {
       const ready = chat.log.filter((e) => e.folded && e.chapter == null);
-      if (ready.length < chapterSize()) return;
+      if (ready.length < chapterSize()) break;
       const items = ready.slice(0, chapterSize());
       checkStop();
       const ch = await job('chapter', 'Wrote chapter ' + (chat.chapters.length + 1) + ' (' + replyRange(chat, items) + ')', () => makeChapter(chat, items));
@@ -3955,6 +4009,39 @@
       for (const e of items) e.chapter = chat.chapters.length - 1;
       await saveChat(chat);
       renderPanel();
+    }
+    await shortenChapters(chat, job);
+  }
+
+  // A short version of each older chapter for the pinned message: what still
+  // matters later, in a few sentences. Written once; a rewritten chapter gets
+  // a new one. A few per update, oldest first.
+  function shortChapterSystem() {
+    return [
+      'You are the continuity editor for a long-running interactive story / roleplay chat.',
+      'Your job now: shorten one CHAPTER of the story\'s history to what still matters later.',
+      '- Write 2 to 4 sentences (at most about 500 characters) of past-tense prose.',
+      '- Keep only what later chapters depend on: turning points, relationships that began, changed or ended, promises and vows, secrets made or revealed, moves, new characters, big decisions, and how the chapter ends.',
+      '- Leave out scene detail, banter, outfits and the details of intimate scenes (say only that they happened if it mattered).',
+      '- Use names. Never invent anything.',
+      'No commentary. Answer with the short version only.',
+    ].join('\n');
+  }
+  async function shortenChapters(chat, job) {
+    if (!factsMode(chat)) return;
+    let n = 0;
+    for (let i = 0; i < chat.chapters.length - FULL_CHAPTERS && n < SHORTEN_PER_UPDATE; i++) {
+      const c = chat.chapters[i];
+      if (c.short) continue;
+      checkStop();
+      const text = await job('chapter', 'Wrote the short version of chapter ' + (i + 1), async () => {
+        const out = squashRepeats(dropReasoning(cleanOutput(await callLLM(shortChapterSystem(), 'CHAPTER ' + (i + 1) + ': ' + c.title + '\n<<<\n' + c.text + '\n>>>\n\nJOB: SHORT CHAPTER. Write the short version now.')).trim()));
+        if (out.length < 60) throw new Error('the memory keeper gave an unusable short chapter');
+        return out.length < c.text.length ? out : c.text;
+      });
+      c.short = text;
+      n++;
+      await saveChat(chat);
     }
   }
 
@@ -4623,6 +4710,7 @@
   // that big, the next smaller size is used (and remembered).
   const MEMORY_MESSAGE_SIZES = [Infinity, 120000, 60000, 40000, 24000]; // Infinity: everything, in full
   let memoryMsgSize = MEMORY_MESSAGE_SIZES[0];
+  const tokensOf = (chars) => Math.round((chars || 0) / 3.5); // a rough estimate
   function memoryMessageText(chat) {
     const plan = buildPlan(chat, memoryMsgSize);
     if (!plan) return null;
@@ -5315,7 +5403,8 @@
         memoryInMessage(chat)
           ? el('div', {}, '📌 The memory lives in one pinned message, updated in place (', agoEl(chat, 'memoryMsgAt'), ')' +
             (pinnedUpToDate(chat) ? '' : ' — it is behind the memory and will be updated as soon as the story AI is idle') + '. The AI keeps it however long the chat gets, and new messages carry no memory.')
-          : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
+          : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.' +
+            (chat.memoryMsgChars ? ' Size: about ' + tokensOf(chat.memoryMsgChars).toLocaleString() + ' tokens' + (tokensOf(chat.memoryMsgChars) > 50000 ? ' ⚠ large: the story AI reads it together with the whole chat (DeepSeek reads at most about 164,000 tokens in all).' : '.') : '')) : null,
         chat.memoryMsgError && settings.memoryMessage && !memoryInMessage(chat) ? el('div', { class: 'error' }, '⚠ Could not update the pinned memory message (' + chat.memoryMsgError + '); the memory is attached to your messages instead.') : null,
         chat.pinError && settings.pinMemory ? el('div', { class: 'error' }, '⚠ Could not pin the memory message: ' + chat.pinError) : null,
         chat.memoryMsgCut && memoryInMessage(chat) && (chat.memoryMsgCut.left.length || chat.memoryMsgCut.shortened.length ||
@@ -5712,6 +5801,7 @@
       'Pinned memory message: ' + (!settings.pinMemory ? 'off' : chat && chat.pinnedMemoryId ? chat.pinnedMemoryId.slice(0, 8) : 'none yet') +
         (chat && memoryInMessage(chat) ? ' · holds the memory (updated ' + ago(chat.memoryMsgAt || 0) + ')' : '') +
         (chat && memoryInMessage(chat) ? (pinnedUpToDate(chat) ? ' · up to date' : ' · out of date, updates when the story AI is idle') : '') +
+        (chat && chat.memoryMsgChars ? ' · size ' + chat.memoryMsgChars.toLocaleString() + ' characters, about ' + tokensOf(chat.memoryMsgChars).toLocaleString() + ' tokens' : '') +
         (chat && chat.memoryMsgError ? ' · last update error: ' + chat.memoryMsgError : '') +
         (chat && chat.pinError ? ' · last pin error: ' + chat.pinError : ''),
       'Sync: ' + (sync.state === 'ok' ? 'last synced ' + ago(sync.at) : sync.state === 'error' ? 'error: ' + sync.error : 'off') +
@@ -5900,7 +5990,7 @@
     f.blockSounds.checked = s.blockSounds !== false;
     f.newFormat = el('select', {}, el('option', { value: 'facts' }, 'Facts (new): characters built from facts'), el('option', { value: 'classic' }, 'Classic'));
     f.newFormat.value = s.newFormat === 'classic' ? 'classic' : 'facts';
-    f.momentsShown = el('select', {}, el('option', { value: 'important' }, 'Important ones and the newest 15 (all stay stored)'), el('option', { value: 'all' }, 'All'));
+    f.momentsShown = el('select', {}, el('option', { value: 'important' }, 'Shortened: what matters for the story (everything stays stored)'), el('option', { value: 'all' }, 'Everything in full'));
     f.momentsShown.value = s.momentsShown === 'all' ? 'all' : 'important';
     f.buttonSide = el('select', {},
       el('option', { value: 'right' }, 'Bottom right'), el('option', { value: 'left' }, 'Bottom left'),
@@ -6038,7 +6128,7 @@
       el('div', { class: 'row' }, f.hideHelpers, el('label', { for: 'smx-hide' }, 'Hide the helper chats from MiniApps\' chat lists')),
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),
       el('label', {}, 'Memory format for new stories'), f.newFormat,
-      el('label', {}, 'Key moments in the pinned message'), f.momentsShown,
+      el('label', {}, 'Characters and history in the pinned message'), f.momentsShown,
       el('div', { class: 'row' }, f.blockSounds, el('label', { for: 'smx-sounds' }, 'Block MiniApps\' own sounds (so your music is not paused)')),
       el('div', { class: 'hint' }, 'Stops MiniApps\' ringtones and notification sounds, and keeps its audio channel off until you tap something. Turn off if a MiniApps voice feature stops working.'),
       el('label', {}, 'Button position'), f.buttonSide,

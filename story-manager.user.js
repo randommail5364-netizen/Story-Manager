@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.27.1
+// @version      3.27.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4468,6 +4468,22 @@
         error: String(text || '').slice(0, 200), code: first.code == null ? '' : String(first.code), at: Date.now(),
         helper: helperIds.has(String(chatOf).toLowerCase()),
       };
+      // The story AI could not read the chat plus the pinned memory: the pinned
+      // message is made smaller, by what was too much plus room for the chat to grow.
+      const over = String(text).match(/maximum context length is (\d+) tokens[\s\S]*?requested about (\d+)/i);
+      const c = chats[String(chatOf).toLowerCase()];
+      if (over && c && !lastChatError.helper && c.pinnedMemoryId && settings.memoryMessage && settings.pinMemory) {
+        const now = c.memoryMsgChars || 0;
+        const limit = Math.max(20000, Math.round(now - (Number(over[2]) - Number(over[1]) + 15000) * 3.5));
+        if (now && limit < now) {
+          c.pinLimit = limit;
+          logJob(c, { kind: 'pin', label: 'The story AI could read at most ' + Number(over[1]).toLocaleString() + ' tokens (asked for ' + Number(over[2]).toLocaleString() + '): the pinned memory message is made smaller (' + limit.toLocaleString() + ' characters, about ' + tokensOf(limit).toLocaleString() + ' tokens)', ok: false, ms: 0 });
+          toast('The chat plus the memory was too long for the story AI. The pinned memory is being made smaller — then regenerate the reply.', true);
+          c.memoryMsgHash = '';
+          await saveChat(c);
+          refreshMemoryMessage(c).catch(() => {});
+        }
+      }
       return;
     }
     // "cmd" = messages deleted (e.g. replaced by "edit and regenerate"),
@@ -4623,8 +4639,12 @@
   // that big, the next smaller size is used (and remembered).
   const MEMORY_MESSAGE_SIZES = [Infinity, 120000, 60000, 40000, 24000]; // Infinity: everything, in full
   let memoryMsgSize = MEMORY_MESSAGE_SIZES[0];
+  // The pinned message's size: what MiniApps accepts, and for each story what
+  // its AI can read along with the chat (learned from "maximum context length").
+  const pinSize = (chat) => Math.min(memoryMsgSize, chat.pinLimit || Infinity);
+  const tokensOf = (chars) => Math.round((chars || 0) / 3.5);
   function memoryMessageText(chat) {
-    const plan = buildPlan(chat, memoryMsgSize);
+    const plan = buildPlan(chat, pinSize(chat));
     if (!plan) return null;
     plan.fillAll = true;
     // The user's own text in this message is from when it was pinned: it was
@@ -4722,7 +4742,7 @@
       chat.memoryMsgAt = Date.now();
       chat.memoryMsgChars = text.length;
       // Smaller than everything: say what was kept and what was left out.
-      chat.memoryMsgCut = memoryMsgSize === Infinity ? null : Object.assign(describeCut(chat, text), { size: memoryMsgSize, chars: text.length,
+      chat.memoryMsgCut = pinSize(chat) === Infinity ? null : Object.assign(describeCut(chat, text), { size: pinSize(chat), limitByAI: !!chat.pinLimit, chars: text.length,
         error: chat.memoryMsgRefused ? chat.memoryMsgRefused.error : '', at: chat.memoryMsgRefused ? chat.memoryMsgRefused.at : 0 });
       if (memoryMsgSize === Infinity) chat.memoryMsgRefused = null;
       if (chat.memoryMsgCut && chat.memoryMsgCut.left.length + chat.memoryMsgCut.shortened.length + (chat.memoryMsgCut.chapters - chat.memoryMsgCut.chFull) > 0 && chat.memoryMsgRefused && Date.now() - chat.memoryMsgRefused.at < 120000) {
@@ -5315,7 +5335,9 @@
         memoryInMessage(chat)
           ? el('div', {}, '📌 The memory lives in one pinned message, updated in place (', agoEl(chat, 'memoryMsgAt'), ')' +
             (pinnedUpToDate(chat) ? '' : ' — it is behind the memory and will be updated as soon as the story AI is idle') + '. The AI keeps it however long the chat gets, and new messages carry no memory.')
-          : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.') : null,
+          : chat.pinnedMemoryId && settings.pinMemory ? el('div', {}, '📌 The newest memory message is pinned, so the AI keeps it however long the chat gets.' +
+            (chat.memoryMsgChars ? ' Size: about ' + tokensOf(chat.memoryMsgChars).toLocaleString() + ' tokens' + (tokensOf(chat.memoryMsgChars) > 60000 ? ' ⚠ large: many story AIs read about 128,000–164,000 tokens in all, chat included' : '') + '.' : '') +
+            (chat.pinLimit ? ' Limited to ' + chat.pinLimit.toLocaleString() + ' characters because the story AI ran out of room.' : '')) : null,
         chat.memoryMsgError && settings.memoryMessage && !memoryInMessage(chat) ? el('div', { class: 'error' }, '⚠ Could not update the pinned memory message (' + chat.memoryMsgError + '); the memory is attached to your messages instead.') : null,
         chat.pinError && settings.pinMemory ? el('div', { class: 'error' }, '⚠ Could not pin the memory message: ' + chat.pinError) : null,
         chat.memoryMsgCut && memoryInMessage(chat) && (chat.memoryMsgCut.left.length || chat.memoryMsgCut.shortened.length ||
@@ -5712,6 +5734,8 @@
       'Pinned memory message: ' + (!settings.pinMemory ? 'off' : chat && chat.pinnedMemoryId ? chat.pinnedMemoryId.slice(0, 8) : 'none yet') +
         (chat && memoryInMessage(chat) ? ' · holds the memory (updated ' + ago(chat.memoryMsgAt || 0) + ')' : '') +
         (chat && memoryInMessage(chat) ? (pinnedUpToDate(chat) ? ' · up to date' : ' · out of date, updates when the story AI is idle') : '') +
+        (chat && chat.memoryMsgChars ? ' · size ' + chat.memoryMsgChars.toLocaleString() + ' characters, about ' + tokensOf(chat.memoryMsgChars).toLocaleString() + ' tokens' : '') +
+        (chat && chat.pinLimit ? ' · limited to ' + chat.pinLimit.toLocaleString() + ' characters (the story AI ran out of room)' : '') +
         (chat && chat.memoryMsgError ? ' · last update error: ' + chat.memoryMsgError : '') +
         (chat && chat.pinError ? ' · last pin error: ' + chat.pinError : ''),
       'Sync: ' + (sync.state === 'ok' ? 'last synced ' + ago(sync.at) : sync.state === 'error' ? 'error: ' + sync.error : 'off') +

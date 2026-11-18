@@ -21,8 +21,8 @@ function grab(name) {
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
-const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
-const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText']
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
+const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment']
   .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
 
 let passed = 0;
@@ -595,6 +595,51 @@ test('who knows what: each secret is put together across replies; the newest rec
   chat.log.push(R(4, ['- Everyone | knows | [the office] the photos leaked']));
   const office2 = lib.buildSecrets(chat).find((x) => x.name === 'the office');
   assert(office2.everyone && !office2.notKnows.length);
+});
+
+test('pinned message: important key moments and the newest 15; the rest stays stored', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const log = [];
+  for (let i = 1; i <= 40; i++) log.push(R(i, ['- Jacek | key moment | routine scene number ' + i + ' at the studio']));
+  log[2] = R(3, ['- Jacek | major moment | took Giselle out on their first proper date']);
+  log[4] = R(5, ['- Jacek | key moment | made a sweeping confession of love to all four']);
+  log[6] = R(7, ['- Jacek | key moment | moved the penthouse furniture around', '- Jacek | promise | will take Winter to Kyoto']);
+  log[8] = R(9, ['- Jacek | key moment | dominated the IVE pair at the Inkigayo loading bay']);
+  const chat = { ignored: [], entries: [], keptMoments: ['r11#0'], memory: '## World & Timeline\nTurning points:\n- Reply 9: the IVE pair dominated at the Inkigayo loading bay; IVE joins the household', log };
+  const e = lib.buildEntries(chat).find((x) => x.name === 'Jacek');
+  assert.strictEqual((e.text.match(/^- \(reply/gm) || []).length, 40, 'every moment is stored');
+  const pin = e.pinText;
+  assert(pin && /earlier routine moments are left out/.test(pin), pin);
+  for (const n of [3, 5, 7, 9, 11]) assert(pin.includes('(reply ' + n + ')'), 'kept reply ' + n);
+  assert(!pin.includes('(reply 13)') && pin.includes('(reply 26)') && pin.includes('(reply 40)'), 'routine older ones out, newest 15 in');
+  assert(/### Possessions|### Key Moments/.test(pin));
+});
+
+test('secrets: a label alone is left out; whose secret it is is said', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const chat = { ignored: [], entries: [], log: [R(1, ['- Karina | secret | [car play]', '- Winter | does not know | [car play]', '- Karina | secret | [wants to be Jimin] sometimes wants to stop being Karina'])] };
+  const text = lib.secretsText(chat);
+  assert(!/car play/.test(text), text);
+  assert(/\[wants to be Jimin\] Karina’s secret: sometimes wants/.test(text), text);
+  const es = lib.buildEntries(chat);
+  assert(!/car play/.test(es.find((x) => x.name === 'Winter') ? es.find((x) => x.name === 'Winter').text : ''));
+});
+
+test('duplicates: a title before a name is the same person; near-identical possessions merge; groups', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const chat = { ignored: [], entries: [], log: [R(1, [
+    '- Park Ji-won | role | CFO of SM', '- CFO Park Ji-won | status | silenced and intimidated in the boardroom',
+    '- Giselle | possession | Obsidian cuff bracelet engraved \'Mine\'', '- Giselle | possession | Obsidian bracelet engraved \'Mine\' worn prominently', '- Giselle | possession | Black lace bikini',
+    '- CEO Lee | status | threatened with regulatory destruction', '- Dispatch | status | the tabloid was silenced by Jacek', '- IVE | status | two members tamed'])] };
+  const es = lib.buildEntries(chat);
+  assert(!es.some((x) => x.name === 'CFO Park Ji-won'), es.map((x) => x.name).join(', '));
+  const g = es.find((x) => x.name === 'Giselle').text;
+  assert.strictEqual((g.match(/bracelet/g) || []).length, 1, g);
+  assert(/bikini/.test(g));
+  const kind = (n) => (es.find((x) => x.name === n) || {}).kind;
+  assert.strictEqual(kind('CEO Lee'), 'character');
+  assert.strictEqual(kind('Dispatch'), 'group');
+  assert.strictEqual(kind('IVE'), 'group');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

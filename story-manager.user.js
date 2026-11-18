@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.26.5
+// @version      3.27.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -635,6 +635,7 @@
     hideHelpers: true, // leave Story Manager's helper chats out of MiniApps' chat lists
     autoEnable: true, // manage new chats automatically
     newFormat: 'facts', // memory format for new stories: 'facts' or 'classic'
+    momentsShown: 'important', // key moments in the pinned message: 'important' or 'all'
     blockSounds: true, // keep MiniApps' own sounds from taking the phone's audio
     buttonSide: 'right',
   };
@@ -743,7 +744,7 @@
     return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
       chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
       factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
-      chat.manualRecords, chat.hiddenRecords, chat.portraits]));
+      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments]));
   }
 
   async function saveChat(chat, fromSync) {
@@ -829,7 +830,7 @@
   // it works). The GitHub token, the button position and API keys stay on
   // each device.
   const SHARED_SETTINGS = ['provider', 'model', 'miniappsSlug', 'detail', 'holdBack', 'updateEvery', 'foldEvery', 'chapterSize', 'parallel', 'helperRotate',
-    'injectEvery', 'injectBudget', 'logAttach', 'pinMemory', 'memoryMessage', 'hideHelpers', 'autoEnable', 'newFormat', 'blockSounds'];
+    'injectEvery', 'injectBudget', 'logAttach', 'pinMemory', 'memoryMessage', 'hideHelpers', 'autoEnable', 'newFormat', 'blockSounds', 'momentsShown'];
   function sharedSettings() {
     const v = {};
     for (const k of SHARED_SETTINGS) if (settings[k] !== undefined) v[k] = settings[k];
@@ -1038,7 +1039,7 @@
     const inPlay = new Set(entriesInPlay(chat));
     const main = new Set(mainCharacters(chat));
     const order = chat.entries.slice().sort((a, b) => (main.has(b) - main.has(a)) || ((a.kind || 'character') === 'character' ? 0 : 1) - ((b.kind || 'character') === 'character' ? 0 : 1) || (b.records || 0) - (a.records || 0));
-    const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: e.text });
+    const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: settings.momentsShown !== 'all' && e.pinText ? e.pinText : e.text });
     const plan = {
       prefix: MEM_START + '\n(Background notes for story continuity. Use them silently; do not quote, mention or reply to them.)\n\n',
       suffix: '\n' + MEM_END,
@@ -1616,12 +1617,14 @@
     '- After each summary write FACTS: and then, one per line, the lasting facts this reply revealed or changed, as records: "- Subject | kind | fact".',
     '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
     '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
-      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, nickname, key moment.',
+      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, nickname, key moment, major moment.',
     '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are at this moment.',
     '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
     '  "- Person | knows | [short name] how they found out" when someone learns, is told or overhears it; "- Person | does not know | [short name]" for someone it is kept from;',
     '  "- Everyone | knows | [short name]" when it comes out; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
-    '  A key moment is a short line saying what happened to or because of them in this reply.',
+    '  A key moment is a short line saying what happened to or because of them in this reply. Use "major moment" instead when it changes the story or a relationship for good:',
+    '  a first time, a confession, a promise or vow, a secret coming out, a break-up or making up, a new relationship, a move, a big decision. Routine scenes are "key moment".',
+    '  A secret is something a character hides from someone in the story, always with what it is after its [short name]; an intimate scene is a key moment, not a secret.',
     '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
     '  One subject per record: never "Tiffany and Irene" — write a record for each of them. To say what a place or thing is, use kind "type" (place, item, group) or "basics". Write FACTS: none if there are none.',
     '  Example:',
@@ -2305,6 +2308,7 @@
     const n = String(name || '');
     if ((cast || []).some((c) => c.toLowerCase() === n.toLowerCase())) return 'character';
     if (text && PERSON_RE.test(text)) return 'character';
+    if (TITLE_RE.test(n) && /^\S+\s+[A-Z]/.test(n)) return 'character'; // "CEO Lee", "CFO Park Ji-won"
     if (ITEM_WORDS.test(n)) return 'item';
     // A place or group word as the first word of a name may be a surname ("Park Ji-won").
     const rest = n.replace(/^\S+\s*/, '');
@@ -2405,7 +2409,7 @@
     ['cover', /^(cover story|cover|public story|official story|what others are told|what outsiders are told|alibi)$/],
     ['goal', /^(goals?|plans?|wants|desires?|intentions?)$/],
     ['nickname', /^(nicknames?|alias(es)?|called|also known as|pet names?)$/],
-    ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?)$/],
+    ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?|(major|important|big|key major) (key )?moments?)$/],
   ];
   // Kinds that hold one value at a time: the newest is true, older ones are history.
   const SINGLE_KINDS = new Set(['fullname', 'age', 'role', 'type', 'status', 'location', 'stands']);
@@ -2440,7 +2444,9 @@
         out.push({ s, k: 'basics', t: '', v, label: 'basics' });
         continue;
       }
-      out.push({ s, k: k.kind, t: k.target, v, label: k.label });
+      const rec = { s, k: k.kind, t: k.target, v, label: k.label };
+      if (k.kind === 'moment' && /^(major|important|big|key major)\b|turning/.test(k.label)) rec.imp = true;
+      out.push(rec);
     }
     return out;
   }
@@ -2465,6 +2471,40 @@
   // Subjects that are not a person, place or thing of their own; the story's
   // World & Timeline section covers them.
   const PLACEHOLDER_SUBJECT_RE = /^(the )?(setting|scene|location|world|story|timeline|narrator|narration|user|you|me|everyone|everybody|all|the group|group|others|them|they)$/i;
+  // Key moments: how many of the newest always go into the pinned message.
+  const MOMENTS_RECENT = 15;
+  const STOP_WORDS = new Set('that this with from into their there they them then than were have been what when where which while about after before over under again just very also only your more most some such each other back down onto upon his her hers him she he it its the and for was are but not all any one two'.split(' '));
+  function sigWords(t) {
+    return new Set(normValue(t).split(' ').filter((w) => w.length > 3 && !STOP_WORDS.has(w) && !/^\d+$/.test(w)));
+  }
+  // Two facts that say the same thing in other words ("Obsidian cuff bracelet
+  // engraved 'Mine'" / "Obsidian bracelet engraved 'Mine' worn prominently"):
+  // the longer one is kept.
+  function alike(list, share) {
+    const kept = [];
+    for (const r of list) {
+      const w = sigWords(r.v);
+      const twin = kept.findIndex((x) => {
+        const o = sigWords(x.v);
+        let n = 0; for (const a of w) if (o.has(a)) n++;
+        return n >= 2 && n / Math.min(w.size, o.size) >= share;
+      });
+      if (twin < 0) kept.push(r);
+      else if (r.v.length > kept[twin].v.length) kept[twin] = Object.assign({}, r, { at: kept[twin].at });
+    }
+    return kept;
+  }
+  // Words that make a key moment important even when the keeper did not mark it.
+  const BIG_MOMENT_RE = /\b(first (time|kiss|date|night)|for the first time|confess(ed|ion|es)?|propos(ed|al)|engaged|married|wedding|pregnan|vow(ed|s)?|promis(ed|e)|reveal(ed|s)?|found out|discover(ed|s)|learn(ed|s|t) (that|about|the truth)|exposed|broke up|break-?up|made up|reconcil|forgave|betray|moved (in|out|to)|quit|fired|died|death|virginity|deflower|i love you|in love|claimed? (her|him|them) as|became (his|her|their)|agreed to|decided to|pact)\b/i;
+  function importantMoment(chat, p, r, turning, weighty) {
+    if (r.imp || r.manual || (chat.keptMoments || []).includes(r.id)) return true;
+    if (r.at !== Infinity && (p.records.some((x) => x.at === r.at && /^(promise|secret|stands)$/.test(x.k)) ||
+      [p.name].concat(p.aliases).some((n) => weighty.has(n.toLowerCase() + '#' + r.at)))) return true;
+    if (BIG_MOMENT_RE.test(r.v)) return true;
+    const w = sigWords(r.v);
+    return turning.some((t) => { let n = 0; for (const a of w) if (t.has(a)) n++; return n >= 3 || (n >= 2 && n / Math.min(w.size, t.size) >= 0.5); });
+  }
+  const GROUP_HINT_RE = /\b(magazine|tabloid|outlet|media|news|newspaper|label|girl group|boy group|idol group|company|agency|entertainment|corporation|firm|fund|brand|network|channel|team|band|crew)\b/i;
   const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
   function buildEntries(chat) {
@@ -2512,6 +2552,10 @@
       }
     }
     const before = new Map((chat.entries || []).map((e) => [e.name.toLowerCase(), e]));
+    // For choosing key moments: the turning points, and which replies brought a
+    // promise, secret, change in who knows or in where things stand, per person.
+    const turning = (sectionOf(chat.memory, 'World & Timeline').split(/turning points?:/i)[1] || '').split('\n').map((x) => sigWords(x)).filter((w) => w.size >= 2);
+    const weighty = new Set(allRecords(chat).filter((r) => /^(promise|secret|knows|notknows|stands)$/.test(r.k)).map((r) => r.s.toLowerCase() + '#' + r.at));
     const built = people.filter((p) => !p.aliases.some((a) => skip.has(a.toLowerCase()))).map((p) => {
       const by = (k) => p.records.filter((r) => r.k === k);
       const uniq = (list) => {
@@ -2546,7 +2590,7 @@
       const st = single(by('status')); if (st && !isPerson) basics.push('- Status: ' + st);
       basics.push(...uniq(by('basics')).map((r) => '- ' + r.v));
       section('Basics', basics);
-      section('Appearance', uniq(by('appearance')).map((r) => '- ' + r.v));
+      section('Appearance', alike(uniq(by('appearance')), 0.75).map((r) => '- ' + r.v));
       section('Personality & Voice', uniq(by('personality')).map((r) => '- ' + r.v));
       section('Abilities & Skills', uniq(by('ability')).map((r) => '- ' + r.v));
       section('Likes, Dislikes & Boundaries', [].concat(uniq(by('likes')).map((r) => '- Likes: ' + r.v), uniq(by('dislikes')).map((r) => '- Dislikes: ' + r.v), uniq(by('boundary')).map((r) => '- Boundary: ' + r.v)));
@@ -2560,22 +2604,33 @@
         const now = single(of('stands'));
         return '- ' + t + ': ' + hist.join('; ') + (now ? (hist.length ? '. ' : '') + 'Where things stand: ' + now : '');
       }).concat(uniq(by('relationship').filter((r) => !r.t)).map((r) => '- ' + r.v)));
-      section('Possessions', uniq(by('possession')).map((r) => '- ' + r.v));
+      section('Possessions', alike(uniq(by('possession')), 0.5).map((r) => '- ' + r.v));
       // What they know (from "Who knows what"): the secrets' short names.
       const knownNames = (chat.__secrets || []).filter((x) => x.knows.some((k) => k.who.toLowerCase() === p.name.toLowerCase() || p.aliases.some((a) => a.toLowerCase() === k.who.toLowerCase()))).map((x) => '[' + x.name + ']');
       const unknownNames = (chat.__secrets || []).filter((x) => x.notKnows.some((k) => k.who.toLowerCase() === p.name.toLowerCase())).map((x) => '[' + x.name + ']');
       section('Goals, Promises & Secrets', [].concat(uniq(by('goal')).map((r) => '- Goal: ' + r.v), uniq(by('promise')).map((r) => '- Promise: ' + r.v), uniq(by('secret')).map((r) => '- Secret: ' + r.v),
         knownNames.length ? ['- Knows: ' + knownNames.join(', ')] : [], unknownNames.length ? ['- Does NOT know: ' + unknownNames.join(', ')] : []));
-      section('Key Moments', uniq(by('moment')).map((r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + r.v));
+      const moments = uniq(by('moment'));
+      const momentLine = (r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + r.v;
+      section('Key Moments', moments.map(momentLine));
+      // The pinned message: the important moments and the newest ones (see importantMoment).
+      const shown = moments.filter((r, i) => i >= moments.length - MOMENTS_RECENT || importantMoment(chat, p, r, turning, weighty));
+      const momentsShort = shown.length < moments.length ? ['(' + (moments.length - shown.length) + ' earlier routine moments are left out here; History covers them.)'].concat(shown.map(momentLine)) : null;
       section('Other', uniq(by('other')).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
       const typed = single(by('type'));
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
       // Without a type: a person only if something personal is known about them.
       const personal = p.knowsOnly || p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory)$/.test(r.k));
       const kind = kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase())
-        : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
+        : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : GROUP_HINT_RE.test(p.name + '\n' + L.join('\n')) || /^[A-Z0-9]{2,6}$/.test(p.name) ? 'group' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
-      return { name: p.name, kind, aliases: p.aliases, text: L.join('\n'), always: !!(old && old.always), updated: Date.now(), records: p.records.length, recordIds: p.records.map((r) => r.id), fromFacts: true };
+      let pinText;
+      if (momentsShort) {
+        const i = L.indexOf('### Key Moments');
+        const end = L.findIndex((x, j) => j > i && /^### /.test(x));
+        pinText = L.slice(0, i + 1).concat(momentsShort, end < 0 ? [] : L.slice(end)).join('\n');
+      }
+      return { name: p.name, kind, aliases: p.aliases, text: L.join('\n'), pinText, always: !!(old && old.always), updated: Date.now(), records: p.records.length, recordIds: p.records.map((r) => r.id), fromFacts: true };
     }).filter((e) => e.text.trim()); // an entry with nothing but its type says nothing
     // The tidy-up's nickname rules, applied here so built entries are already
     // tidy (otherwise every save would "clean" the same nickname again).
@@ -2631,12 +2686,14 @@
         }
       }
     }
-    return secrets.filter((x) => x.text || x.people.size).map((x) => {
+    // A secret that is only a label ("[car play]") says nothing to the story AI.
+    return secrets.filter((x) => x.text && normValue(x.text) !== normValue(x.name)).map((x) => {
       const people = [...x.people.values()];
       const everyone = people.some((p) => p.knows && EVERYONE_RE.test(p.who));
       return {
         name: x.name || x.text.split(/[.;,]/)[0].slice(0, 40),
         text: x.text,
+        owners: people.filter((p) => p.how === 'their secret').map((p) => p.who),
         everyone,
         knows: people.filter((p) => p.knows && !EVERYONE_RE.test(p.who)),
         notKnows: everyone ? [] : people.filter((p) => !p.knows),
@@ -2648,7 +2705,7 @@
   function secretsText(chat) {
     return buildSecrets(chat).map((x) => {
       const knows = x.everyone ? 'everyone (no longer a secret)' : x.knows.map((p) => p.who + (p.how && p.how !== 'their secret' ? ' (' + p.how + (p.at !== Infinity ? ', reply ' + p.at : '') + ')' : '')).join(', ');
-      return '- [' + x.name + '] ' + (x.text || '') + '\n  Knows: ' + (knows || 'not recorded') +
+      return '- [' + x.name + '] ' + (x.owners && x.owners.length ? x.owners.join(' and ') + '’s secret: ' : '') + (x.text || '') + '\n  Knows: ' + (knows || 'not recorded') +
         (x.notKnows.length ? ' · Does NOT know: ' + x.notKnows.map((p) => p.who).join(', ') : '') +
         (x.cover ? ' · Cover story: ' + x.cover : '');
     }).join('\n');
@@ -2657,7 +2714,7 @@
   const factsMode = (chat) => chat && chat.format === 'facts';
 
   // "Choi" and "Ms. Choi" are the same person; "Mr. Kim" and "Ms. Kim" may not be.
-  const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|president)\.?\s+/i;
+  const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|cfo|coo|cto|cmo|chairman|chairwoman|chair|vp|president|executive|producer|coach|teacher|officer|detective|agent|captain)\.?\s+/i;
   function sameButTitle(a, b) {
     const ta = TITLE_RE.test(a);
     const tb = TITLE_RE.test(b);
@@ -5456,7 +5513,15 @@
       el('label', {}, 'What the AI reads (built from the facts below)'), text,
       el('label', {}, 'Facts (' + recs.length + ')'),
       el('div', { class: 'hint' }, ...recs.slice().reverse().map((r) => el('div', { class: 'row' },
-        el('span', {}, (r.label || r.k) + (r.t ? ': ' + r.t : '') + ' — ' + r.v + (r.manual ? ' (added by you)' : ' (reply ' + r.at + ')')),
+        el('span', {}, (r.label || r.k) + (r.t ? ': ' + r.t : '') + ' — ' + r.v + (r.manual ? ' (added by you)' : ' (reply ' + r.at + ')') + (r.k === 'moment' && r.imp ? ' · important' : '')),
+        r.k === 'moment' && !r.manual ? el('button', { class: 'btn', title: 'Always keep this moment in the pinned message', onclick: async () => {
+          const kept = new Set(chat.keptMoments || []);
+          if (kept.has(r.id)) kept.delete(r.id); else kept.add(r.id);
+          chat.keptMoments = [...kept];
+          e.open = true;
+          await saveChat(chat);
+          renderPanel(true);
+        } }, (chat.keptMoments || []).includes(r.id) ? 'Kept ✓' : 'Keep') : null,
         el('button', { class: 'btn', title: 'Remove this fact', onclick: async () => {
           chat.hiddenRecords = [...new Set((chat.hiddenRecords || []).concat(r.id))];
           e.open = true;
@@ -5828,6 +5893,8 @@
     f.blockSounds.checked = s.blockSounds !== false;
     f.newFormat = el('select', {}, el('option', { value: 'facts' }, 'Facts (new): characters built from facts'), el('option', { value: 'classic' }, 'Classic'));
     f.newFormat.value = s.newFormat === 'classic' ? 'classic' : 'facts';
+    f.momentsShown = el('select', {}, el('option', { value: 'important' }, 'Important ones and the newest 15 (all stay stored)'), el('option', { value: 'all' }, 'All'));
+    f.momentsShown.value = s.momentsShown === 'all' ? 'all' : 'important';
     f.buttonSide = el('select', {},
       el('option', { value: 'right' }, 'Bottom right'), el('option', { value: 'left' }, 'Bottom left'),
       el('option', { value: 'top-right' }, 'Top right'), el('option', { value: 'top-left' }, 'Top left'),
@@ -5874,6 +5941,7 @@
       attachSet: true,
       autoEnable: f.autoEnable.checked,
       newFormat: f.newFormat.value,
+      momentsShown: f.momentsShown.value,
       blockSounds: f.blockSounds.checked,
       hideHelpers: f.hideHelpers.checked,
       githubToken: f.githubToken.value.trim(),
@@ -5963,6 +6031,7 @@
       el('div', { class: 'row' }, f.hideHelpers, el('label', { for: 'smx-hide' }, 'Hide the helper chats from MiniApps\' chat lists')),
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),
       el('label', {}, 'Memory format for new stories'), f.newFormat,
+      el('label', {}, 'Key moments in the pinned message'), f.momentsShown,
       el('div', { class: 'row' }, f.blockSounds, el('label', { for: 'smx-sounds' }, 'Block MiniApps\' own sounds (so your music is not paused)')),
       el('div', { class: 'hint' }, 'Stops MiniApps\' ringtones and notification sounds, and keeps its audio channel off until you tap something. Turn off if a MiniApps voice feature stops working.'),
       el('label', {}, 'Button position'), f.buttonSide,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.27.0
+// @version      3.27.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1057,11 +1057,18 @@
   function publishInjectMap() {
     const map = {};
     const every = Number(settings.injectEvery) || 0;
-    if (every > 0) {
-      for (const id of Object.keys(chats)) {
-        const c = chats[id];
-        if (!c.enabled || memoryInMessage(c)) continue;
+    for (const id of Object.keys(chats)) {
+      const c = chats[id];
+      if (!c.enabled || memoryInMessage(c)) continue;
+      // No pinned memory message (none yet, or it was deleted when the user went
+      // back): the very next message carries the memory, so it can be pinned,
+      // whatever "attach the memory every N messages" says.
+      const needsPin = settings.memoryMessage && settings.pinMemory && !c.pinnedMemoryId;
+      if (!needsPin) {
+        if (!(every > 0)) continue;
         if (c.sentSinceInject > 0 && c.sentSinceInject < every) continue;
+      }
+      {
         const plan = buildPlan(c);
         if (plan) map[id] = plan;
       }

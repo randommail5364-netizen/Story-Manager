@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.28.1
+// @version      3.29.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4982,6 +4982,7 @@
   let root = null;
   let ui = {};
   let tab = 'memory';
+  let memTab = 'story'; // Memory: Story / Chapters / Characters
 
   const CSS = `
     :host { all: initial; }
@@ -5007,6 +5008,8 @@
     nav { display: flex; background: #20202b; }
     nav button { flex: 1; background: none; border: none; color: #aaa; padding: 10px; font-size: 14px; border-bottom: 2px solid transparent; }
     nav button.on { color: #fff; border-bottom-color: #7c6cff; }
+    nav.subtabs { margin: 8px 0 4px; border-radius: 6px; position: sticky; top: 0; z-index: 1; }
+    nav.subtabs button { padding: 8px 4px; font-size: 13px; }
     .body { flex: 1; overflow-y: auto; padding: 14px; -webkit-overflow-scrolling: touch; }
     label { display: block; margin: 12px 0 4px; color: #b9b9c6; font-size: 13px; }
     .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
@@ -5464,18 +5467,33 @@
         chat.continuedIn ? el('div', {}, 'This story continues in chat ' + chat.continuedIn.slice(0, 8) + '.') : null,
         chat.continuedFrom ? el('div', {}, 'Continued from chat ' + chat.continuedFrom.slice(0, 8) + ', with its memory.') : null),
       el('div', { class: 'row' }, enabled, el('label', { for: 'smx-en' }, 'Auto-manage this chat')),
+      // Story / Chapters / Characters, so there is less to scroll. All three are
+      // built (hidden ones too), so Save still saves everything.
+      (() => {
+        const views = [['story', '📖 Story'], ['chapters', '📚 Chapters (' + chat.chapters.length + ')'], ['characters', '👥 Characters (' + chat.entries.length + ')']];
+        const bar = el('nav', { class: 'subtabs' }, ...views.map(([k, label]) => el('button', { class: memTab === k ? 'on' : '', onclick: (ev) => {
+          memTab = k;
+          for (const b of bar.children) b.classList.toggle('on', b === ev.currentTarget);
+          for (const d of ui.body.querySelectorAll('[data-memtab]')) d.style.display = d.getAttribute('data-memtab') === k ? '' : 'none';
+        } }, label)));
+        return bar;
+      })(),
+      el('div', { 'data-memtab': 'story', style: memTab === 'story' ? undefined : 'display:none' },
       el('label', {}, '📌 Pinned facts (never changed automatically, always sent)'),
       pinned,
       el('label', {}, '📖 The story now (current scene, open threads, world & timeline; always sent)'),
       mem,
       el('div', { class: 'hint' }, mem.value.length + ' characters.'),
+      logView(chat)),
+      el('div', { 'data-memtab': 'chapters', style: memTab === 'chapters' ? undefined : 'display:none' },
       el('label', {}, '📚 Chapters (' + chat.chapters.length + ')'),
       el('div', { class: 'hint' }, chat.chapters.length && memoryInMessage(chat) && !chat.memoryMsgCut
         ? 'The story\'s history. Every chapter is in the pinned memory message in full.'
         : chat.chapters.length
         ? 'The story\'s history. The newest chapters are sent in full, older ones by title once they no longer fit.'
         : 'Every ' + chapterSize() + ' AI replies become a chapter of the story\'s history.'),
-      chapterEds.map((ed) => ed.node),
+      chapterEds.map((ed) => ed.node)),
+      el('div', { 'data-memtab': 'characters', style: memTab === 'characters' ? undefined : 'display:none' },
       factsMode(chat) ? secretsView(chat) : null,
       el('label', {}, '👥 Entries (' + chat.entries.length + ')'),
       el('div', { class: 'hint' }, chat.entries.length && memoryInMessage(chat) && !chat.memoryMsgCut
@@ -5486,8 +5504,7 @@
       editors.map((ed) => ed.node),
       el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: addEntry }, '+ Add entry')),
       chat.ignored.length ? el('div', { class: 'hint' }, 'Deleted, not created again: ' + chat.ignored.join(', ') + ' ',
-        el('button', { class: 'btn', onclick: async () => { chat.ignored = []; await saveChat(chat); renderPanel(true); } }, 'Allow again')) : null,
-      logView(chat),
+        el('button', { class: 'btn', onclick: async () => { chat.ignored = []; await saveChat(chat); renderPanel(true); } }, 'Allow again')) : null),
       el('div', { class: 'btns' },
         el('button', { class: 'btn primary', onclick: save }, 'Save'),
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(false) }, 'Update now'),

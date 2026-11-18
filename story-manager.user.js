@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.28.0
+// @version      3.28.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -3298,6 +3298,28 @@
     return todo.length;
   }
 
+  // "Shorten old chapters now" (all), and a few whenever a story is opened.
+  async function runShortenChapters(id, max) {
+    const chat = await getChat(id, true);
+    if (!chaptersToShorten(chat) || busy[id]) return 'nothing';
+    return withBusy(id, Math.min(max, chaptersToShorten(chat)), async () => {
+      const job = async (kind, label, fn) => {
+        const t0 = Date.now();
+        setStep(id, label + '…');
+        try { const r = await fn(); logJob(chat, { kind, label, ok: true, ms: Date.now() - t0 }); progress[id].done++; return r; }
+        catch (e) { if (!e.stopped) logJob(chat, { kind, label, ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) }); throw e; }
+      };
+      try {
+        await shortenChapters(chat, job, max);
+        return 'done';
+      } catch (e) {
+        await saveChat(chat);
+        if (max > SHORTEN_PER_UPDATE) toast(e.stopped ? 'Stopped. The short chapters written so far are kept.' : 'Could not shorten the chapters: ' + (e.message || e), !e.stopped);
+        return e.stopped ? 'stopped' : 'failed';
+      }
+    });
+  }
+
   async function runPortrait(id, name) {
     const chat = await getChat(id, true);
     return withBusy(id, 1, async () => {
@@ -4027,10 +4049,11 @@
       'No commentary. Answer with the short version only.',
     ].join('\n');
   }
-  async function shortenChapters(chat, job) {
-    if (!factsMode(chat)) return;
+  const chaptersToShorten = (chat) => (factsMode(chat) && settings.momentsShown !== 'all' ? chat.chapters.filter((c, i) => !c.short && i < chat.chapters.length - FULL_CHAPTERS).length : 0);
+  async function shortenChapters(chat, job, max = SHORTEN_PER_UPDATE) {
+    if (!factsMode(chat) || settings.momentsShown === 'all') return;
     let n = 0;
-    for (let i = 0; i < chat.chapters.length - FULL_CHAPTERS && n < SHORTEN_PER_UPDATE; i++) {
+    for (let i = 0; i < chat.chapters.length - FULL_CHAPTERS && n < max; i++) {
       const c = chat.chapters[i];
       if (c.short) continue;
       checkStop();
@@ -4938,6 +4961,9 @@
     runSync().catch(() => {}); // the other device may have a newer memory of this chat
     // After the sync (which may bring a newer memory), compare with the whole chat.
     setTimeout(() => ready.then(() => fullCheck(id)).catch(() => {}), 10000 * TIME_SCALE);
+    // Older chapters' short versions, a few each time a story is opened, so
+    // they do not wait for the next reply.
+    setTimeout(() => ready.then(() => { if (currentId === id && !anyBusy()) return runShortenChapters(id, SHORTEN_PER_UPDATE); }).catch(() => {}), 40000 * TIME_SCALE);
   }
 
   // Single-page app: also pick the chat id up from the address bar.
@@ -5489,6 +5515,14 @@
           const status = await runCheckChapters(chat.id, all);
           if (status === 'nothing') toast('No chapters with summaries to check.');
         } }, 'Check chapters'),
+        chaptersToShorten(chat) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          const n = chaptersToShorten(chat);
+          if (!confirm('Write the short version of ' + n + ' older chapter' + (n === 1 ? '' : 's') + ' for the pinned message now? About ' + n + ' requests. The full chapters stay stored.')) return;
+          await save(true);
+          const status = await runShortenChapters(chat.id, Infinity);
+          if (status === 'done') toast('Short chapters written. The pinned message updates in a few seconds.');
+        } }, 'Shorten old chapters now (' + chaptersToShorten(chat) + ')') : null,
         factsMode(chat) && chat.log.some((e) => !e.records && e.text) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           const n = chat.log.filter((e) => !e.records && e.text).length;

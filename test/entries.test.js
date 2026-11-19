@@ -21,9 +21,9 @@ function grab(name) {
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
-const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const MINOR_PINNED = .*\n/)[0] + src.match(/ {2}const ROUTINE_PINNED = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
-const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf']
-  .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const MINOR_PINNED = .*\n/)[0] + src.match(/ {2}const ROUTINE_PINNED = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const NOT_HOME_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
+const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'cleanChapterText']
+  .map(grab).join('\n') + '\nreturn { cleanChapterText, latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
@@ -698,6 +698,27 @@ test('relationships in the pinned message come from the list written at the end 
   const j = es.find((x) => x.name === 'Jacek'), w = es.find((x) => x.name === 'Winter');
   assert(/- Winter: dating — close and trusting/.test(j.pinText) && !/red scarf/.test(j.pinText) && /red scarf/.test(j.text), j.pinText);
   assert(/- Jacek: dating — close and trusting/.test(w.pinText) && /- Karina: bandmates/.test(w.pinText), w.pinText);
+});
+
+test('GPT review fixes: done goals leave the pinned message; secret names in any order; capital names are groups; places only; chapter format lines', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const log = [
+    R(1, ['- Yujin | goal | needs Jacek to provide a theme for the anniversary', '- Yujin | promise | will book the escape room in Gangnam', '- Leeseo | secret | [crush on Minsoo] has a crush on the backup dancer Minsoo', '- Jacek | location | penthouse on the top floor']),
+    R(2, ['- Yujin | done | anniversary theme provided by Jacek', '- Leeseo | secret | [minsoo-crush] wants to play PUBG with Minsoo', '- Jacek | location | left the master suite at 2:00 PM', '- BABYMONSTER | relationship: Jacek | trust him completely']),
+  ];
+  const chat = { ignored: [], entries: [], log };
+  const es = lib.buildEntries(chat);
+  const y = es.find((e) => e.name === 'Yujin');
+  assert(/Goal \(done, reply 2\): needs Jacek to provide a theme/.test(y.text), y.text);
+  assert(!/provide a theme/.test(y.pinText) && /Promise: will book the escape room/.test(y.pinText), y.pinText);
+  assert.strictEqual(lib.buildSecrets(chat).filter((x) => /Minsoo/.test(x.text)).length, 1, 'one Minsoo secret');
+  const le = es.find((e) => e.name === 'Leeseo');
+  assert.strictEqual((le.text.match(/- Secret:/g) || []).length, 1, le.text);
+  const j = es.find((e) => e.name === 'Jacek');
+  assert(/Lives \/ based: penthouse on the top floor/.test(j.text) && !/2:00 PM/.test(j.text), j.text);
+  assert.strictEqual(es.find((e) => e.name === 'BABYMONSTER').kind, 'group');
+  assert.strictEqual(lib.cleanChapterText('=== CHAPTER: The Eye (short) === On a fading evening, it began.\n=== CAST === Jacek, Wendy'), 'On a fading evening, it began.');
+  assert.strictEqual(lib.cleanChapterText('Karina continued her vow.\n=== CAST === Jacek, Karina'), 'Karina continued her vow.');
 });
 
 console.log('All ' + passed + ' entry checks passed.');

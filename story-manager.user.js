@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.31.0
+// @version      3.32.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -985,6 +985,11 @@
   // The newest chapters are in the pinned message in full; older ones short.
   const FULL_CHAPTERS = 8;
   const SHORTEN_PER_UPDATE = 6;
+  // The keeper's format lines ("=== CHAPTER: … ===", "=== CAST === …") are not
+  // part of a chapter: taken out when it is written, and from older ones here.
+  function cleanChapterText(t) {
+    return String(t || '').replace(/\n?[^\S\n]*=+[^\S\n]*CAST\b[\s\S]*$/i, '').replace(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*CHAPTER\b[^=\n]*=+[^\S\n]*/gim, '').trim();
+  }
   function chaptersText(chat, budget) {
     const lines = [];
     let size = 0;
@@ -992,7 +997,7 @@
       const c = chat.chapters[i];
       // Older chapters: their short version (the full one stays stored).
       const old = c.short && i < chat.chapters.length - FULL_CHAPTERS && settings.momentsShown !== 'all';
-      const full = 'Chapter ' + (i + 1) + ': ' + c.title + '\n' + (old ? c.short : c.text);
+      const full = 'Chapter ' + (i + 1) + ': ' + c.title + '\n' + cleanChapterText(old ? c.short : c.text);
       const short = 'Chapter ' + (i + 1) + ': ' + c.title;
       const t = size + full.length <= budget ? full : short;
       lines.unshift(t);
@@ -1650,12 +1655,14 @@
     '- After each summary write FACTS: and then, one per line, the lasting facts this reply revealed or changed, as records: "- Subject | kind | fact".',
     '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
     '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
-      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, nickname, turning point, major moment, minor moment, routine moment.',
+      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, done, nickname, turning point, major moment, minor moment, routine moment.',
     '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are or what they did in this scene.',
     '  "relationship: X" is a lasting fact about the two of them (dating, engaged, rivals, what they call each other), not a scene; a scene is a key moment. Outfits worn in a scene are not possessions.',
     '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
     '  "- Person | knows | [short name] how they found out" when someone learns, is told or overhears it; "- Person | does not know | [short name]" for someone it is kept from;',
-    '  "- Everyone | knows | [short name]" when it comes out; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
+    '  "- Everyone | knows | [short name]" when it comes out (e.g. confessed in the group chat); when someone is told or confesses it to someone, a knows record for each person who now knows; reuse the exact short name already used for that secret; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
+    '  "done": a goal, plan or promise of theirs that was carried out, kept, dropped or replaced in this reply: "- Person | done | the goal or promise, in a few of its words".',
+    '  Times: write the story day or date ("the day of the escape room", "Saturday"), never "today", "tomorrow" or "tonight" (they are wrong a day later).',
     '  Moments (a short line saying what happened to or because of them in this reply) have four levels; choose one:',
     '  "turning point": changes the whole story for good (a new or ended relationship, a secret coming out, a move, a death, a big decision). Rare: at most one every several replies.',
     '  "major moment": matters for this character later (a first time, a confession, a promise or vow, a fight or making up, something they will remember).',
@@ -1707,7 +1714,7 @@
       'STORY rules:',
       '- Every line of every entry must be a fact in the entry format ("### Heading", "- bullet", or "Label: value"). Never write your working-out (which fact goes where, what is already covered, what you will output).',
       '- ## Current Scene must describe the situation after the NEWEST event (later events override earlier ones, e.g. a punishment that was changed). Rewrite it fully each time it changes; never keep outdated parts.',
-      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (only what is still unresolved: plans, promises, mysteries, things that must be followed up — remove a thread once it is resolved; never finished events, never what someone is doing right now (that is the Current Scene), never secrets (they are kept separately, with who knows them)), ## World & Timeline (world rules, the date and time, how much time has passed, important background, and "Turning points:").',
+      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (only what is still unresolved: plans, promises, mysteries, things that must be followed up — remove a thread once it is resolved; never finished events, never what someone is doing right now (that is the Current Scene), never secrets (they are kept separately, with who knows them)), ## World & Timeline (world rules, the date and time (name days and times as the story does, never just "tomorrow" — it is wrong a day later), how much time has passed, important background, and "Turning points:").',
       '- "Turning points:" in ## World & Timeline is a short list of the story\'s major turning points, oldest first, one line each with when it happened and what changed because of it (a new relationship, a secret revealed, a move, a falling-out and its repair). Keep every earlier one and add new ones; this list may make the section longer than the others.',
       '- Output only the sections that change, each as === SECTION: Name === followed by its complete new text, keeping every fact that is still true. Leave out sections that did not change. If a section is empty, write it in full.',
       '- Keep each section short, at most about 1,500 characters (World & Timeline may be longer for its turning points): it is sent with every message. What happened belongs in the history (chapters), details about characters, places and items in their entries.',
@@ -2145,7 +2152,7 @@
     checkStop();
     const m = out.match(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*CHAPTER\b[^\S\n]*:?([^\n=]*?)[^\S\n]*=+[^\n]*$/im);
     const title = (m ? m[1] : '').replace(/^\s*\d+\s*[:.–—-]\s*/, '').replace(/[*_#]/g, '').trim();
-    const text = squashRepeats(dropReasoning((m ? out.slice(m.index + m[0].length) : out).trim()));
+    const text = cleanChapterText(squashRepeats(dropReasoning((m ? out.slice(m.index + m[0].length) : out).trim())));
     if (text.length < 80) throw new Error('Memory keeper gave an unusable chapter: "' + out.slice(0, 120) + '"');
     return { title: title || 'Chapter ' + n, text, ids: items.map((e) => e.id) };
   }
@@ -2445,6 +2452,7 @@
     ['knows', /^(knows|knows about|is aware of|aware of|learned|found out|was told|overheard|discovered|in on)$/],
     ['cover', /^(cover story|cover|public story|official story|what others are told|what outsiders are told|alibi)$/],
     ['goal', /^(goals?|plans?|wants|desires?|intentions?)$/],
+    ['done', /^(done|completed|complete|kept|fulfilled|dropped|cancelled|canceled|resolved|goal done|promise kept|no longer|finished)$/],
     ['nickname', /^(nicknames?|alias(es)?|called|also known as|pet names?)$/],
     ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?|(major|important|big|key major|minor|routine|small) (key )?moments?)$/],
   ];
@@ -2564,6 +2572,7 @@
     const w = sigWords(r.v);
     return turning.some((t) => { let n = 0; for (const a of w) if (t.has(a)) n++; return n >= 3 || (n >= 2 && n / Math.min(w.size, t.size) >= 0.5); });
   }
+  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently)\b/i;
   const GROUP_HINT_RE = /\b(magazine|tabloid|outlet|media|news|newspaper|label|girl group|boy group|idol group|company|agency|entertainment|corporation|firm|fund|brand|network|channel|team|band|crew)\b/i;
   const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
@@ -2657,7 +2666,10 @@
         const v = single(by(k));
         if (v) { basics.push('- ' + label + ': ' + v); basicsNow.push('- ' + label + ': ' + now(by(k))); }
       };
-      one('Full name', 'fullname'); one('Age', 'age'); one('Role', 'role'); one('Lives / based', 'location');
+      one('Full name', 'fullname'); one('Age', 'age'); one('Role', 'role');
+      // "Lives / based" is a place, not where they went at some moment.
+      p.records = p.records.filter((r) => r.k !== 'location' || !NOT_HOME_RE.test(r.v));
+      one('Lives / based', 'location');
       // "Status" is for things ("delivered"); for a person it is only the moment.
       const isPerson = by('type').length ? /character|person/i.test(single(by('type'))) : p.records.some((r) => /^(fullname|age|personality|relationship|stands|nickname)$/.test(r.k));
       if (!isPerson) one('Status', 'status');
@@ -2695,9 +2707,20 @@
       // What they know (from "Who knows what"): the secrets' short names.
       const knownNames = (chat.__secrets || []).filter((x) => x.knows.some((k) => k.who.toLowerCase() === p.name.toLowerCase() || p.aliases.some((a) => a.toLowerCase() === k.who.toLowerCase()))).map((x) => '[' + x.name + ']');
       const unknownNames = (chat.__secrets || []).filter((x) => x.notKnows.some((k) => k.who.toLowerCase() === p.name.toLowerCase())).map((x) => '[' + x.name + ']');
-      const goals = [].concat(uniq(by('goal')).map((r) => '- Goal: ' + r.v), uniq(by('promise')).map((r) => '- Promise: ' + r.v), uniq(by('secret')).map((r) => '- Secret: ' + r.v),
+      // A goal or promise marked done later (a "done" record) leaves the pinned
+      // message; the full entry keeps it, marked done.
+      const dones = by('done');
+      const doneAt = (r) => { const w = sigWords(r.v); const d = dones.find((x) => x.at >= r.at && (() => { const o = sigWords(x.v); let n = 0; for (const a of w) if (o.has(a)) n++; return n >= 2 && n / Math.min(w.size, o.size) >= 0.5; })()); return d ? d.at : 0; };
+      const gp = [].concat(uniq(by('goal')).map((r) => ['Goal', r]), uniq(by('promise')).map((r) => ['Promise', r]));
+      const gpLine = ([k, r], mark) => { const d = doneAt(r); return mark && d ? '- ' + k + ' (done' + (d !== Infinity ? ', reply ' + d : '') + '): ' + r.v : '- ' + k + ': ' + r.v; };
+      // Their secrets, once each (merged in "Who knows what").
+      const ownSecrets = (chat.__secrets || []).filter((x) => (x.owners || []).some((o) => [p.name].concat(p.aliases).some((n) => n.toLowerCase() === o.toLowerCase())))
+        .map((x) => '- Secret: [' + x.name + '] ' + x.text);
+      const secretLines = ownSecrets.length ? ownSecrets : uniq(by('secret')).map((r) => '- Secret: ' + r.v);
+      const goals = [].concat(gp.map((x) => gpLine(x, true)), secretLines,
         knownNames.length ? ['- Knows: ' + knownNames.join(', ')] : [], unknownNames.length ? ['- Does NOT know: ' + unknownNames.join(', ')] : []);
-      section('Goals, Promises & Secrets', goals, goals, goals.filter((x) => /^- (Promise|Secret|Does NOT know)/.test(x)));
+      const openGoals = [].concat(gp.filter(([, r]) => !doneAt(r)).map((x) => gpLine(x, false)), goals.slice(gp.length));
+      section('Goals, Promises & Secrets', goals, openGoals, openGoals.filter((x) => /^- (Promise|Secret|Does NOT know)/.test(x)));
       const moments = uniq(by('moment'));
       const momentLine = (r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + (r.tier === 'turning' ? 'Turning point: ' : '') + r.v;
       // The pinned message: turning points, major moments and the ones the user
@@ -2715,7 +2738,9 @@
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
       // Without a type: a person only if something personal is known about them.
       const personal = p.knowsOnly || p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory)$/.test(r.k));
-      const kind = kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase())
+      // A name in capitals ("BABYMONSTER", "IVE") is a group, even with personal facts.
+      const capsGroup = /^[A-Z0-9()&' -]{3,20}$/.test(p.name) && /[A-Z]{3}/.test(p.name);
+      const kind = capsGroup && !kindWord ? 'group' : kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase())
         : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : GROUP_HINT_RE.test(p.name + '\n' + L.join('\n')) || /^[A-Z0-9]{2,6}$/.test(p.name) ? 'group' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
       const pinText = P.join('\n');
@@ -2741,7 +2766,8 @@
   function buildSecrets(chat) {
     const recs = allRecords(chat).filter((r) => /^(secret|knows|notknows|cover)$/.test(r.k));
     const secrets = [];
-    const keyOf = (name, text) => normValue(name || text).split(' ').slice(0, 8).join(' ');
+    // "[crush on Minsoo]" and "[minsoo-crush]" are one name: same words, any order.
+    const keyOf = (name, text) => (name ? normValue(name).split(' ').filter((w) => w && !STOP_WORDS.has(w) && !/^(on|of|to|a|an|in|at|by|is|my|me)$/.test(w)).sort().join(' ') : normValue(text).split(' ').slice(0, 8).join(' '));
     const find = (key, text) => secrets.find((x) => x.key === key) ||
       (text ? secrets.find((x) => { const a = normValue(x.text); const b = normValue(text); return a && b && (a.includes(b) || b.includes(a)); }) : null);
     const ensure = (name, text) => {
@@ -4171,7 +4197,7 @@
       if (c.short) continue;
       checkStop();
       const text = await job('chapter', 'Wrote the short version of chapter ' + (i + 1), async () => {
-        const out = squashRepeats(dropReasoning(cleanOutput(await callLLM(shortChapterSystem(), 'CHAPTER ' + (i + 1) + ': ' + c.title + '\n<<<\n' + c.text + '\n>>>\n\nJOB: SHORT CHAPTER. Write the short version now.')).trim()));
+        const out = cleanChapterText(squashRepeats(dropReasoning(cleanOutput(await callLLM(shortChapterSystem(), 'CHAPTER ' + (i + 1) + ': ' + c.title + '\n<<<\n' + c.text + '\n>>>\n\nJOB: SHORT CHAPTER. Write the short version now.')).trim())));
         if (out.length < 60) throw new Error('the memory keeper gave an unusable short chapter');
         return out.length < c.text.length ? out : c.text;
       });

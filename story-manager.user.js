@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.30.1
+// @version      3.30.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -3073,13 +3073,25 @@
 
   // Roughly how many requests a run will take, for the progress display and
   // the "catch up?" question.
-  function estimate(chat, todo) {
+  // How many requests a run takes, for the progress count: summaries, story
+  // updates (as many as the summaries' size needs), chapters, the older
+  // chapters' short versions, portraits and a correction after redone replies.
+  function estimate(chat, todo, force) {
     const summaries = chunk(todo, CHUNK_CHARS).length;
     const replies = todo.filter((m) => m.role === 'assistant').length;
     const unfolded = stages(chat).unfolded + replies;
-    const folds = Math.ceil(unfolded / FOLD_MAX);
+    const recent = chat.log.slice(-20);
+    const avg = recent.length ? recent.reduce((n, e) => n + (e.text || '').length, 0) / recent.length : 1500;
+    const perFold = Math.max(1, Math.min(FOLD_MAX, Math.floor(FOLD_CHARS / Math.max(1, avg))));
+    const folds = Math.ceil(unfolded / Math.min(perFold, Math.max(1, force || summaries > parallel() ? perFold : foldEvery())));
     const chapters = Math.floor((stages(chat).unchaptered + unfolded) / chapterSize());
-    return { summaries, folds, chapters, total: summaries + folds + chapters };
+    const facts = factsMode(chat);
+    const after = chat.chapters.length + chapters;
+    const shortened = chat.chapters.filter((c) => c.short).length;
+    const shorts = facts && settings.momentsShown !== 'all' ? Math.max(0, after - FULL_CHAPTERS - shortened) : 0;
+    const portraits = facts ? Math.min(force ? 8 : PORTRAITS_PER_UPDATE, Math.max(1, mainCharacters(chat).length)) : 0;
+    const correction = (chat.stale || []).length ? 1 : 0;
+    return { summaries, folds, chapters, shorts, portraits, total: summaries + folds + chapters + shorts + portraits + correction };
   }
 
   // Runs organize() and records what it fixed in the Activity list.
@@ -3155,7 +3167,7 @@
     chat.backlog = null;
     setStatus();
     const before = snapshot(chat);
-    progress[id] = { done: 0, total: estimate(chat, todo).total, step: 'Starting…' };
+    progress[id] = { done: 0, total: estimate(chat, todo, force).total, step: 'Starting…' };
     renderPanel();
     const job = async (kind, label, fn) => {
       const t0 = Date.now();

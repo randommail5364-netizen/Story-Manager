@@ -21,8 +21,8 @@ function grab(name) {
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
-const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
-const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment']
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const MINOR_PINNED = .*\n/)[0] + src.match(/ {2}const ROUTINE_PINNED = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
+const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf']
   .map(grab).join('\n') + '\nreturn { latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
 
 let passed = 0;
@@ -609,10 +609,32 @@ test('pinned message: important key moments and the newest 15; the rest stays st
   const e = lib.buildEntries(chat).find((x) => x.name === 'Jacek');
   assert.strictEqual((e.text.match(/^- \(reply/gm) || []).length, 40, 'every moment is stored');
   const pin = e.pinText;
-  assert(pin && /earlier routine moments are left out/.test(pin), pin);
-  for (const n of [3, 5, 7, 9, 11]) assert(pin.includes('(reply ' + n + ')'), 'kept reply ' + n);
-  assert(!pin.includes('(reply 13)') && pin.includes('(reply 26)') && pin.includes('(reply 40)'), 'routine older ones out, newest 15 in');
-  assert(/### Possessions|### Key Moments/.test(pin));
+  assert(pin && /older minor and routine moments are left out/.test(pin), pin);
+  // The keeper marks levels here (a major moment): those are trusted, no guessing.
+  for (const n of [3, 11]) assert(pin.includes('(reply ' + n + ')'), 'kept reply ' + n);
+  assert(!pin.includes('(reply 5)') && !pin.includes('(reply 13)') && pin.includes('(reply 26)') && pin.includes('(reply 40)'), 'older minor ones out, newest 15 in');
+  // A story from before the levels (nothing marked): the guesses decide.
+  log[2] = R(3, ['- Jacek | key moment | took Giselle out on their first proper date']);
+  const old = lib.buildEntries(Object.assign({}, chat, { log, entries: [] })).find((x) => x.name === 'Jacek').pinText;
+  for (const n of [5, 7, 9, 11]) assert(old.includes('(reply ' + n + ')'), 'kept reply ' + n + ' (guessed)');
+});
+
+test('moments in four levels: turning points and major ones all; minor the newest 15; routine the newest 5', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const log = [];
+  for (let i = 1; i <= 60; i++) {
+    const kind = i % 20 === 0 ? 'turning point' : i % 10 === 0 ? 'major moment' : i % 2 ? 'routine moment' : 'minor moment';
+    log.push(R(i, ['- Mira | ' + kind + ' | event ' + i + ' happened ' + 'abcdefghij'.split('').slice(0, i % 10 + 1).join(' x')]));
+  }
+  const e = lib.buildEntries({ ignored: [], entries: [], log }).find((x) => x.name === 'Mira');
+  const lines = e.pinText.split('\n').filter((l) => /^- \(reply/.test(l));
+  const at = (l) => Number(l.match(/reply (\d+)/)[1]);
+  assert.strictEqual(lines.filter((l) => at(l) % 20 === 0).length, 3, 'all turning points');
+  assert(lines.filter((l) => at(l) % 20 === 0).every((l) => /Turning point:/.test(l)));
+  assert.strictEqual(lines.filter((l) => at(l) % 10 === 0 && at(l) % 20).length, 3, 'all major moments');
+  assert.strictEqual(lines.filter((l) => at(l) % 2 && at(l) % 10).length, 5, 'routine: newest 5');
+  assert.strictEqual(lines.filter((l) => !(at(l) % 2) && at(l) % 10).length, 15, 'minor: newest 15');
+  assert.strictEqual((e.text.match(/^- \(reply/gm) || []).length, 60, 'all stored');
 });
 
 test('secrets: a label alone is left out; whose secret it is is said', () => {
@@ -666,6 +688,16 @@ test('secrets: the same secret under different names becomes one', () => {
   const sec = lib.buildSecrets(chat);
   assert.strictEqual(sec.length, 2, sec.map((x) => x.name).join(', '));
   assert.deepStrictEqual(sec[0].owners.sort(), ['Giselle', 'Ningning']);
+});
+
+test('relationships in the pinned message come from the list written at the end of a rebuild', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const log = [R(1, ['- Jacek | relationship: Winter | bound her wrists with a red scarf', '- Jacek | where things stand: Winter | cuddled in the master suite', '- Winter | personality | quiet'])];
+  const chat = { ignored: [], entries: [], log, relMap: { at: 1, list: [{ a: 'Jacek', b: 'Winter', status: 'dating', now: 'close and trusting' }, { a: 'Karina', b: 'Winter', status: 'bandmates', now: '' }] } };
+  const es = lib.buildEntries(chat);
+  const j = es.find((x) => x.name === 'Jacek'), w = es.find((x) => x.name === 'Winter');
+  assert(/- Winter: dating — close and trusting/.test(j.pinText) && !/red scarf/.test(j.pinText) && /red scarf/.test(j.text), j.pinText);
+  assert(/- Jacek: dating — close and trusting/.test(w.pinText) && /- Karina: bandmates/.test(w.pinText), w.pinText);
 });
 
 console.log('All ' + passed + ' entry checks passed.');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.30.2
+// @version      3.31.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -748,7 +748,7 @@
     return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
       chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
       factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
-      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments]));
+      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap]));
   }
 
   async function saveChat(chat, fromSync) {
@@ -1030,6 +1030,10 @@
   // The facts format's layout: Must remember → Now → Characters, places &
   // things (main characters first) → World & turning points → History,
   // chapter by chapter → Recent events.
+  function turningPoints(chat) {
+    const list = alike(allRecords(chat).filter((r) => r.k === 'moment' && r.tier === 'turning'), 0.6);
+    return list.sort((a, b) => a.at - b.at).map((r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + r.s + ': ' + r.v);
+  }
   function buildFactsPlan(chat, size) {
     const budget = size || Math.max(2000, Number(settings.injectBudget) || DEFAULT_SETTINGS.injectBudget);
     const head = [];
@@ -1043,7 +1047,11 @@
     const secrets = secretsText(chat);
     if (secrets) head.push('## Who knows what\n(Characters only know the secrets listed for them; never let anyone act on a secret they do not know.)\n' + secrets);
     const tail = [];
-    const world = sectionOf(chat.memory, 'World & Timeline').trim();
+    let world = sectionOf(chat.memory, 'World & Timeline').trim();
+    // Turning points from the moments the keeper marked (one line each, the same
+    // event under several people once), in place of the keeper's own list.
+    const turns = turningPoints(chat);
+    if (turns.length && settings.momentsShown !== 'all') world = world.replace(/\n*\**turning points:?\**[\s\S]*$/i, '').trim() + '\n\nTurning points:\n' + turns.join('\n');
     if (world) tail.push('## World & turning points\n' + world);
     if (chat.chapters.length) tail.push('## History, chapter by chapter\n' + chaptersText(chat, Math.round(budget * 0.3)));
     const inPlay = new Set(entriesInPlay(chat));
@@ -1642,15 +1650,17 @@
     '- After each summary write FACTS: and then, one per line, the lasting facts this reply revealed or changed, as records: "- Subject | kind | fact".',
     '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
     '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
-      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, nickname, key moment, major moment.',
+      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, nickname, turning point, major moment, minor moment, routine moment.',
     '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are or what they did in this scene.',
     '  "relationship: X" is a lasting fact about the two of them (dating, engaged, rivals, what they call each other), not a scene; a scene is a key moment. Outfits worn in a scene are not possessions.',
     '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
     '  "- Person | knows | [short name] how they found out" when someone learns, is told or overhears it; "- Person | does not know | [short name]" for someone it is kept from;',
     '  "- Everyone | knows | [short name]" when it comes out; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
-    '  A key moment is a short line saying what happened to or because of them in this reply that will matter later (it changes a relationship, a plan, a promise, what someone knows, or where they live or work).',
-    '  Small gestures, banter, chores, who slept where, texts and emojis are not key moments: leave them out. Use "major moment" instead when it changes the story or a relationship for good:',
-    '  a first time, a confession, a promise or vow, a secret coming out, a break-up or making up, a new relationship, a move, a big decision. Routine scenes are "key moment".',
+    '  Moments (a short line saying what happened to or because of them in this reply) have four levels; choose one:',
+    '  "turning point": changes the whole story for good (a new or ended relationship, a secret coming out, a move, a death, a big decision). Rare: at most one every several replies.',
+    '  "major moment": matters for this character later (a first time, a confession, a promise or vow, a fight or making up, something they will remember).',
+    '  "minor moment": worth remembering but changes little (a date, a gift, a small plan, a meaningful talk).',
+    '  "routine moment": everyday things (meals, chores, banter, sleeping, texts, an intimate scene with nothing new in it). Leave out what is not worth remembering at all.',
     '  A secret is something a character hides from someone in the story, always with what it is after its [short name]; an intimate scene is a key moment, not a secret.',
     '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
     '  One subject per record: never "Tiffany and Irene" — write a record for each of them. To say what a place or thing is, use kind "type" (place, item, group) or "basics". Write FACTS: none if there are none.',
@@ -1697,7 +1707,7 @@
       'STORY rules:',
       '- Every line of every entry must be a fact in the entry format ("### Heading", "- bullet", or "Label: value"). Never write your working-out (which fact goes where, what is already covered, what you will output).',
       '- ## Current Scene must describe the situation after the NEWEST event (later events override earlier ones, e.g. a punishment that was changed). Rewrite it fully each time it changes; never keep outdated parts.',
-      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (only what is still unresolved: plans, promises, mysteries, things that must be followed up — remove a thread once it is resolved), ## World & Timeline (world rules, the date and time, how much time has passed, important background, and "Turning points:").',
+      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (only what is still unresolved: plans, promises, mysteries, things that must be followed up — remove a thread once it is resolved; never finished events, never what someone is doing right now (that is the Current Scene), never secrets (they are kept separately, with who knows them)), ## World & Timeline (world rules, the date and time, how much time has passed, important background, and "Turning points:").',
       '- "Turning points:" in ## World & Timeline is a short list of the story\'s major turning points, oldest first, one line each with when it happened and what changed because of it (a new relationship, a secret revealed, a move, a falling-out and its repair). Keep every earlier one and add new ones; this list may make the section longer than the others.',
       '- Output only the sections that change, each as === SECTION: Name === followed by its complete new text, keeping every fact that is still true. Leave out sections that did not change. If a section is empty, write it in full.',
       '- Keep each section short, at most about 1,500 characters (World & Timeline may be longer for its turning points): it is sent with every message. What happened belongs in the history (chapters), details about characters, places and items in their entries.',
@@ -2436,7 +2446,7 @@
     ['cover', /^(cover story|cover|public story|official story|what others are told|what outsiders are told|alibi)$/],
     ['goal', /^(goals?|plans?|wants|desires?|intentions?)$/],
     ['nickname', /^(nicknames?|alias(es)?|called|also known as|pet names?)$/],
-    ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?|(major|important|big|key major) (key )?moments?)$/],
+    ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?|(major|important|big|key major|minor|routine|small) (key )?moments?)$/],
   ];
   // Kinds that hold one value at a time: the newest is true, older ones are history.
   const SINGLE_KINDS = new Set(['fullname', 'age', 'role', 'type', 'status', 'location', 'stands']);
@@ -2472,7 +2482,12 @@
         continue;
       }
       const rec = { s, k: k.kind, t: k.target, v, label: k.label };
-      if (k.kind === 'moment' && /^(major|important|big|key major)\b|turning/.test(k.label)) rec.imp = true;
+      // Moments come in four levels (see RECORD_RULES).
+      if (k.kind === 'moment') {
+        rec.tier = /turning/.test(k.label) ? 'turning' : /^(major|important|big|key major)\b/.test(k.label) ? 'major' : /^(routine|small)\b/.test(k.label) ? 'routine' : /^minor\b/.test(k.label) ? 'minor' : undefined;
+        if (!rec.tier) delete rec.tier; // a plain "key moment" (older keepers): no level
+        if (rec.tier === 'turning' || rec.tier === 'major') rec.imp = true;
+      }
       out.push(rec);
     }
     return out;
@@ -2498,8 +2513,23 @@
   // Subjects that are not a person, place or thing of their own; the story's
   // World & Timeline section covers them.
   const PLACEHOLDER_SUBJECT_RE = /^(the )?(setting|scene|location|world|story|timeline|narrator|narration|user|you|me|everyone|everybody|all|the group|group|others|them|they)$/i;
+  // The relationships list: "- Winter: dating — close again after the fight".
+  function relationsOf(chat, p) {
+    const list = chat.relMap && chat.relMap.list;
+    if (!list || !list.length) return null;
+    const names = [p.name].concat(p.aliases || []).map((n) => n.toLowerCase());
+    const out = [];
+    for (const x of list) {
+      const a = names.includes(x.a.toLowerCase()), b = names.includes(x.b.toLowerCase());
+      if (a === b) continue;
+      out.push('- ' + (a ? x.b : x.a) + ': ' + x.status + (x.now ? ' — ' + x.now : ''));
+    }
+    return out;
+  }
   // Key moments: how many of the newest always go into the pinned message.
   const MOMENTS_RECENT = 15;
+  const MINOR_PINNED = 15;   // minor moments per character in the pinned message
+  const ROUTINE_PINNED = 5;  // routine moments per character in the pinned message
   // The pinned message: lasting facts per relationship, possessions.
   const RELATION_FACTS = 3;
   const POSSESSIONS_PINNED = 10;
@@ -2585,6 +2615,8 @@
     // For choosing key moments: the turning points, and which replies brought a
     // promise, secret, change in who knows or in where things stand, per person.
     const turning = (sectionOf(chat.memory, 'World & Timeline').split(/turning points?:/i)[1] || '').split('\n').map((x) => sigWords(x)).filter((w) => w.size >= 2);
+    // A story whose keeper sorts moments into levels (v3.31+), or marked major ones.
+    const tiered = allRecords(chat).some((r) => r.k === 'moment' && (r.tier || r.imp));
     const weighty = new Set(allRecords(chat).filter((r) => /^(promise|secret|knows|notknows)$/.test(r.k)).map((r) => r.s.toLowerCase() + '#' + r.at));
     const built = people.filter((p) => !p.aliases.some((a) => skip.has(a.toLowerCase()))).map((p) => {
       const by = (k) => p.records.filter((r) => r.k === k);
@@ -2653,7 +2685,11 @@
         };
       });
       const loose = uniq(by('relationship').filter((r) => !r.t));
-      section('Relationships', rel.map((x) => x.full).concat(loose.map((r) => '- ' + r.v)), rel.map((x) => x.pin).concat(loose.slice(-RELATION_FACTS).map((r) => '- ' + r.v)), rel.map((x) => x.mini));
+      // Written once at the end of a rebuild (see writeRelationships): only what
+      // they are to each other and a short note on how things stand.
+      const mapped = relationsOf(chat, p);
+      section('Relationships', rel.map((x) => x.full).concat(loose.map((r) => '- ' + r.v)),
+        mapped ? mapped : rel.map((x) => x.pin).concat(loose.slice(-RELATION_FACTS).map((r) => '- ' + r.v)), mapped ? mapped : rel.map((x) => x.mini));
       const things = alike(uniq(by('possession')), 0.5);
       section('Possessions', things.map((r) => '- ' + r.v), things.slice(-POSSESSIONS_PINNED).map((r) => '- ' + r.v));
       // What they know (from "Who knows what"): the secrets' short names.
@@ -2663,11 +2699,16 @@
         knownNames.length ? ['- Knows: ' + knownNames.join(', ')] : [], unknownNames.length ? ['- Does NOT know: ' + unknownNames.join(', ')] : []);
       section('Goals, Promises & Secrets', goals, goals, goals.filter((x) => /^- (Promise|Secret|Does NOT know)/.test(x)));
       const moments = uniq(by('moment'));
-      const momentLine = (r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + r.v;
-      // The pinned message: the important moments and the newest ones (see importantMoment).
-      const shown = moments.filter((r, i) => i >= moments.length - MOMENTS_RECENT || importantMoment(chat, p, r, turning, weighty));
+      const momentLine = (r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + (r.tier === 'turning' ? 'Turning point: ' : '') + r.v;
+      // The pinned message: turning points, major moments and the ones the user
+      // kept in full; minor ones the newest MINOR_PINNED, routine ones the newest
+      // ROUTINE_PINNED. Stories from before the levels: see importantMoment.
+      const tierOf = (r) => (r.manual || (chat.keptMoments || []).includes(r.id) ? 'major' : tiered ? (r.tier || (r.imp ? 'major' : 'minor')) : (importantMoment(chat, p, r, turning, weighty) ? 'major' : 'minor'));
+      const newest = (t, n) => new Set(moments.filter((r) => tierOf(r) === t).slice(-n));
+      const minorShown = newest('minor', MINOR_PINNED), routineShown = newest('routine', ROUTINE_PINNED);
+      const shown = moments.filter((r) => { const t = tierOf(r); return t === 'turning' || t === 'major' || minorShown.has(r) || routineShown.has(r); });
       section('Key Moments', moments.map(momentLine),
-        (shown.length < moments.length ? ['(' + (moments.length - shown.length) + ' earlier routine moments are left out here; History covers them.)'] : []).concat(shown.map(momentLine)),
+        (shown.length < moments.length ? ['(' + (moments.length - shown.length) + ' older minor and routine moments are left out here; History covers them.)'] : []).concat(shown.map(momentLine)),
         moments.filter((r) => importantMoment(chat, p, r, turning, weighty)).slice(-3).map(momentLine));
       section('Other', uniq(by('other')).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
       const typed = single(by('type'));
@@ -3240,6 +3281,8 @@
       // The facts format: portraits of main characters that have grown.
       // (After a rebuild or "Update now", every main character that needs one.)
       if (factsMode(chat)) { try { await updatePortraits(chat, job, null, force ? 8 : PORTRAITS_PER_UPDATE); } catch (e) { if (e.stopped) throw e; } }
+      // After a rebuild: the relationships, once.
+      if (force && factsMode(chat)) { try { await job('update', 'Wrote the relationships', () => writeRelationships(chat)); } catch (e) { if (e.stopped) throw e; } }
       // 4. Replies that were deleted or redone after their facts went in:
       // take what only they said back out, and rewrite their chapters.
       if ((chat.stale || []).length && !(chat.redo || []).length) await correctAfterRedo(chat, job);
@@ -3335,6 +3378,54 @@
       } catch (e) {
         await saveChat(chat);
         if (max > SHORTEN_PER_UPDATE) toast(e.stopped ? 'Stopped. The short chapters written so far are kept.' : 'Could not shorten the chapters: ' + (e.message || e), !e.stopped);
+        return e.stopped ? 'stopped' : 'failed';
+      }
+    });
+  }
+
+  // The relationships, once at the end of a rebuild (and with the button):
+  // what each pair is to each other, plus a short note on how things stand.
+  async function writeRelationships(chat) {
+    const pairs = new Map();
+    for (const r of allRecords(chat)) {
+      if (!/^(relationship|stands)$/.test(r.k) || !r.t) continue;
+      const key = [r.s, r.t].map((x) => x.toLowerCase()).sort().join(' & ');
+      const x = pairs.get(key) || { rel: [], stands: '' };
+      if (r.k === 'stands') x.stands = r.s + ' about ' + r.t + ': ' + r.v; else x.rel.push(r.s + ' → ' + r.t + ': ' + r.v);
+      pairs.set(key, x);
+    }
+    if (!pairs.size) return [];
+    const facts = [...pairs.entries()].map(([k, x]) => k + '\n' + x.rel.slice(-6).map((l) => '  ' + l).join('\n') + (x.stands ? '\n  now: ' + x.stands : '')).join('\n').slice(-60000);
+    const user = 'RELATIONSHIP FACTS (per pair, oldest first):\n<<<\n' + facts + '\n>>>\n\n' +
+      'JOB: RELATIONSHIPS. For every pair that has a lasting relationship, write one line: "- Name | Name | what they are to each other | how things stand now".\n' +
+      'What they are: a few words only, e.g. dating, married, engaged, exes, siblings, best friends, rivals, boss and assistant, in a relationship with each other (polycule). ' +
+      'How things stand now: at most 12 words about the relationship (e.g. "close again after the fight", "she is hiding the pregnancy from him"), never what they are doing in a scene. ' +
+      'Leave out pairs with no lasting relationship. Never invent. Output only the lines.';
+    const out = cleanOutput(await callLLM(updateSystem(), user));
+    const list = [];
+    for (const l of out.split('\n')) {
+      const m = l.match(/^\s*[-*•]?\s*([^|]{1,60}?)\s*\|\s*([^|]{1,60}?)\s*\|\s*([^|]{1,80}?)\s*(?:\|\s*(.{0,160}?))?\s*$/);
+      if (m && !isGeneric(m[1]) && !isGeneric(m[2])) list.push({ a: m[1].trim(), b: m[2].trim(), status: m[3].trim(), now: (m[4] || '').trim() });
+    }
+    if (!list.length) throw new Error('the memory keeper did not write a usable list of relationships');
+    chat.relMap = { at: Date.now(), list };
+    return list;
+  }
+  async function runRelationships(id) {
+    const chat = await getChat(id, true);
+    return withBusy(id, 1, async () => {
+      const t0 = Date.now();
+      setStep(id, 'Writing the relationships…');
+      try {
+        const list = await writeRelationships(chat);
+        logJob(chat, { kind: 'update', label: 'Wrote the relationships (' + list.length + ')', ok: true, ms: Date.now() - t0 });
+        await saveChat(chat);
+        toast('Relationships written. The pinned message updates in a few seconds.');
+        return 'done';
+      } catch (e) {
+        if (!e.stopped) logJob(chat, { kind: 'update', label: 'Writing the relationships', ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) });
+        await saveChat(chat);
+        toast(e.stopped ? 'Stopped.' : 'Could not write the relationships: ' + (e.message || e), !e.stopped);
         return e.stopped ? 'stopped' : 'failed';
       }
     });
@@ -5531,7 +5622,13 @@
         ? 'In play right now (sent with every message): ' + inPlay.join(', ') + '. Others are sent when your message mentions them.'
         : 'Characters, places and items get their own entries as the story goes on. Each is sent when it is in the current scene or your message mentions it.'),
       editors.map((ed) => ed.node),
-      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: addEntry }, '+ Add entry')),
+      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: addEntry }, '+ Add entry'),
+        factsMode(chat) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          if (!confirm('Have the memory keeper write the list of relationships (who is dating, married, … and how things stand) for the pinned message? One request. (A rebuild does this at its end.)')) return;
+          await save(true);
+          await runRelationships(chat.id);
+        } }, chat.relMap ? 'Rewrite relationships (' + ago(chat.relMap.at) + ')' : 'Write relationships') : null),
       chat.ignored.length ? el('div', { class: 'hint' }, 'Deleted, not created again: ' + chat.ignored.join(', ') + ' ',
         el('button', { class: 'btn', onclick: async () => { chat.ignored = []; await saveChat(chat); renderPanel(true); } }, 'Allow again')) : null),
       el('div', { class: 'btns' },

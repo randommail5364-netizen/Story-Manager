@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.30.0
+// @version      3.30.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -5435,7 +5435,11 @@
           (progress[chat.id] && progress[chat.id].writing && progress[chat.id].writing.some(Boolean)
             ? ' The bot has written ' + progress[chat.id].writing.reduce((n, x) => n + (x || 0), 0).toLocaleString() + ' characters so far.' : '') +
           (progress[chat.id] && progress[chat.id].total > 1
-            ? ' (step ' + Math.min(progress[chat.id].done + 1, progress[chat.id].total) + ' of about ' + Math.max(progress[chat.id].total, progress[chat.id].done + 1) + ')' : ''),
+            // The count goes on past the first estimate (chapters, short versions and
+            // corrections are only known as it goes): then the step alone is shown.
+            ? (progress[chat.id].done < progress[chat.id].total
+              ? ' (step ' + (progress[chat.id].done + 1) + ' of about ' + progress[chat.id].total + ')'
+              : ' (step ' + (progress[chat.id].done + 1) + ' — more than first estimated, nearly done)') : ''),
           ' ', el('button', { class: 'btn', onclick: () => { stopRequested[chat.id] = true; toast('Stopping after the current request…'); } }, '■ Stop')) : null,
         !isBusy && chat.backlog ? el('div', { class: 'error' }, '⚠ ' + chat.backlog.messages + ' messages are not in the memory yet (about ' +
           chat.backlog.requests + ' requests). Tap "Update now" to read them.') : null,

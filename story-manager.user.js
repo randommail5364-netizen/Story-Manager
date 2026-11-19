@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.29.2
+// @version      3.30.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -3044,7 +3044,8 @@
 
   function foldEvery() { return Math.max(1, Number(settings.foldEvery) || DEFAULT_SETTINGS.foldEvery); }
   function chapterSize() { return Math.max(4, Number(settings.chapterSize) || DEFAULT_SETTINGS.chapterSize); }
-  function parallel() { return Math.min(3, Math.max(1, Number(settings.parallel) || 1)); }
+  function parallel() { return Math.min(MAX_PARALLEL, Math.max(1, Number(settings.parallel) || 1)); }
+  const MAX_PARALLEL = 5; // helper chats used side by side (slots 0–4)
 
   // Where each stage stands.
   function stages(chat) {
@@ -3217,11 +3218,13 @@
         renderPanel();
         if (failure) throw failure;
         // During a long catch-up, keep the story and entries up to date as it goes.
-        await foldAndChapter(chat, FOLD_MAX, job);
+        await foldAndChapter(chat, FOLD_MAX, job, true);
       }
       // 2 + 3. Fold what is due (all of it when asked, or for a new story),
       // then write the chapters that are complete.
       await foldAndChapter(chat, force || !chat.memory.trim() ? 1 : foldEvery(), job);
+      // After a rebuild or a long catch-up: every older chapter's short version now.
+      if (force || parts.length > parallel()) await shortenChapters(chat, job, Infinity);
       // The facts format: portraits of main characters that have grown.
       // (After a rebuild or "Update now", every main character that needs one.)
       if (factsMode(chat)) { try { await updatePortraits(chat, job, null, force ? 8 : PORTRAITS_PER_UPDATE); } catch (e) { if (e.stopped) throw e; } }
@@ -3378,7 +3381,9 @@
     return { memory, updates: [], cast: parsed.cast };
   }
 
-  async function foldAndChapter(chat, threshold, job) {
+  // catchingUp: in the middle of a long catch-up (a rebuild): short chapters
+  // wait for the end, so they do not hold up the summaries.
+  async function foldAndChapter(chat, threshold, job, catchingUp) {
     while (stages(chat).unfolded && stages(chat).unfolded >= threshold) {
       const items = nextFold(chat);
       checkStop();
@@ -3399,9 +3404,9 @@
       chat.lastError = '';
       await saveChat(chat);
       renderPanel();
-      await writeChapters(chat, job);
+      await writeChapters(chat, job, catchingUp);
     }
-    await writeChapters(chat, job);
+    await writeChapters(chat, job, catchingUp);
   }
 
   // "Check for missing facts": every summary's facts not checked yet, in
@@ -4025,7 +4030,7 @@
   // version stays only as labelled history), duplicates are merged and facts
   // sit under the right headings. Up to CONSOLIDATE_MAX entries a time, the
   // ones changed longest ago first, so every entry gets its turn.
-  async function writeChapters(chat, job) {
+  async function writeChapters(chat, job, catchingUp, shortMax) {
     for (;;) {
       const ready = chat.log.filter((e) => e.folded && e.chapter == null);
       if (ready.length < chapterSize()) break;
@@ -4037,7 +4042,7 @@
       await saveChat(chat);
       renderPanel();
     }
-    await shortenChapters(chat, job);
+    if (!catchingUp) await shortenChapters(chat, job, shortMax);
   }
 
   // A short version of each older chapter for the pinned message: what still
@@ -4503,7 +4508,7 @@
     helperAll = (await Store.get('helperAll', [])).filter((h) => !notHelpers.includes(h));
     helperRequests.push(...(await Store.get('helperRequests', [])));
     for (const h of helperAll) helperIds.add(h);
-    for (let slot = 0; slot < 3; slot++) {
+    for (let slot = 0; slot < MAX_PARALLEL; slot++) {
       helperChats[slot] = await Store.get(helperKey(slot), null);
       // A chat the user said is their story is never used as a helper again.
       if (helperChats[slot] && notHelpers.includes(helperChats[slot].id)) { helperChats[slot] = null; await Store.set(helperKey(slot), null); }
@@ -6032,7 +6037,7 @@
     f.holdBack = el('input', { type: 'number', min: '0', value: String(s.holdBack == null ? 2 : s.holdBack) });
     f.foldEvery = el('input', { type: 'number', min: '1', value: String(s.foldEvery) });
     f.chapterSize = el('input', { type: 'number', min: '4', value: String(s.chapterSize) });
-    f.parallel = el('select', {}, ...[1, 2, 3].map((n) => el('option', { value: String(n), selected: Number(s.parallel) === n ? '' : null }, String(n))));
+    f.parallel = el('select', {}, ...[1, 2, 3, 4, 5].map((n) => el('option', { value: String(n), selected: Number(s.parallel) === n ? '' : null }, String(n))));
     f.injectEvery = el('input', { type: 'number', min: '0', value: String(s.injectEvery) });
     f.detail = el('select', {}, ...Object.entries(DETAIL).map(([k, d]) => el('option', { value: k, selected: s.detail === k ? '' : null }, d.label)));
     f.logAttach = el('input', { type: 'number', min: '0', value: String(s.logAttach) });
@@ -6090,7 +6095,7 @@
       holdBack: Math.max(0, parseInt(f.holdBack.value, 10) || 0),
       foldEvery: Math.max(1, parseInt(f.foldEvery.value, 10) || DEFAULT_SETTINGS.foldEvery),
       chapterSize: Math.max(4, parseInt(f.chapterSize.value, 10) || DEFAULT_SETTINGS.chapterSize),
-      parallel: Math.min(3, Math.max(1, parseInt(f.parallel.value, 10) || 1)),
+      parallel: Math.min(MAX_PARALLEL, Math.max(1, parseInt(f.parallel.value, 10) || 1)),
       injectEvery: Math.max(0, parseInt(f.injectEvery.value, 10) || 0),
       detail: f.detail.value,
       logAttach: Math.max(0, parseInt(f.logAttach.value, 10) || 0),

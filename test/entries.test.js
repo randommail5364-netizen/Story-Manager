@@ -721,4 +721,19 @@ test('GPT review fixes: done goals leave the pinned message; secret names in any
   assert.strictEqual(lib.cleanChapterText('Karina continued her vow.\n=== CAST === Jacek, Karina'), 'Karina continued her vow.');
 });
 
+test('check-up corrections: done goals, new knowers and the same secret under two names; minor characters keep their personality', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const log = [R(1, ['- Yujin | goal | needs Jacek to provide a theme for the anniversary', '- Irene | secret | [unlocked storm] kept a storm inside for a decade',
+    '- Yujin | secret | [wants Jacek\'s baby] wants a child with Jacek', '- Yujin | secret | [child-with-jacek] said yes to having a child with Jacek', '- Seulgi | personality | kindness is a physical force, radiates calm'])];
+  const chat = { ignored: [], entries: [], log,
+    reconRecords: [{ s: 'Yujin', k: 'done', t: '', v: 'theme for the anniversary provided', at: 1 }, { s: 'Jacek', k: 'knows', t: '', v: '[unlocked storm] she told him', at: 1 }],
+    secretAlias: { 'child jacek': "wants Jacek's baby" } };
+  const es = lib.buildEntries(chat);
+  assert(!/provide a theme/.test(es.find((e) => e.name === 'Yujin').pinText));
+  const sec = lib.buildSecrets(chat);
+  assert(sec.find((x) => x.name === 'unlocked storm').knows.some((k) => k.who === 'Jacek'));
+  assert.strictEqual(sec.filter((x) => /child/.test(x.text)).length, 1, sec.map((x) => x.name).join(', '));
+  assert(/kindness is a physical force/.test(es.find((e) => e.name === 'Seulgi').miniText));
+});
+
 console.log('All ' + passed + ' entry checks passed.');

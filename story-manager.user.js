@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.32.1
+// @version      3.33.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -748,7 +748,7 @@
     return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
       chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
       factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
-      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap]));
+      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias]));
   }
 
   async function saveChat(chat, fromSync) {
@@ -2511,6 +2511,8 @@
     const out = [];
     chat.log.forEach((e, i) => (e.records || []).forEach((r, n) => out.push(Object.assign({ id: e.id + '#' + n, at: i + 1 }, r))));
     (chat.manualRecords || []).forEach((r, n) => out.push(Object.assign({ id: 'manual#' + (r.n != null ? r.n : n), at: Infinity, manual: true }, r)));
+    // Corrections from the check-ups (see reconcileFacts), placed at the reply they were made after.
+    (chat.reconRecords || []).forEach((r, n) => out.push(Object.assign({ id: 'recon#' + n, recon: true }, r)));
     return out.filter((r) => !hidden.has(r.id));
   }
 
@@ -2678,9 +2680,12 @@
       const extraBasics = uniq(by('basics')).map((r) => '- ' + r.v);
       section('Basics', basics.concat(extraBasics), basicsNow.concat(extraBasics), basicsNow.concat(extraBasics.slice(-2)));
       section('Appearance', alike(uniq(by('appearance')), 0.75).map((r) => '- ' + r.v));
-      section('Personality & Voice', uniq(by('personality')).map((r) => '- ' + r.v));
+      // Minor characters keep who they are (personality, likes, boundaries) in the pinned message.
+      const persona = uniq(by('personality')).map((r) => '- ' + r.v);
+      section('Personality & Voice', persona, persona, persona.slice(-6));
       section('Abilities & Skills', uniq(by('ability')).map((r) => '- ' + r.v));
-      section('Likes, Dislikes & Boundaries', [].concat(uniq(by('likes')).map((r) => '- Likes: ' + r.v), uniq(by('dislikes')).map((r) => '- Dislikes: ' + r.v), uniq(by('boundary')).map((r) => '- Boundary: ' + r.v)));
+      const likes = [].concat(uniq(by('likes')).map((r) => '- Likes: ' + r.v), uniq(by('dislikes')).map((r) => '- Dislikes: ' + r.v), uniq(by('boundary')).map((r) => '- Boundary: ' + r.v));
+      section('Likes, Dislikes & Boundaries', likes, likes, likes.filter((x) => /^- Boundary/.test(x)).concat(likes.filter((x) => !/^- Boundary/.test(x)).slice(-4)));
       section('Backstory', uniq(by('backstory')).map((r) => '- ' + r.v));
       // Relationships: one line per person, with where things stand now. The
       // pinned message keeps where things stand and the 3 newest lasting facts.
@@ -2772,7 +2777,9 @@
     const keyOf = (name, text) => (name ? normValue(name).split(' ').filter((w) => w && !STOP_WORDS.has(w) && !/^(on|of|to|a|an|in|at|by|is|my|me)$/.test(w)).sort().join(' ') : normValue(text).split(' ').slice(0, 8).join(' '));
     const find = (key, text) => secrets.find((x) => x.key === key) ||
       (text ? secrets.find((x) => { const a = normValue(x.text); const b = normValue(text); return a && b && (a.includes(b) || b.includes(a)); }) : null);
+    const alias = chat.secretAlias || {};
     const ensure = (name, text) => {
+      if (name && alias[keyOf(name, '')]) name = alias[keyOf(name, '')];
       const key = keyOf(name, text);
       let x = find(key, name ? '' : text);
       if (!x) { x = { key, name: name || '', text: '', people: new Map(), cover: '', at: 0 }; secrets.push(x); }
@@ -3311,6 +3318,10 @@
       if (factsMode(chat)) { try { await updatePortraits(chat, job, null, force ? 8 : PORTRAITS_PER_UPDATE); } catch (e) { if (e.stopped) throw e; } }
       // After a rebuild: the relationships, once.
       if (force && factsMode(chat)) { try { await job('update', 'Wrote the relationships', () => writeRelationships(chat)); } catch (e) { if (e.stopped) throw e; } }
+      // The check-up: after a rebuild, and every RECONCILE_EVERY replies.
+      if (factsMode(chat) && (force || chat.log.length - (chat.reconAt || 0) >= RECONCILE_EVERY)) {
+        try { const n = await job('check', 'Check-up of what is out of date', () => reconcileFacts(chat)); if (n) logJob(chat, { kind: 'check', label: 'Check-up: ' + n + ' fact' + (n === 1 ? '' : 's') + ' brought up to date', ok: true, ms: 0 }); } catch (e) { if (e.stopped) throw e; }
+      }
       // 4. Replies that were deleted or redone after their facts went in:
       // take what only they said back out, and rewrite their chapters.
       if ((chat.stale || []).length && !(chat.redo || []).length) await correctAfterRedo(chat, job);
@@ -3454,6 +3465,64 @@
         if (!e.stopped) logJob(chat, { kind: 'update', label: 'Writing the relationships', ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) });
         await saveChat(chat);
         toast(e.stopped ? 'Stopped.' : 'Could not write the relationships: ' + (e.message || e), !e.stopped);
+        return e.stopped ? 'stopped' : 'failed';
+      }
+    });
+  }
+
+  // The check-up: the keeper compares what is still listed as open (goals,
+  // promises, where people are, who knows each secret) with the story now, and
+  // says what is done, out of date or now known. Story Manager adds those as
+  // facts; nothing is deleted (the full entries keep the history).
+  const RECONCILE_EVERY = 10;
+  async function reconcileFacts(chat) {
+    const at = chat.log.length;
+    const recs = allRecords(chat);
+    const open = [];
+    for (const e of chat.entries.filter((x) => (x.kind || 'character') === 'character')) {
+      const lines = (e.pinText || e.text).split('\n').filter((l) => /^- (Goal|Promise|Lives \/ based|Role):/.test(l));
+      if (lines.length) open.push(e.name + '\n' + lines.map((l) => '  ' + l).join('\n'));
+    }
+    const secrets = (chat.__secrets || buildSecrets(chat)).map((x) => '[' + x.name + '] ' + x.text + ' — knows: ' + (x.everyone ? 'everyone' : x.knows.map((k) => k.who).join(', ') || 'nobody listed'));
+    if (!open.length && !secrets.length) return 0;
+    const recent = chat.log.slice(-8).map((e, i) => '[' + (at - Math.min(8, at) + i + 1) + '] ' + e.text).join('\n\n');
+    const user = 'THE STORY NOW:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\nTHE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-30000) + '\n>>>\n\n' +
+      'STILL LISTED AS OPEN:\n<<<\n' + open.join('\n').slice(-30000) + '\n>>>\n\nSECRETS AND WHO KNOWS THEM:\n<<<\n' + secrets.join('\n').slice(-15000) + '\n>>>\n\n' +
+      'JOB: CHECK-UP. Using only the story now and the latest replies, list what is out of date, one per line:\n' +
+      '- "- Person | done | a few words of the goal or promise" for a goal or promise that already happened, was kept, dropped or replaced (an event that took place, a plan carried out).\n' +
+      '- "- Person | role | the role now" or "- Person | location | where they live or are based now" only when the listed one is wrong now.\n' +
+      '- "- Person | knows | [secret name] how they learned it" for each person who clearly knows a listed secret but is not listed (e.g. it was confessed to them or said in the group chat; use "Everyone" when everyone knows).\n' +
+      '- "- [secret name] = [other secret name]" when two listed secrets are the same secret.\n' +
+      'Only what the story clearly shows; never guess or invent. Write "none" if nothing is out of date. Output only those lines.';
+    const out = cleanOutput(await callLLM(updateSystem(), user));
+    const got = [];
+    const alias = Object.assign({}, chat.secretAlias || {});
+    const keyOfName = (n) => normValue(n).split(' ').filter((w) => w && !STOP_WORDS.has(w) && !/^(on|of|to|a|an|in|at|by|is|my|me)$/.test(w)).sort().join(' ');
+    for (const l of out.split('\n')) {
+      const same = l.match(/\[([^\]]{1,60})\]\s*=\s*\[([^\]]{1,60})\]/);
+      if (same) { if (keyOfName(same[1]) !== keyOfName(same[2])) alias[keyOfName(same[2])] = same[1].trim(); continue; }
+      for (const r of parseRecords(l)) if (/^(done|role|location|knows)$/.test(r.k)) got.push(Object.assign(r, { at }));
+    }
+    chat.reconRecords = (chat.reconRecords || []).concat(got);
+    chat.secretAlias = alias;
+    chat.reconAt = at;
+    return got.length;
+  }
+  async function runReconcile(id) {
+    const chat = await getChat(id, true);
+    return withBusy(id, 1, async () => {
+      const t0 = Date.now();
+      setStep(id, 'Checking what is out of date…');
+      try {
+        const n = await reconcileFacts(chat);
+        logJob(chat, { kind: 'check', label: 'Check-up: ' + (n ? n + ' fact' + (n === 1 ? '' : 's') + ' brought up to date' : 'nothing out of date'), ok: true, ms: Date.now() - t0 });
+        await saveChat(chat);
+        toast(n ? 'Brought ' + n + ' out-of-date fact' + (n === 1 ? '' : 's') + ' up to date.' : 'Nothing was out of date.');
+        return 'done';
+      } catch (e) {
+        if (!e.stopped) logJob(chat, { kind: 'check', label: 'Check-up', ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) });
+        await saveChat(chat);
+        toast(e.stopped ? 'Stopped.' : 'The check-up failed: ' + (e.message || e), !e.stopped);
         return e.stopped ? 'stopped' : 'failed';
       }
     });
@@ -5653,7 +5722,13 @@
           if (!confirm('Have the memory keeper write the list of relationships (who is dating, married, … and how things stand) for the pinned message? One request. (A rebuild does this at its end.)')) return;
           await save(true);
           await runRelationships(chat.id);
-        } }, chat.relMap ? 'Rewrite relationships (' + ago(chat.relMap.at) + ')' : 'Write relationships') : null),
+        } }, chat.relMap ? 'Rewrite relationships (' + ago(chat.relMap.at) + ')' : 'Write relationships') : null,
+        factsMode(chat) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          if (!confirm('Have the memory keeper check what is out of date (finished goals and promises, old roles or places, who now knows each secret, the same secret under two names)? One request. Nothing is deleted.')) return;
+          await save(true);
+          await runReconcile(chat.id);
+        } }, 'Check what is out of date') : null),
       chat.ignored.length ? el('div', { class: 'hint' }, 'Deleted, not created again: ' + chat.ignored.join(', ') + ' ',
         el('button', { class: 'btn', onclick: async () => { chat.ignored = []; await saveChat(chat); renderPanel(true); } }, 'Allow again')) : null),
       el('div', { class: 'btns' },

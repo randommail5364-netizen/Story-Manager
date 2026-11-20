@@ -37,16 +37,22 @@ function grabAsync(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const reconLib = new Function(factsConsts + consts + "  let answer = '';\n  const callLLM = async () => answer;\n  const updateSystem = () => '';\n" +
+const reconLib = new Function(factsConsts + consts + "  let answers = [];\n  const callLLM = async () => (answers.length ? answers.shift() : 'none');\n  const updateSystem = () => '';\n" +
   ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'buildSecrets', 'sigWords', 'alike', 'importantMoment', 'relationsOf'].map(grab).join('\n') +
-  '\n' + grabAsync('reconcileFacts') + '\nreturn { setAnswer: (a) => { answer = a; }, reconcileFacts, buildEntries, buildSecrets };')();
+  '\n' + grabAsync('reconcileFacts') + '\nreturn { setAnswer: (a, b) => { answers = [a].concat(b ? [b] : []); }, reconcileFacts, buildEntries, buildSecrets };')();
 
 let passed = 0;
 const pending = [];
+// Tests that wait (the check-up) run one after another: they share the keeper stand-in.
+let chain = Promise.resolve();
 function test(name, fn) {
-  const r = fn();
-  if (r && r.then) pending.push(r.then(() => { passed++; console.log('  ✓ ' + name); }, (e) => { console.error(e); process.exit(1); }));
-  else { passed++; console.log('  ✓ ' + name); }
+  if (fn.constructor.name === 'AsyncFunction') {
+    chain = chain.then(fn).then(() => { passed++; console.log('  ✓ ' + name); }, (e) => { console.error(e); process.exit(1); });
+    pending.push(chain);
+    return;
+  }
+  fn();
+  passed++; console.log('  ✓ ' + name);
 }
 
 const replies = [{ id: 'a' }, { id: 'b' }];
@@ -767,7 +773,8 @@ test('regression (ChatGPT review): the check-up fixes the five known failures, a
   ];
   const chat = { ignored: [], entries: [], log, memory: '## Current Scene\nThe escape room is over; Jacek is at The Canvas with Ahyeon.' };
   chat.entries = reconLib.buildEntries(chat);
-  reconLib.setAnswer([
+  let ans;
+  reconLib.setAnswer(ans = [
     '- Yujin | done | theme for the fourth anniversary (reply 2)', '- Yujin | done | escape room booking (reply 2)', '- Jacek | knows | [unlocked storm] Irene showed him (reply 1)',
     '- [wants Jacek\'s baby] = [child-with-jacek]', 'Some chatter that is not a fact.', '- Yujin | mood | happy',
     // What the real keeper got wrong the first time: none of these may be used.
@@ -794,9 +801,26 @@ test('regression (ChatGPT review): the check-up fixes the five known failures, a
   // The same answer again: nothing new is added.
   const before = chat.reconRecords.length;
   chat.entries = es;
+  reconLib.setAnswer(ans);
   assert.strictEqual(await reconLib.reconcileFacts(chat), 0);
   assert.strictEqual(chat.reconRecords.length, before);
   assert(chat.reconReport.skipped.some(([, why]) => why === 'already applied before') && chat.reconReport.skipped.some(([, why]) => why === 'already merged'));
+});
+
+test('the secrets check (second request) adds who was confided in and merges two names for one secret; "done" only when it happened', async () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'reply ' + n + ' text', records: lib.parseRecords(lines.join('\n')) });
+  const log = [R(1, ['- Irene | secret | [unlocked storm] she kept a storm inside for a decade; Jacek unlocked it', '- Yujin | secret | [wants Jacek\'s baby] wants a child with Jacek', '- Yujin | secret | [child-with-jacek] said yes to a child with Jacek', '- Jacek | goal | to give a tour of heaven at the anniversary'])];
+  for (let i = 2; i <= 12; i++) log.push(R(i, ['- Jacek | key moment | moment ' + i]));
+  const chat = { ignored: [], entries: [], log, memory: '## Current Scene\nThe anniversary is in 20 days.' };
+  chat.entries = reconLib.buildEntries(chat);
+  reconLib.setAnswer('- Jacek | done | tour of heaven at the anniversary — the master flow is locked, the party is still ahead (reply 12)',
+    '- Jacek | knows | [unlocked storm] Irene showed him her storm (reply 1)\n- [wants Jacek\'s baby] = [child-with-jacek]');
+  await reconLib.reconcileFacts(chat);
+  const sec = reconLib.buildSecrets(chat);
+  assert(sec.find((x) => x.name === 'unlocked storm').knows.some((k) => k.who === 'Jacek'));
+  assert.strictEqual(sec.filter((x) => /child/.test(x.text)).length, 1);
+  assert(/tour of heaven/.test(reconLib.buildEntries(chat).find((e) => e.name === 'Jacek').pinText || reconLib.buildEntries(chat).find((e) => e.name === 'Jacek').text));
+  assert(chat.reconReport.skipped.some(([, why]) => why === 'says it is not done'));
 });
 
 Promise.all(pending).then(() => console.log('All ' + passed + ' entry checks passed.'));

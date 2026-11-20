@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.34.0
+// @version      3.35.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2581,7 +2581,7 @@
   }
   // Check-up lines that say the opposite of what they are ("done … (still open)"),
   // or only repeat what is known ("knows … already knows"): never used.
-  const NOT_DONE_RE = /\b(still open|not done|not yet|in progress|ongoing|remains? (open|pending|unresolved)|still pending|no change|unchanged|not completed)\b/i;
+  const NOT_DONE_RE = /\b(still open|not done|not yet|in progress|ongoing|remains? (open|pending|unresolved)|still pending|no change|unchanged|not completed|underway|is happening|happening now|upcoming|still ahead|in progress|currently)\b/i;
   const NO_NEWS_RE = /\b(already knows?|already known|already listed|no change|unchanged)\b/i;
   const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|waiting|standing|leaning|parked|sat|stood|at the moment|for now|now at|no longer|currently at|with jacek|with him|with her|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently)\b/i;
   const GROUP_HINT_RE = /\b(magazine|tabloid|outlet|media|news|newspaper|label|girl group|boy group|idol group|company|agency|entertainment|corporation|firm|fund|brand|network|channel|team|band|crew)\b/i;
@@ -3508,15 +3508,36 @@
       'THE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-30000) + '\n>>>\n\n' +
       'STILL LISTED AS OPEN:\n<<<\n' + open.join('\n').slice(-30000) + '\n>>>\n\nSECRETS AND WHO KNOWS THEM:\n<<<\n' + secrets.join('\n').slice(-15000) + '\n>>>\n\n' +
       'JOB: CHECK-UP. Using only what the texts above show, list ONLY real changes, one per line, each ending with the reply that shows it as "(reply N)":\n' +
-      '- "- Person | done | a few words of the goal or promise (reply N)" when it clearly happened, was kept, dropped or replaced. Never for something still open, in progress or merely not mentioned.\n' +
+      '- "- Person | done | a few words of the goal or promise (reply N)" only when the thing itself happened or was kept, dropped or replaced. Not when planning for it moved on, it is underway or still ahead (a party in 20 days is not done because its plan is locked), and never because it is not mentioned.\n' +
       '- "- Person | location | their new home or base (reply N)" only when they moved house; never where they are at the moment (that is the scene). "- Person | role | new role (reply N)" only when their job or role changed.\n' +
       '- "- Person | knows | [exact listed secret name] how they learned it (reply N)" only for a person NOT already listed as knowing it, who clearly learned it (told, confessed to, overheard, said in the group chat; "Everyone" when everyone knows).\n' +
       '- "- [secret name] = [other secret name]" when two listed secrets are the same secret (use the listed names exactly).\n' +
       'Never write lines that change nothing (no "already knows", "still open", "no change"). Never guess or invent. Write "none" if nothing changed. Output only those lines.';
-    const out = cleanOutput(await callLLM(updateSystem(), user));
+    const keyOfName = (n) => normValue(n).split(' ').filter((w) => w && !STOP_WORDS.has(w) && !/^(on|of|to|a|an|in|at|by|is|my|me)$/.test(w)).sort().join(' ');
+    const out1 = cleanOutput(await callLLM(updateSystem(), user));
+    // The secrets on their own (one focused question works better): for each,
+    // the reply where it was recorded; who knows it, and which are the same.
+    let out2 = '';
+    const secs = chat.__secrets || buildSecrets(chat);
+    if (secs.length) {
+      const firstAt = (x) => { const r = recs.find((y) => y.k === 'secret' && !y.recon && y.at !== Infinity && (y.v.match(/\[([^\]]+)\]/) || [])[1] && keyOfName((y.v.match(/\[([^\]]+)\]/) || [])[1]) === keyOfName(x.name)); return r ? r.at : 0; };
+      let ev = '';
+      const lines = secs.map((x) => {
+        const n = firstAt(x);
+        const e = n ? chat.log[n - 1] : null;
+        if (e && ev.length < 45000) ev += '[reply ' + n + '] ' + e.text + '\n\n';
+        return '[' + x.name + '] ' + (x.owners && x.owners.length ? x.owners.join(' and ') + '\'s secret: ' : '') + x.text + ' — recorded in reply ' + (n || '?') + ' — listed as knowing: ' + (x.everyone ? 'everyone' : x.knows.map((k) => k.who).join(', ') || 'nobody');
+      });
+      const user2 = 'SECRETS:\n<<<\n' + lines.join('\n') + '\n>>>\n\nTHE REPLIES WHERE THEY WERE RECORDED (summaries):\n<<<\n' + ev + '\n>>>\n\nTHE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-20000) + '\n>>>\n\n' +
+        'JOB: SECRETS CHECK. For each secret, who really knows it? Think of the person it was confided to, revealed to, or who was part of it (e.g. a secret someone showed or confessed to Jacek: Jacek knows it).\n' +
+        '- "- Person | knows | [exact secret name] how they know (reply N)" for each person who knows a secret but is not listed as knowing it.\n' +
+        '- "- [secret name] = [other secret name]" for two listed secrets that are the same secret (the same fact about the same person, worded differently).\n' +
+        'Only what the texts show; never guess. Write "none" if nothing is missing. Output only those lines.';
+      out2 = cleanOutput(await callLLM(updateSystem(), user2));
+    }
+    const out = out1 + (out2 ? '\n' + out2 : '');
     const got = [];
     const alias = Object.assign({}, chat.secretAlias || {});
-    const keyOfName = (n) => normValue(n).split(' ').filter((w) => w && !STOP_WORDS.has(w) && !/^(on|of|to|a|an|in|at|by|is|my|me)$/.test(w)).sort().join(' ');
     // A report of what the keeper said and what was done with it (Diagnostics).
     const applied = [], skipped = [];
     const have = new Set((chat.reconRecords || []).map((r) => [r.s, r.k, normValue(r.v)].join('|').toLowerCase()));

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.35.0
+// @version      3.36.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1667,6 +1667,7 @@
     '  Times: write the story day or date ("the day of the escape room", "Saturday"), never "today", "tomorrow" or "tonight" (they are wrong a day later).',
     '  Moments (a short line saying what happened to or because of them in this reply) have four levels; choose one:',
     '  "turning point": changes the whole story for good (a new or ended relationship, a secret coming out, a move, a death, a big decision). Rare: at most one every several replies.',
+    '  For a turning point or major moment, write what happened and, when the story shows a lasting change, what is different since: "argued about his calm → since then she offers quiet comfort when he is down (affects: Shuhua & Jacek)". Leave out the arrow part when nothing lasting changed.',
     '  "major moment": matters for this character later (a first time, a confession, a promise or vow, a fight or making up, something they will remember).',
     '  "minor moment": worth remembering but changes little (a date, a gift, a small plan, a meaningful talk).',
     '  "routine moment": everyday things (meals, chores, banter, sleeping, texts, an intimate scene with nothing new in it). Leave out what is not worth remembering at all.',
@@ -2528,6 +2529,13 @@
   // Subjects that are not a person, place or thing of their own; the story's
   // World & Timeline section covers them.
   const PLACEHOLDER_SUBJECT_RE = /^(the )?(setting|scene|location|world|story|timeline|narrator|narration|user|you|me|everyone|everybody|all|the group|group|others|them|they)$/i;
+  // The relationships list's lines first (it is the authority on the dynamic);
+  // pairs it does not cover keep their lines from the facts.
+  function mergeRel(mapped, rel, which) {
+    if (!mapped) return rel.map((x) => x[which]);
+    const has = (t) => mapped.find((l) => l.toLowerCase().startsWith('- ' + t.toLowerCase() + ':'));
+    return mapped.concat(rel.filter((x) => !has(x.t)).map((x) => x[which]));
+  }
   // The relationships list: "- Winter: dating — close again after the fight".
   function relationsOf(chat, p) {
     const list = chat.relMap && chat.relMap.list;
@@ -2537,7 +2545,8 @@
     for (const x of list) {
       const a = names.includes(x.a.toLowerCase()), b = names.includes(x.b.toLowerCase());
       if (a === b) continue;
-      out.push('- ' + (a ? x.b : x.a) + ': ' + x.status + (x.now ? ' — ' + x.now : ''));
+      out.push('- ' + (a ? x.b : x.a) + ': ' + x.status + (x.now ? ' — ' + x.now : '') + (x.dynamic ? '. ' + x.dynamic.replace(/\.$/, '') : '') +
+        (x.shaped ? '. Shaped by: ' + x.shaped.replace(/\.$/, '') : '') + (x.understood ? '. Understandings: ' + x.understood.replace(/\.$/, '') : '') + (x.dynamic || x.shaped || x.understood ? '.' : ''));
     }
     return out;
   }
@@ -2671,7 +2680,7 @@
       const now = (list) => (list.length ? list[list.length - 1].v : null);
       // "Who they are now": the keeper's short portrait of a main character.
       const portrait = (chat.portraits || {})[p.name.toLowerCase()];
-      if (portrait && portrait.text) section('Who they are now', [portrait.text]);
+      if (portrait && portrait.text) section('Who they are now', [portrait.text], [portrait.text], [portrait.text]);
       const basics = [], basicsNow = [];
       const one = (label, k) => {
         const v = single(by(k));
@@ -2707,6 +2716,7 @@
         const last = now(of('stands'));
         const short = alike(uniq(of('relationship')), 0.85).slice(-RELATION_FACTS).map((r) => r.v);
         return {
+          t,
           full: '- ' + t + ': ' + hist.join('; ') + (full ? (hist.length ? '. ' : '') + 'Where things stand: ' + full : ''),
           pin: '- ' + t + ': ' + (short.length ? short.join('; ') + (last ? '. ' : '') : '') + (last ? 'Where things stand: ' + last : ''),
           mini: '- ' + t + ': ' + (last ? last : short.slice(-1).join('')),
@@ -2717,7 +2727,7 @@
       // they are to each other and a short note on how things stand.
       const mapped = relationsOf(chat, p);
       section('Relationships', rel.map((x) => x.full).concat(loose.map((r) => '- ' + r.v)),
-        mapped ? mapped : rel.map((x) => x.pin).concat(loose.slice(-RELATION_FACTS).map((r) => '- ' + r.v)), mapped ? mapped : rel.map((x) => x.mini));
+        mergeRel(mapped, rel, 'pin').concat(loose.slice(-RELATION_FACTS).map((r) => '- ' + r.v)), mergeRel(mapped, rel, 'mini'));
       const things = alike(uniq(by('possession')), 0.5);
       section('Possessions', things.map((r) => '- ' + r.v), things.slice(-POSSESSIONS_PINNED).map((r) => '- ' + r.v));
       // What they know (from "Who knows what"): the secrets' short names.
@@ -3326,8 +3336,13 @@
       // The facts format: portraits of main characters that have grown.
       // (After a rebuild or "Update now", every main character that needs one.)
       if (factsMode(chat)) { try { await updatePortraits(chat, job, null, force ? 8 : PORTRAITS_PER_UPDATE); } catch (e) { if (e.stopped) throw e; } }
+      // Short portraits of the other recurring characters (all after a rebuild, else one request at a time).
+      if (factsMode(chat) && shortPortraitsDue(chat).length) { try { await writeShortPortraits(chat, job, force ? Infinity : 1); } catch (e) { if (e.stopped) throw e; } }
       // After a rebuild: the relationships, once.
-      if (force && factsMode(chat)) { try { await job('update', 'Wrote the relationships', () => writeRelationships(chat)); } catch (e) { if (e.stopped) throw e; } }
+      // The relationships: all after a rebuild; at each check-up, the pairs with new facts.
+      if (factsMode(chat) && (force || chat.log.length - (chat.reconAt || 0) >= RECONCILE_EVERY)) {
+        try { await job('update', force ? 'Wrote the relationships' : 'Updated the relationships with new facts', () => writeRelationships(chat, force, force ? Infinity : 2)); } catch (e) { if (e.stopped) throw e; }
+      }
       // The check-up: after a rebuild, and every RECONCILE_EVERY replies.
       if (factsMode(chat) && (force || chat.log.length - (chat.reconAt || 0) >= RECONCILE_EVERY)) {
         try { const n = await job('check', 'Check-up of what is out of date', () => reconcileFacts(chat)); if (n) logJob(chat, { kind: 'check', label: 'Check-up: ' + n + ' fact' + (n === 1 ? '' : 's') + ' brought up to date', ok: true, ms: 0 }); } catch (e) { if (e.stopped) throw e; }
@@ -3397,6 +3412,45 @@
     if (c.bad || c.text.length < 120) throw new Error('the memory keeper did not write a usable portrait of ' + e.name);
     return c.text;
   }
+  // Short portraits for every recurring character who is not a main one, a few
+  // characters per request: who they are, how they talk and act, what they want,
+  // how they show affection; only what their facts show.
+  const SHORT_PORTRAIT_MIN_FACTS = 6;
+  const SHORT_PORTRAITS_PER_REQUEST = 6;
+  function shortPortraitsDue(chat) {
+    const main = new Set(mainCharacters(chat));
+    return chat.entries.filter((e) => e.fromFacts && !main.has(e) && (e.kind || 'character') === 'character' && (e.records || 0) >= SHORT_PORTRAIT_MIN_FACTS && portraitDue(chat, e));
+  }
+  async function writeShortPortraits(chat, job, maxRequests = 1) {
+    const due = shortPortraitsDue(chat);
+    let n = 0;
+    for (let i = 0, req = 0; i < due.length && req < maxRequests; i += SHORT_PORTRAITS_PER_REQUEST, req++) {
+      checkStop();
+      const batch = due.slice(i, i + SHORT_PORTRAITS_PER_REQUEST);
+      const label = 'Wrote short portraits of ' + batch.map((e) => e.name).join(', ');
+      const out = await job('update', label, async () => cleanOutput(await callLLM(updateSystem(),
+        'CHARACTERS (everything known about each, built from the story):\n<<<\n' +
+        batch.map((e) => '=== ' + e.name + ' ===\n' + e.text.replace(/### Who they are now\n[\s\S]*?(?=\n### |$)/, '').slice(-6000)).join('\n\n') + '\n>>>\n\n' +
+        'JOB: SHORT PORTRAITS. For each character write 2 to 4 sentences of plain prose: their core personality, how they talk, how they typically act, what they want, and how they show affection. ' +
+        'Use only what the facts show; if something is only suggested, say "seems". Where an experience changed them, say what changed. No lists, no headings inside.\n' +
+        'Answer in exactly this form, for every character:\n=== PORTRAIT: Name ===\n(portrait)')));
+      for (const part of out.split(/^\s*=+\s*PORTRAIT\s*:\s*/im).slice(1)) {
+        const m = part.match(/^([^\n=]{1,60}?)\s*=*\s*\n([\s\S]*)$/);
+        if (!m) continue;
+        const e = batch.find((x) => x.name.toLowerCase() === m[1].trim().toLowerCase());
+        const text = cleanSummary(m[2].replace(/^\s*[#*=].*$/gm, '').replace(/\s+/g, ' ')).text;
+        if (!e || text.length < 60) continue;
+        chat.portraits = chat.portraits || {};
+        const prev = chat.portraits[e.name.toLowerCase()];
+        if (prev && prev.manual) continue;
+        if (prev && text.length < prev.text.length * 0.5) { prev.records = e.records || 0; continue; } // never a less informative one
+        chat.portraits[e.name.toLowerCase()] = { text, at: Date.now(), records: e.records || 0, short: true };
+        n++;
+      }
+      await saveChat(chat);
+    }
+    return n;
+  }
   async function updatePortraits(chat, job, names, max = PORTRAITS_PER_UPDATE) {
     const todo = names ? names.map((n) => chat.entries.find((e) => e.name === n)).filter(Boolean)
       : mainCharacters(chat).filter((e) => portraitDue(chat, e)).slice(0, max);
@@ -3404,7 +3458,10 @@
       checkStop();
       const text = await job('update', 'Wrote who ' + e.name + ' is now', () => writePortrait(chat, e));
       chat.portraits = chat.portraits || {};
-      chat.portraits[e.name.toLowerCase()] = { text, at: Date.now(), records: e.records || 0 };
+      const prev = chat.portraits[e.name.toLowerCase()];
+      // Never a less informative portrait (e.g. after a long absence): the fuller one stays.
+      if (!names && prev && !prev.manual && text.length < prev.text.length * 0.5) prev.records = e.records || 0;
+      else chat.portraits[e.name.toLowerCase()] = { text, at: Date.now(), records: e.records || 0 };
       await saveChat(chat);
     }
     return todo.length;
@@ -3434,31 +3491,71 @@
 
   // The relationships, once at the end of a rebuild (and with the button):
   // what each pair is to each other, plus a short note on how things stand.
-  async function writeRelationships(chat) {
+  // The relationships: for each important pair, what they are, how they are
+  // together, what shaped them and what they have agreed. Only pairs with new
+  // facts are rewritten (with their previous description to build on), so the
+  // list is consolidated, never appended to; "all" rewrites every pair.
+  const REL_MIN_FACTS = 3;
+  const REL_PER_REQUEST = 15;
+  function relationPairs(chat) {
     const pairs = new Map();
-    for (const r of allRecords(chat)) {
-      if (!/^(relationship|stands)$/.test(r.k) || !r.t) continue;
+    const recs = allRecords(chat);
+    for (const r of recs) {
+      if (!/^(relationship|stands)$/.test(r.k) || !r.t || isGeneric(r.t) || /,|\band\b/.test(r.t)) continue;
       const key = [r.s, r.t].map((x) => x.toLowerCase()).sort().join(' & ');
-      const x = pairs.get(key) || { rel: [], stands: '' };
-      if (r.k === 'stands') x.stands = r.s + ' about ' + r.t + ': ' + r.v; else x.rel.push(r.s + ' → ' + r.t + ': ' + r.v);
+      const x = pairs.get(key) || { a: r.s, b: r.t, rel: [], stands: [], moments: [], count: 0 };
+      if (r.k === 'stands') x.stands.push(r.s + ' about ' + r.t + ': ' + r.v + (r.at !== Infinity ? ' (reply ' + r.at + ')' : ''));
+      else x.rel.push(r.s + ' → ' + r.t + ': ' + r.v + (r.at !== Infinity ? ' (reply ' + r.at + ')' : ''));
+      x.count++;
       pairs.set(key, x);
     }
-    if (!pairs.size) return [];
-    const facts = [...pairs.entries()].map(([k, x]) => k + '\n' + x.rel.slice(-6).map((l) => '  ' + l).join('\n') + (x.stands ? '\n  now: ' + x.stands : '')).join('\n').slice(-60000);
-    const user = 'RELATIONSHIP FACTS (per pair, oldest first):\n<<<\n' + facts + '\n>>>\n\n' +
-      'JOB: RELATIONSHIPS. For every pair that has a lasting relationship, write one line: "- Name | Name | what they are to each other | how things stand now".\n' +
-      'What they are: a few words only, e.g. dating, married, engaged, exes, siblings, best friends, rivals, boss and assistant, in a relationship with each other (polycule). ' +
-      'How things stand now: at most 12 words about the relationship (e.g. "close again after the fight", "she is hiding the pregnancy from him"), never what they are doing in a scene. ' +
-      'Leave out pairs with no lasting relationship. Never invent. Output only the lines.';
-    const out = cleanOutput(await callLLM(updateSystem(), user));
-    const list = [];
-    for (const l of out.split('\n')) {
-      const m = l.match(/^\s*[-*•]?\s*([^|]{1,60}?)\s*\|\s*([^|]{1,60}?)\s*\|\s*([^|]{1,80}?)\s*(?:\|\s*(.{0,160}?))?\s*$/);
-      if (m && !isGeneric(m[1]) && !isGeneric(m[2])) list.push({ a: m[1].trim(), b: m[2].trim(), status: m[3].trim(), now: (m[4] || '').trim() });
+    for (const r of recs) {
+      if (r.k !== 'moment') continue;
+      for (const x of pairs.values()) {
+        const other = r.s.toLowerCase() === x.a.toLowerCase() ? x.b : r.s.toLowerCase() === x.b.toLowerCase() ? x.a : null;
+        if (other && new RegExp('\\b' + other.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(r.v)) x.moments.push((r.tier ? r.tier + ': ' : '') + r.s + ' ' + r.v + (r.at !== Infinity ? ' (reply ' + r.at + ')' : ''));
+      }
     }
-    if (!list.length) throw new Error('the memory keeper did not write a usable list of relationships');
-    chat.relMap = { at: Date.now(), list };
-    return list;
+    return pairs;
+  }
+  async function writeRelationships(chat, all, maxRequests = Infinity) {
+    const pairs = relationPairs(chat);
+    const old = new Map(((chat.relMap && chat.relMap.list) || []).map((x) => [[x.a, x.b].map((n) => n.toLowerCase()).sort().join(' & '), x]));
+    const todo = [...pairs.entries()].filter(([k, x]) => x.count >= REL_MIN_FACTS && (all || !old.has(k) || x.count >= (old.get(k).count || 0) + REL_MIN_FACTS))
+      .sort((a, b) => b[1].count - a[1].count);
+    if (!todo.length) return [];
+    const written = [];
+    for (let i = 0, req = 0; i < todo.length && req < maxRequests; i += REL_PER_REQUEST, req++) {
+      checkStop();
+      const batch = todo.slice(i, i + REL_PER_REQUEST);
+      const facts = batch.map(([k, x]) => {
+        const prev = old.get(k);
+        return '=== ' + x.a + ' & ' + x.b + ' ===\n' + (prev && prev.dynamic ? 'PREVIOUS DESCRIPTION: status: ' + prev.status + ' · dynamic: ' + prev.dynamic + ' · shaped by: ' + (prev.shaped || '') + ' · understandings: ' + (prev.understood || '') + '\n' : '') +
+          'FACTS:\n' + x.rel.slice(-10).map((l) => '- ' + l).join('\n') + (x.stands.length ? '\n' + x.stands.slice(-3).map((l) => '- now: ' + l).join('\n') : '') +
+          (x.moments.length ? '\nMOMENTS BETWEEN THEM:\n' + x.moments.slice(-8).map((l) => '- ' + l).join('\n') : '');
+      }).join('\n\n').slice(-60000);
+      const user = 'PAIRS (facts oldest first):\n<<<\n' + facts + '\n>>>\n\n' +
+        'JOB: RELATIONSHIPS. For each pair, describe the relationship AS IT IS NOW, using only the facts (and building on the previous description, correcting what newer facts changed). Answer for every pair in exactly this form:\n' +
+        '=== Name & Name ===\nStatus: what they are to each other and its state now (a few words: "girlfriend, close and trusting")\n' +
+        'Dynamic: how they normally treat, talk to and behave around each other (one sentence)\nShaped by: the one or two experiences that changed them, each with what changed (one sentence)\n' +
+        'Understandings: private agreements, promises, boundaries, habits or pet names between them ("none" if there are none)\n' +
+        'Never describe a single scene as the dynamic. Never invent. No commentary.';
+      const out = cleanOutput(await callLLM(updateSystem(), user));
+      for (const part of out.split(/^\s*=+\s*/m)) {
+        const head = part.match(/^([^\n=]{1,60}?)\s*&\s*([^\n=]{1,60}?)\s*=+\s*\n([\s\S]*)$/);
+        if (!head) continue;
+        const field = (n) => ((head[3].match(new RegExp('^\\s*[-*]?\\s*' + n + '\\s*:\\s*(.+)$', 'im')) || [])[1] || '').trim();
+        const k = [head[1], head[2]].map((n) => n.trim().toLowerCase()).sort().join(' & ');
+        const x = pairs.get(k);
+        if (!x || !field('Status')) continue;
+        const understood = field('Understandings');
+        written.push({ a: x.a, b: x.b, status: field('Status'), dynamic: field('Dynamic'), shaped: field('Shaped by'), understood: /^none\.?$/i.test(understood) ? '' : understood, count: x.count, at: Date.now() });
+      }
+    }
+    if (!written.length) throw new Error('the memory keeper did not write a usable list of relationships');
+    for (const w of written) old.set([w.a, w.b].map((n) => n.toLowerCase()).sort().join(' & '), w);
+    chat.relMap = { at: Date.now(), list: [...old.values()] };
+    return written;
   }
   async function runRelationships(id) {
     const chat = await getChat(id, true);
@@ -3466,7 +3563,7 @@
       const t0 = Date.now();
       setStep(id, 'Writing the relationships…');
       try {
-        const list = await writeRelationships(chat);
+        const list = await writeRelationships(chat, true);
         logJob(chat, { kind: 'update', label: 'Wrote the relationships (' + list.length + ')', ok: true, ms: Date.now() - t0 });
         await saveChat(chat);
         toast('Relationships written. The pinned message updates in a few seconds.');
@@ -5788,6 +5885,16 @@
           await save(true);
           await runRelationships(chat.id);
         } }, chat.relMap ? 'Rewrite relationships (' + ago(chat.relMap.at) + ')' : 'Write relationships') : null,
+        factsMode(chat) && shortPortraitsDue(chat).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          const due = shortPortraitsDue(chat).length;
+          if (!confirm('Write short portraits of ' + due + ' recurring characters (who they are, how they talk and act, how they show affection)? About ' + Math.ceil(due / SHORT_PORTRAITS_PER_REQUEST) + ' requests.')) return;
+          await save(true);
+          await withBusy(chat.id, Math.ceil(due / SHORT_PORTRAITS_PER_REQUEST), async () => {
+            const job = async (kind, label, fn) => { setStep(chat.id, label + '…'); const t0 = Date.now(); try { const r = await fn(); logJob(chat, { kind, label, ok: true, ms: Date.now() - t0 }); progress[chat.id].done++; return r; } catch (e) { if (!e.stopped) logJob(chat, { kind, label, ok: false, ms: Date.now() - t0, error: String(e.message || e).slice(0, 200) }); throw e; } };
+            try { const n = await writeShortPortraits(chat, job, Infinity); toast('Wrote ' + n + ' short portraits.'); } catch (e) { await saveChat(chat); toast(e.stopped ? 'Stopped.' : 'Could not write the portraits: ' + (e.message || e), !e.stopped); }
+          });
+        } }, 'Write short portraits (' + shortPortraitsDue(chat).length + ')') : null,
         factsMode(chat) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           if (!confirm('Have the memory keeper check what is out of date (finished goals and promises, old roles or places, who now knows each secret, the same secret under two names)? One request. Nothing is deleted.')) return;

@@ -22,7 +22,7 @@ function grab(name) {
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
 const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const MINOR_PINNED = .*\n/)[0] + src.match(/ {2}const ROUTINE_PINNED = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const NOT_DONE_RE = .*\n/)[0] + src.match(/ {2}const NO_NEWS_RE = .*\n/)[0] + src.match(/ {2}const NOT_HOME_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
-const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'cleanChapterText']
+const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel', 'cleanChapterText']
   .map(grab).join('\n') + '\nreturn { cleanChapterText, latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
 
 
@@ -38,8 +38,18 @@ function grabAsync(name) {
   throw new Error('unbalanced ' + name);
 }
 const reconLib = new Function(factsConsts + consts + "  let answers = [];\n  const callLLM = async () => (answers.length ? answers.shift() : 'none');\n  const updateSystem = () => '';\n" +
-  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'buildSecrets', 'sigWords', 'alike', 'importantMoment', 'relationsOf'].map(grab).join('\n') +
+  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'buildSecrets', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel'].map(grab).join('\n') +
   '\n' + grabAsync('reconcileFacts') + '\nreturn { setAnswer: (a, b) => { answers = [a].concat(b ? [b] : []); }, reconcileFacts, buildEntries, buildSecrets };')();
+
+
+// Relationships and short portraits, with the keeper's answers given by the test.
+const relLib = new Function(factsConsts + consts + src.match(/ {2}const REL_MIN_FACTS = .*\n/)[0] + src.match(/ {2}const REL_PER_REQUEST = .*\n/)[0] + src.match(/ {2}const PORTRAIT_MIN_FACTS = .*\n/)[0] +
+  src.match(/ {2}const SHORT_PORTRAIT_MIN_FACTS = .*\n/)[0] + src.match(/ {2}const SHORT_PORTRAITS_PER_REQUEST = .*\n/)[0] +
+  "  let answers = [];\n  const callLLM = async () => (answers.length ? answers.shift() : 'none');\n  const updateSystem = () => '';\n  const checkStop = () => {};\n  const saveChat = async () => {};\n" +
+  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'cleanSummary', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'buildSecrets',
+    'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel', 'relationPairs', 'mainCharacters', 'portraitDue', 'shortPortraitsDue'].map(grab).join('\n') + '\n' +
+  grabAsync('writeRelationships') + '\n' + grabAsync('writeShortPortraits') +
+  '\nreturn { setAnswers: (a) => { answers = a.slice(); }, writeRelationships, writeShortPortraits, buildEntries, shortPortraitsDue };')();
 
 let passed = 0;
 const pending = [];
@@ -821,6 +831,42 @@ test('the secrets check (second request) adds who was confided in and merges two
   assert.strictEqual(sec.filter((x) => /child/.test(x.text)).length, 1);
   assert(/tour of heaven/.test(reconLib.buildEntries(chat).find((e) => e.name === 'Jacek').pinText || reconLib.buildEntries(chat).find((e) => e.name === 'Jacek').text));
   assert(chat.reconReport.skipped.some(([, why]) => why === 'says it is not done'));
+});
+
+test('relationship dynamics: status, dynamic, what shaped them, understandings; only pairs with new facts are rewritten', async () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'reply ' + n, records: lib.parseRecords(lines.join('\n')) });
+  const log = [R(1, ['- Shuhua | relationship: Jacek | girlfriend who insults him lovingly', '- Shuhua | relationship: Jacek | argued in the library about his calm',
+    '- Shuhua | where things stand: Jacek | blanket protocol holding', '- Shuhua | major moment | agreed with Jacek on blanket, not flamethrower', '- Shuhua | personality | wraps care in insults'])];
+  const chat = { ignored: [], entries: [], log };
+  chat.entries = relLib.buildEntries(chat);
+  relLib.setAnswers(['=== Shuhua & Jacek ===\nStatus: girlfriend, close and trusting\nDynamic: she shows love through challenges, insults and fierce physical affection\nShaped by: a library argument about his calm → she now offers quiet comfort when he is down\nUnderstandings: "blanket, not flamethrower"; she wants a new knife']);
+  const w = await relLib.writeRelationships(chat, true);
+  assert.strictEqual(w.length, 1);
+  const pin = relLib.buildEntries(chat).find((e) => e.name === 'Shuhua').pinText;
+  assert(/- Jacek: girlfriend, close and trusting\. she shows love through challenges[^\n]*Shaped by: a library argument[^\n]*Understandings: "blanket, not flamethrower"/.test(pin), pin);
+  // Nothing new: nothing is rewritten (and no request is made).
+  relLib.setAnswers(['=== Shuhua & Jacek ===\nStatus: SHOULD NOT BE USED']);
+  assert.strictEqual((await relLib.writeRelationships(chat, false)).length, 0);
+  assert.strictEqual(chat.relMap.list[0].status, 'girlfriend, close and trusting');
+});
+
+test('short portraits: several characters per request, only from their facts, never replaced by a much shorter one', async () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'reply ' + n, records: lib.parseRecords(lines.join('\n')) });
+  const lines = (name) => [1, 2, 3, 4, 5, 6, 7].map((i) => '- ' + name + ' | personality | trait number ' + i + ' of ' + name);
+  const chat = { ignored: [], entries: [], log: [R(1, lines('Seulgi').concat(lines('Karina')))] };
+  chat.entries = relLib.buildEntries(chat);
+  assert.deepStrictEqual(relLib.shortPortraitsDue(chat).map((e) => e.name).sort(), ['Karina', 'Seulgi']);
+  const job = async (k, l, fn) => fn();
+  relLib.setAnswers(['=== PORTRAIT: Seulgi ===\nSeulgi is calm and kind; she makes everyone feel safe and shows affection through quiet care and long hugs.\n=== PORTRAIT: Karina ===\nKarina is composed and deliberate; she leads, speaks precisely and shows affection through calm, public claiming.']);
+  assert.strictEqual(await relLib.writeShortPortraits(chat, job, Infinity), 2);
+  const es = relLib.buildEntries(chat);
+  assert(/Seulgi is calm and kind/.test(es.find((e) => e.name === 'Seulgi').miniText || es.find((e) => e.name === 'Seulgi').text));
+  // A later, much shorter portrait does not replace the fuller one.
+  chat.portraits.seulgi.records = 1;
+  chat.entries = es;
+  relLib.setAnswers(['=== PORTRAIT: Seulgi ===\nSeulgi is kind and calm, nice.']);
+  await relLib.writeShortPortraits(chat, job, Infinity);
+  assert(/makes everyone feel safe/.test(chat.portraits.seulgi.text));
 });
 
 Promise.all(pending).then(() => console.log('All ' + passed + ' entry checks passed.'));

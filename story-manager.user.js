@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.33.1
+// @version      3.34.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2512,7 +2512,10 @@
     chat.log.forEach((e, i) => (e.records || []).forEach((r, n) => out.push(Object.assign({ id: e.id + '#' + n, at: i + 1 }, r))));
     (chat.manualRecords || []).forEach((r, n) => out.push(Object.assign({ id: 'manual#' + (r.n != null ? r.n : n), at: Infinity, manual: true }, r)));
     // Corrections from the check-ups (see reconcileFacts), placed at the reply they were made after.
-    (chat.reconRecords || []).forEach((r, n) => out.push(Object.assign({ id: 'recon#' + n, recon: true }, r)));
+    (chat.reconRecords || []).forEach((r, n) => {
+      if ((r.k === 'done' && NOT_DONE_RE.test(r.v)) || (r.k === 'knows' && NO_NEWS_RE.test(r.v)) || ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v))) return;
+      out.push(Object.assign({ id: 'recon#' + n, recon: true }, r));
+    });
     return out.filter((r) => !hidden.has(r.id));
   }
 
@@ -2576,7 +2579,11 @@
     const w = sigWords(r.v);
     return turning.some((t) => { let n = 0; for (const a of w) if (t.has(a)) n++; return n >= 3 || (n >= 2 && n / Math.min(w.size, t.size) >= 0.5); });
   }
-  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|waiting|standing|leaning|parked|sat|stood|at the moment|for now|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently)\b/i;
+  // Check-up lines that say the opposite of what they are ("done … (still open)"),
+  // or only repeat what is known ("knows … already knows"): never used.
+  const NOT_DONE_RE = /\b(still open|not done|not yet|in progress|ongoing|remains? (open|pending|unresolved)|still pending|no change|unchanged|not completed)\b/i;
+  const NO_NEWS_RE = /\b(already knows?|already known|already listed|no change|unchanged)\b/i;
+  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|waiting|standing|leaning|parked|sat|stood|at the moment|for now|now at|no longer|currently at|with jacek|with him|with her|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently)\b/i;
   const GROUP_HINT_RE = /\b(magazine|tabloid|outlet|media|news|newspaper|label|girl group|boy group|idol group|company|agency|entertainment|corporation|firm|fund|brand|network|channel|team|band|crew)\b/i;
   const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
@@ -2809,6 +2816,7 @@
         for (const p of whoOf(r.s)) {
           const prev = x.people.get(p.toLowerCase());
           if (prev && prev.at > r.at) continue; // the newest record about this person wins
+          if (prev && r.recon && r.k === 'knows' && prev.knows) continue; // a check-up only adds new knowers
           x.people.set(p.toLowerCase(), { who: p, knows: r.k === 'knows', at: r.at, how: r.k === 'knows' ? rest : '' });
         }
       }
@@ -3487,15 +3495,24 @@
     }
     const secrets = (chat.__secrets || buildSecrets(chat)).map((x) => '[' + x.name + '] ' + x.text + ' — knows: ' + (x.everyone ? 'everyone' : x.knows.map((k) => k.who).join(', ') || 'nobody listed'));
     if (!open.length && !secrets.length) return 0;
-    const recent = chat.log.slice(-8).map((e, i) => '[' + (at - Math.min(8, at) + i + 1) + '] ' + e.text).join('\n\n');
-    const user = 'THE STORY NOW:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\nTHE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-30000) + '\n>>>\n\n' +
+    const recent = chat.log.slice(-8).map((e, i) => '[reply ' + (at - Math.min(8, at) + i + 1) + '] ' + e.text).join('\n\n');
+    // Older evidence: the replies where each secret and open goal or promise was
+    // recorded (so a confession far back can still be seen), and the chapters.
+    const shownIds = new Set(chat.entries.flatMap((e) => e.recordIds || []));
+    const wantAt = [...new Set(recs.filter((r) => r.at !== Infinity && !r.recon && r.at <= at - 8 && (/^(secret|knows|notknows)$/.test(r.k) || (/^(goal|promise)$/.test(r.k) && shownIds.has(r.id)))).map((r) => r.at))].sort((a, b) => a - b);
+    let older = '';
+    for (const n of wantAt) { const e = chat.log[n - 1]; if (!e) continue; const t = '[reply ' + n + '] ' + e.text + '\n\n'; if (older.length + t.length > 40000) break; older += t; }
+    const chapters = (chat.chapters || []).map((c, i) => 'Chapter ' + (i + 1) + ': ' + cleanChapterText(c.short || c.text)).join('\n').slice(-20000);
+    const user = 'THE STORY NOW:\n<<<\n' + (chat.memory.trim() || '(empty)') + '\n>>>\n\nTHE STORY SO FAR (chapters):\n<<<\n' + chapters + '\n>>>\n\n' +
+      (older ? 'OLDER REPLIES WHERE THE OPEN ITEMS AND SECRETS WERE RECORDED (summaries):\n<<<\n' + older + '\n>>>\n\n' : '') +
+      'THE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-30000) + '\n>>>\n\n' +
       'STILL LISTED AS OPEN:\n<<<\n' + open.join('\n').slice(-30000) + '\n>>>\n\nSECRETS AND WHO KNOWS THEM:\n<<<\n' + secrets.join('\n').slice(-15000) + '\n>>>\n\n' +
-      'JOB: CHECK-UP. Using only the story now and the latest replies, list what is out of date, one per line:\n' +
-      '- "- Person | done | a few words of the goal or promise" for a goal or promise that already happened, was kept, dropped or replaced (an event that took place, a plan carried out).\n' +
-      '- "- Person | role | the role now" or "- Person | location | where they live or are based now" only when the listed one is wrong now.\n' +
-      '- "- Person | knows | [secret name] how they learned it" for each person who clearly knows a listed secret but is not listed (e.g. it was confessed to them or said in the group chat; use "Everyone" when everyone knows).\n' +
-      '- "- [secret name] = [other secret name]" when two listed secrets are the same secret.\n' +
-      'Only what the story clearly shows; never guess or invent. Write "none" if nothing is out of date. Output only those lines.';
+      'JOB: CHECK-UP. Using only what the texts above show, list ONLY real changes, one per line, each ending with the reply that shows it as "(reply N)":\n' +
+      '- "- Person | done | a few words of the goal or promise (reply N)" when it clearly happened, was kept, dropped or replaced. Never for something still open, in progress or merely not mentioned.\n' +
+      '- "- Person | location | their new home or base (reply N)" only when they moved house; never where they are at the moment (that is the scene). "- Person | role | new role (reply N)" only when their job or role changed.\n' +
+      '- "- Person | knows | [exact listed secret name] how they learned it (reply N)" only for a person NOT already listed as knowing it, who clearly learned it (told, confessed to, overheard, said in the group chat; "Everyone" when everyone knows).\n' +
+      '- "- [secret name] = [other secret name]" when two listed secrets are the same secret (use the listed names exactly).\n' +
+      'Never write lines that change nothing (no "already knows", "still open", "no change"). Never guess or invent. Write "none" if nothing changed. Output only those lines.';
     const out = cleanOutput(await callLLM(updateSystem(), user));
     const got = [];
     const alias = Object.assign({}, chat.secretAlias || {});
@@ -3517,7 +3534,14 @@
       if (!recs.length) { skipped.push([line, 'not a fact line']); continue; }
       for (const r of recs) {
         const key = [r.s, r.k, normValue(r.v)].join('|').toLowerCase();
+        const sec = r.k === 'knows' ? (chat.__secrets || []).find((x) => { const m = r.v.match(/\[([^\]]+)\]/); return m && keyOfName(x.name) === keyOfName(alias[keyOfName(m[1])] || m[1]); }) : null;
         if (!/^(done|role|location|knows)$/.test(r.k)) skipped.push([line, 'kind "' + (r.label || r.k) + '" is not a check-up correction']);
+        else if (!(Number((line.match(/\(reply (\d+)\)/i) || [])[1]) <= at)) skipped.push([line, 'no reply given as evidence']);
+        else if (r.k === 'done' && NOT_DONE_RE.test(r.v)) skipped.push([line, 'says it is not done']);
+        else if (r.k === 'knows' && NO_NEWS_RE.test(r.v)) skipped.push([line, 'nothing new']);
+        else if (r.k === 'knows' && !sec) skipped.push([line, 'no such secret']);
+        else if (r.k === 'knows' && (sec.everyone || sec.knows.some((k) => k.who.toLowerCase() === r.s.toLowerCase()))) skipped.push([line, 'already listed as knowing']);
+        else if ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v)) skipped.push([line, 'where they are now, not a home or role']);
         else if (have.has(key)) skipped.push([line, 'already applied before']);
         else { have.add(key); got.push(Object.assign(r, { at })); applied.push(line); }
       }

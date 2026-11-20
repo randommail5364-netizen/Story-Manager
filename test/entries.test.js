@@ -21,7 +21,7 @@ function grab(name) {
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
-const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const MINOR_PINNED = .*\n/)[0] + src.match(/ {2}const ROUTINE_PINNED = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const NOT_HOME_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const MINOR_PINNED = .*\n/)[0] + src.match(/ {2}const ROUTINE_PINNED = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const NOT_DONE_RE = .*\n/)[0] + src.match(/ {2}const NO_NEWS_RE = .*\n/)[0] + src.match(/ {2}const NOT_HOME_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0];
 const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'cleanChapterText']
   .map(grab).join('\n') + '\nreturn { cleanChapterText, latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
 
@@ -38,7 +38,7 @@ function grabAsync(name) {
   throw new Error('unbalanced ' + name);
 }
 const reconLib = new Function(factsConsts + consts + "  let answer = '';\n  const callLLM = async () => answer;\n  const updateSystem = () => '';\n" +
-  ['squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'buildSecrets', 'sigWords', 'alike', 'importantMoment', 'relationsOf'].map(grab).join('\n') +
+  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'buildSecrets', 'sigWords', 'alike', 'importantMoment', 'relationsOf'].map(grab).join('\n') +
   '\n' + grabAsync('reconcileFacts') + '\nreturn { setAnswer: (a) => { answer = a; }, reconcileFacts, buildEntries, buildSecrets };')();
 
 let passed = 0;
@@ -769,10 +769,13 @@ test('regression (ChatGPT review): the check-up fixes the five known failures, a
   chat.entries = reconLib.buildEntries(chat);
   reconLib.setAnswer([
     '- Yujin | done | theme for the fourth anniversary (reply 2)', '- Yujin | done | escape room booking (reply 2)', '- Jacek | knows | [unlocked storm] Irene showed him (reply 1)',
-    '- [wants Jacek\'s baby] = [child-with-jacek]', 'Some chatter that is not a fact.', '- Yujin | mood | happy'].join('\n'));
+    '- [wants Jacek\'s baby] = [child-with-jacek]', 'Some chatter that is not a fact.', '- Yujin | mood | happy',
+    // What the real keeper got wrong the first time: none of these may be used.
+    '- Yujin | done | weekly hobby evening (still open, not done) (reply 2)', '- Yujin | knows | [wants Jacek\'s baby] already knows (reply 2)', '- Irene | knows | [unlocked storm] she told him (reply 1)',
+    '- Ahyeon | location | now at The Canvas in the Mapo district with Jacek (reply 2)', '- Eun-ji | knows | [forty-one girlfriends] public (reply 2)', '- Yujin | done | the town hall'].join('\n'));
   const n = await reconLib.reconcileFacts(chat);
   assert.strictEqual(n, 3);
-  assert.deepStrictEqual(chat.reconReport.skipped.map(([, why]) => why), ['not a fact line', 'kind "mood" is not a check-up correction']);
+  assert.deepStrictEqual(chat.reconReport.skipped.map(([, why]) => why), ['not a fact line', 'kind "mood" is not a check-up correction', 'says it is not done', 'nothing new', 'already listed as knowing', 'where they are now, not a home or role', 'no such secret', 'no reply given as evidence']);
   const es = reconLib.buildEntries(chat);
   const t = (name) => es.find((e) => e.name === name);
   assert(!/theme and purpose|booking confirmed for tomorrow/.test(t('Yujin').pinText), t('Yujin').pinText);
@@ -782,6 +785,12 @@ test('regression (ChatGPT review): the check-up fixes the five known failures, a
   assert(/Lives \/ based: her apartment on the 52nd floor/.test(t('Ahyeon').text) && !/Bay 3/.test(t('Ahyeon').text), t('Ahyeon').text);
   assert(/Where it is: parked/.test(t('Land Rover Defender').text) && !/Lives \/ based/.test(t('Land Rover Defender').text));
   assert(/kindness is a physical force/.test(t('Seulgi').miniText) && /kindness is a physical force/.test(t('Seulgi').pinText || t('Seulgi').text));
+  // Corrections stored by the first, unguarded check-up are no longer used.
+  const old = { ignored: [], entries: [], log: [R(1, ['- Jacek | secret | [fatherhood want] wants to be a father', '- Yujin | knows | [fatherhood want] he told her on the rooftop', '- Wendy | promise | a pizza slice for the encore'])],
+    reconRecords: [{ s: 'Jacek', k: 'knows', t: '', v: '[fatherhood want] already knows', at: 5 }, { s: 'Wendy', k: 'done', t: '', v: 'a pizza slice for the encore (still open, not done)', at: 5 }] };
+  const oldSec = reconLib.buildSecrets(old).find((x) => x.name === 'fatherhood want');
+  assert.deepStrictEqual(oldSec.owners, ['Jacek'], 'Jacek keeps his own secret');
+  assert(/pizza slice/.test(reconLib.buildEntries(old).find((e) => e.name === 'Wendy').text) && !/done/.test(reconLib.buildEntries(old).find((e) => e.name === 'Wendy').text));
   // The same answer again: nothing new is added.
   const before = chat.reconRecords.length;
   chat.entries = es;

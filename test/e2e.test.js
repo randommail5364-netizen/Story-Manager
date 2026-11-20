@@ -1169,41 +1169,22 @@ async function main() {
   await page.evaluate((id) => window.editMsg(id, 'Then we rest by the fire.'), lastUser());
   check(!/STORY-MEMORY/.test(edits[edits.length - 1].elements[0].text), 'the user\'s own edits get no memory');
 
-  console.log('37b) The pinned message is updated even if the AI is writing (waits and tries again) or a big message is refused (smaller one)');
+  console.log('37b) The pinned message is updated even if the AI is writing (waits and tries again) or MiniApps refuses it once (tries again in full, never smaller)');
   const edits37b = edits.length;
   editBusy = 1;
   editTooBig = 1;
   await page.locator('#story-manager-root >> .fab').click();
   await page.locator('#story-manager-root >> textarea').first().fill('Mira hums when nervous.');
   await page.locator('#story-manager-root >> button.btn.primary', { hasText: 'Save' }).click();
-  await waitFor(() => edits.length > edits37b, 60000, 'the pinned message updated after a 409 and a size refusal');
+  await waitFor(() => edits.length > edits37b, 60000, 'the pinned message updated after a 409 and a refusal');
   check(editBusy === 0 && editTooBig === 0 && /Mira hums when nervous/.test(newConv.messages.find((x) => x.id === carrier).elements[0].text), 'updated after waiting and after the refusal');
   await waitFor(async () => /Updated the pinned memory message/.test((await keyNow()).jobs[0].label), 15000, 'job recorded');
-  check(!(await keyNow()).memoryMsgError && await page.evaluate(() => localStorage.getItem('smx:memoryMsgSize')) === '120000', 'no error shown; the smaller size is remembered');
-  const cut37 = (await keyNow()).memoryMsgCut;
-  check(cut37 && /too long/.test(cut37.error) && cut37.size === 120000 && !cut37.left.length && (await keyNow()).jobs.some((j) => /MiniApps refused the pinned memory message/.test(j.label)),
-    'what MiniApps said is recorded, with what the smaller message holds; in Activity');
-  // A message that had to leave things out: the panel says what was kept and what was not.
-  // (Updates still running would rewrite the pinned message, and this state with it.)
-  await settle();
-  await page.waitForTimeout(3000);
-  await page.evaluate(() => {
-    const key = 'smx:chat:' + location.pathname.split('/c/')[1];
-    const c = JSON.parse(localStorage.getItem(key));
-    c.memoryMsgCut = Object.assign(c.memoryMsgCut, { left: ['Ash'], shortened: ['Mira'], full: ['Old Mill'], chapters: 3, chFull: 1 });
-    localStorage.setItem(key, JSON.stringify(c));
-  });
-  await page.reload();
-  await page.waitForTimeout(800);
-  await page.locator('#story-manager-root >> .fab').click();
-  const cutText = await page.locator('#story-manager-root >> .panel').innerText();
-  check(/not complete/.test(cutText) && /MiniApps refused the full message \([^)]*Message is too long\)/.test(cutText) && /Left out: Ash/.test(cutText) &&
-    /Shortened[^\n]*: Mira/.test(cutText) && /Chapters: 1 of 3 in full, the older 2 by title only/.test(cutText), 'the panel says what MiniApps said, what was kept and what was left out');
-  check(/Summaries made with Story Manager: v9\.9\.9 \(\d+\)/.test(cutText), 'the panel shows which Story Manager versions made the summaries');
-  const edits37c = edits.length;
-  await page.getByText('Try the full size again').click();
-  await waitFor(() => edits.length > edits37c, 30000, 'retried at full size');
-  check(await page.evaluate(() => localStorage.getItem('smx:memoryMsgSize')) === '0' && !(await keyNow()).memoryMsgCut, '"Try the full size again" pins everything again');
+  const k37 = await keyNow();
+  check(!k37.memoryMsgError && !k37.memoryMsgCut && k37.jobs.some((j) => /did not take the pinned memory message[^]*trying again in full/.test(j.label) && /too long/.test(j.error)),
+    'sent again in full (nothing left out); what MiniApps said is in Activity');
+  check(/Ash/.test(newConv.messages.find((x) => x.id === carrier).elements[0].text) && await page.evaluate(() => !Number(localStorage.getItem('smx:memoryMsgSize'))), 'the whole memory is pinned; no smaller size is remembered');
+  const panel37 = await page.locator('#story-manager-root >> .panel').innerText();
+  check(/Summaries made with Story Manager: v9\.9\.9 \(\d+\)/.test(panel37), 'the panel shows which Story Manager versions made the summaries');
   await page.locator('#story-manager-root >> .x').click();
 
   console.log('37c) Any change to the memory reaches the pinned message on its own; keeper notes are cleaned whenever the memory is tidied');

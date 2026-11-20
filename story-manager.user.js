@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.32.0
+// @version      3.32.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -790,6 +790,8 @@
     clearTimeout(pinnedTimers[chat.id]);
     pinnedTimers[chat.id] = setTimeout(() => {
       if (busy[chat.id]) { schedulePinned(chat, 10000); return; }
+      // Not while the page is still starting (MiniApps may still be logging in).
+      if (performance.now() < 15000 * TIME_SCALE) { schedulePinned(chat, 5000); return; }
       refreshMemoryMessage(chat).catch(() => {});
     }, delay * TIME_SCALE);
   }
@@ -4633,7 +4635,8 @@
     notHelpers = await Store.get('notHelpers', []);
     // Remembered as a number; "everything" (Infinity) is not stored.
     const savedSize = await Store.get('memoryMsgSize', 0);
-    memoryMsgSize = MEMORY_MESSAGE_SIZES.includes(savedSize) ? savedSize : MEMORY_MESSAGE_SIZES[0];
+    memoryMsgSize = Infinity; // always the whole memory (a smaller one is never sent)
+    if (savedSize) await Store.set('memoryMsgSize', 0);
     helperAll = (await Store.get('helperAll', [])).filter((h) => !notHelpers.includes(h));
     helperRequests.push(...(await Store.get('helperRequests', [])));
     for (const h of helperAll) helperIds.add(h);
@@ -4957,14 +4960,10 @@
             if (!await waitIdle(chat.id)) throw e;
             continue;
           }
-          // Anything else may mean the message is too big: try a smaller one.
-          const smaller = MEMORY_MESSAGE_SIZES.find((n) => n < memoryMsgSize);
-          if (!smaller) throw e;
-          memoryMsgSize = smaller;
-          await Store.set('memoryMsgSize', memoryMsgSize);
-          text = memoryMessageText(chat);
-          chat.memoryMsgRefused = { at: Date.now(), error: m.slice(0, 200), fullChars: chat.memoryMsgRefused && chat.memoryMsgRefused.fullChars || (attempt === 1 ? body.elements[0].text.length : 0) };
-          logJob(chat, { kind: 'pin', label: 'MiniApps refused the pinned memory message (' + body.elements[0].text.length.toLocaleString() + ' characters); trying a smaller one (' + smaller.toLocaleString() + ')', ok: false, ms: 0, error: m.slice(0, 200) });
+          // Anything else: never a smaller message (the user wants it whole).
+          // Usually a passing hiccup (e.g. MiniApps still logging in): wait, try again.
+          logJob(chat, { kind: 'pin', label: 'MiniApps did not take the pinned memory message (' + body.elements[0].text.length.toLocaleString() + ' characters); trying again in full', ok: false, ms: 0, error: m.slice(0, 200) });
+          await new Promise((r) => setTimeout(r, 8000 * attempt * TIME_SCALE));
         }
       }
       chat.memoryMsgHash = hashText(text);

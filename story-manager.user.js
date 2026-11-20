@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.33.0
+// @version      3.33.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2576,7 +2576,7 @@
     const w = sigWords(r.v);
     return turning.some((t) => { let n = 0; for (const a of w) if (t.has(a)) n++; return n >= 3 || (n >= 2 && n / Math.min(w.size, t.size) >= 0.5); });
   }
-  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently)\b/i;
+  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|waiting|standing|leaning|parked|sat|stood|at the moment|for now|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently)\b/i;
   const GROUP_HINT_RE = /\b(magazine|tabloid|outlet|media|news|newspaper|label|girl group|boy group|idol group|company|agency|entertainment|corporation|firm|fund|brand|network|channel|team|band|crew)\b/i;
   const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
@@ -2672,8 +2672,10 @@
       };
       one('Full name', 'fullname'); one('Age', 'age'); one('Role', 'role');
       // "Lives / based" is a place, not where they went at some moment.
-      p.records = p.records.filter((r) => r.k !== 'location' || !NOT_HOME_RE.test(r.v));
-      one('Lives / based', 'location');
+      const isThing = by('type').length ? !/character|person/i.test(single(by('type'))) : /^(item|place|group)$/.test(guessKind(p.name, [], '') || '');
+      // (Where a thing is may be temporary; for a person only a home counts.)
+      if (!isThing) p.records = p.records.filter((r) => r.k !== 'location' || !NOT_HOME_RE.test(r.v));
+      one(isThing ? 'Where it is' : 'Lives / based', 'location');
       // "Status" is for things ("delivered"); for a person it is only the moment.
       const isPerson = by('type').length ? /character|person/i.test(single(by('type'))) : p.records.some((r) => /^(fullname|age|personality|relationship|stands|nickname)$/.test(r.k));
       if (!isPerson) one('Status', 'status');
@@ -3498,11 +3500,29 @@
     const got = [];
     const alias = Object.assign({}, chat.secretAlias || {});
     const keyOfName = (n) => normValue(n).split(' ').filter((w) => w && !STOP_WORDS.has(w) && !/^(on|of|to|a|an|in|at|by|is|my|me)$/.test(w)).sort().join(' ');
+    // A report of what the keeper said and what was done with it (Diagnostics).
+    const applied = [], skipped = [];
+    const have = new Set((chat.reconRecords || []).map((r) => [r.s, r.k, normValue(r.v)].join('|').toLowerCase()));
     for (const l of out.split('\n')) {
-      const same = l.match(/\[([^\]]{1,60})\]\s*=\s*\[([^\]]{1,60})\]/);
-      if (same) { if (keyOfName(same[1]) !== keyOfName(same[2])) alias[keyOfName(same[2])] = same[1].trim(); continue; }
-      for (const r of parseRecords(l)) if (/^(done|role|location|knows)$/.test(r.k)) got.push(Object.assign(r, { at }));
+      const line = l.trim();
+      if (!line || /^none\.?$/i.test(line)) continue;
+      const same = line.match(/\[([^\]]{1,60})\]\s*=\s*\[([^\]]{1,60})\]/);
+      if (same) {
+        if (keyOfName(same[1]) === keyOfName(same[2])) skipped.push([line, 'already the same name']);
+        else if (alias[keyOfName(same[2])] === same[1].trim()) skipped.push([line, 'already merged']);
+        else { alias[keyOfName(same[2])] = same[1].trim(); applied.push(line); }
+        continue;
+      }
+      const recs = parseRecords(line);
+      if (!recs.length) { skipped.push([line, 'not a fact line']); continue; }
+      for (const r of recs) {
+        const key = [r.s, r.k, normValue(r.v)].join('|').toLowerCase();
+        if (!/^(done|role|location|knows)$/.test(r.k)) skipped.push([line, 'kind "' + (r.label || r.k) + '" is not a check-up correction']);
+        else if (have.has(key)) skipped.push([line, 'already applied before']);
+        else { have.add(key); got.push(Object.assign(r, { at })); applied.push(line); }
+      }
     }
+    chat.reconReport = { at: Date.now(), open: open.length, secrets: secrets.length, answer: out.slice(0, 6000), applied, skipped };
     chat.reconRecords = (chat.reconRecords || []).concat(got);
     chat.secretAlias = alias;
     chat.reconAt = at;
@@ -6084,6 +6104,7 @@
         (chat && chat.pinError ? ' · last pin error: ' + chat.pinError : ''),
       'Sync: ' + (sync.state === 'ok' ? 'last synced ' + ago(sync.at) : sync.state === 'error' ? 'error: ' + sync.error : 'off') +
         (chat ? ' · this chat changed ' + ago(chat.changedAt || 0) + ', saved to GitHub ' + ago(chat.syncedAt || 0) : ''),
+      'Last check-up: ' + (chat && chat.reconReport ? ago(chat.reconReport.at) + ' · looked at ' + chat.reconReport.open + ' characters with open items and ' + chat.reconReport.secrets + ' secrets · ' + chat.reconReport.applied.length + ' applied, ' + chat.reconReport.skipped.length + ' not used' : 'never') + '\n' +
       'Last tidy-up: ' + (chat && chat.checked ? ago(chat.checked) : 'never') +
         (chat && chat.jobs ? ' · ' + ((chat.jobs.find((j) => j.kind === 'check') || {}).label || 'nothing needed fixing') : ''),
       'Recent jobs: ' + (chat && chat.jobs && chat.jobs.length ? chat.jobs.slice(0, 6).map((j) => (j.ok ? '✓ ' : '✗ ') + j.label +
@@ -6099,6 +6120,10 @@
         (currentId && lastSentInfo[currentId] ? ' · last carried: ' + lastSentInfo[currentId] : ''),
       'Hook: ' + (hookStats ? JSON.stringify(hookStats) : 'not running'),
       '',
+      // The last check-up in full (story words: what the keeper said and what was done with it).
+      ...(chat && chat.reconReport ? ['Last check-up, applied:', ...(chat.reconReport.applied.length ? chat.reconReport.applied.map((l) => '  ✓ ' + l) : ['  (nothing)']),
+        'Last check-up, not used:', ...(chat.reconReport.skipped.length ? chat.reconReport.skipped.map(([l, why]) => '  ✗ ' + l + '  ← ' + why) : ['  (nothing)']),
+        'Last check-up, the keeper\'s whole answer:', chat.reconReport.answer || '(empty)', ''] : []),
       'Send requests (newest first; field names and short values, no message text):',
       ...(sendShapes.length ? sendShapes.map((x) => Math.round((Date.now() - x.at) / 1000) + 's ago' + (x.injected ? ' [memory attached]' : '') + ': ' + JSON.stringify(x.shape)) : ['(none yet)']),
       '',

@@ -25,8 +25,29 @@ const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = 
 const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'cleanChapterText']
   .map(grab).join('\n') + '\nreturn { cleanChapterText, latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText };')();
 
+
+// The check-up, with the memory keeper's answer given by the test.
+function grabAsync(name) {
+  const start = src.indexOf('  async function ' + name + '(');
+  assert(start >= 0, 'missing ' + name);
+  let depth = 0;
+  for (let i = src.indexOf('{', start); i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
+  }
+  throw new Error('unbalanced ' + name);
+}
+const reconLib = new Function(factsConsts + consts + "  let answer = '';\n  const callLLM = async () => answer;\n  const updateSystem = () => '';\n" +
+  ['squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'buildEntries', 'buildSecrets', 'sigWords', 'alike', 'importantMoment', 'relationsOf'].map(grab).join('\n') +
+  '\n' + grabAsync('reconcileFacts') + '\nreturn { setAnswer: (a) => { answer = a; }, reconcileFacts, buildEntries, buildSecrets };')();
+
 let passed = 0;
-function test(name, fn) { fn(); passed++; console.log('  ✓ ' + name); }
+const pending = [];
+function test(name, fn) {
+  const r = fn();
+  if (r && r.then) pending.push(r.then(() => { passed++; console.log('  ✓ ' + name); }, (e) => { console.error(e); process.exit(1); }));
+  else { passed++; console.log('  ✓ ' + name); }
+}
 
 const replies = [{ id: 'a' }, { id: 'b' }];
 const answer = [
@@ -736,4 +757,37 @@ test('check-up corrections: done goals, new knowers and the same secret under tw
   assert(/kindness is a physical force/.test(es.find((e) => e.name === 'Seulgi').miniText));
 });
 
-console.log('All ' + passed + ' entry checks passed.');
+test('regression (ChatGPT review): the check-up fixes the five known failures, and a second run changes nothing', async () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'reply ' + n, records: reconLib && lib.parseRecords(lines.join('\n')) });
+  const log = [
+    R(1, ['- Yujin | goal | needs Jacek to provide a theme and purpose for the fourth anniversary celebration', '- Yujin | promise | escape room booking confirmed for tomorrow with draft squad rosters',
+      '- Irene | secret | [unlocked storm] she kept a storm inside quiet for a decade', '- Yujin | secret | [wants Jacek\'s baby] she wants a child with Jacek someday',
+      '- Yujin | secret | [child-with-jacek] said yes to having a child with Jacek', '- Seulgi | personality | kindness is a physical force; radiates calm and safety', '- Seulgi | relationship: Jacek | sleeps beside him']),
+    R(2, ['- Ahyeon | location | waiting at Bay 3 in the private garage', '- Ahyeon | location | her apartment on the 52nd floor', '- Land Rover Defender | location | parked on a quiet street in Mapo', '- Land Rover Defender | type | item']),
+  ];
+  const chat = { ignored: [], entries: [], log, memory: '## Current Scene\nThe escape room is over; Jacek is at The Canvas with Ahyeon.' };
+  chat.entries = reconLib.buildEntries(chat);
+  reconLib.setAnswer([
+    '- Yujin | done | theme for the fourth anniversary (reply 2)', '- Yujin | done | escape room booking (reply 2)', '- Jacek | knows | [unlocked storm] Irene showed him (reply 1)',
+    '- [wants Jacek\'s baby] = [child-with-jacek]', 'Some chatter that is not a fact.', '- Yujin | mood | happy'].join('\n'));
+  const n = await reconLib.reconcileFacts(chat);
+  assert.strictEqual(n, 3);
+  assert.deepStrictEqual(chat.reconReport.skipped.map(([, why]) => why), ['not a fact line', 'kind "mood" is not a check-up correction']);
+  const es = reconLib.buildEntries(chat);
+  const t = (name) => es.find((e) => e.name === name);
+  assert(!/theme and purpose|booking confirmed for tomorrow/.test(t('Yujin').pinText), t('Yujin').pinText);
+  const sec = reconLib.buildSecrets(chat);
+  assert(sec.find((x) => x.name === 'unlocked storm').knows.some((k) => k.who === 'Jacek'), 'Irene\'s secret: Jacek knows');
+  assert.strictEqual(sec.filter((x) => /child/.test(x.text)).length, 1, 'one child-wish secret');
+  assert(/Lives \/ based: her apartment on the 52nd floor/.test(t('Ahyeon').text) && !/Bay 3/.test(t('Ahyeon').text), t('Ahyeon').text);
+  assert(/Where it is: parked/.test(t('Land Rover Defender').text) && !/Lives \/ based/.test(t('Land Rover Defender').text));
+  assert(/kindness is a physical force/.test(t('Seulgi').miniText) && /kindness is a physical force/.test(t('Seulgi').pinText || t('Seulgi').text));
+  // The same answer again: nothing new is added.
+  const before = chat.reconRecords.length;
+  chat.entries = es;
+  assert.strictEqual(await reconLib.reconcileFacts(chat), 0);
+  assert.strictEqual(chat.reconRecords.length, before);
+  assert(chat.reconReport.skipped.some(([, why]) => why === 'already applied before') && chat.reconReport.skipped.some(([, why]) => why === 'already merged'));
+});
+
+Promise.all(pending).then(() => console.log('All ' + passed + ' entry checks passed.'));

@@ -865,3 +865,24 @@ test('pinned message: each relationship in full once (under the person with fewe
 });
 
 Promise.all(pending).then(() => console.log('All ' + passed + ' entry checks passed.'));
+
+test('v3.38 fixes: cast lines out of chapters; stray "entries."; group relationship lines; same-owner secrets merge; near-duplicate backstory', () => {
+  assert.strictEqual(lib.cleanChapterText('Jacek kissed Wonyoung goodbye.\nJacek, Miyeon, Karina, Ahyeon, Gaeul'), 'Jacek kissed Wonyoung goodbye.');
+  assert.strictEqual(lib.cleanChapterText('Yuna, Leeseo and Liz went home.'), 'Yuna, Leeseo and Liz went home.');
+  assert.strictEqual(lib.dropJunk('- Jacek met Ahyeon.\nentries.\n- Next.'), '- Jacek met Ahyeon.\n- Next.');
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const chat = { ignored: [], entries: [], log: [R(1, [
+    '- Jacek | where things stand: Miyeon, Yujin, Chaewon, Karina | defeated by their counter-strategy',
+    '- Jacek | where things stand: Miyeon | close and tender',
+    '- Yujin | secret | [wants Jacek\'s baby] She wants to have a child with Jacek someday; told only to him',
+    '- Yujin | secret | [child-with-jacek] Yujin said yes to the idea of having a child with Jacek, a future she wants',
+    '- Jacek | backstory | his family\'s coat of arms is the Trzaska shield, from a knight who broke two swords defending King Boleslaw',
+    '- Jacek | backstory | his family lineage carries the Trzaska coat of arms with two broken swords and a crescent moon',
+    '- Jacek | other | nickname for minnie: calls her jangnim (master/teacher) in their dynamic',
+    '- Jacek | other | nickname for minnie: calls her jangnim in their dynamic'])] };
+  const j = lib.buildEntries(chat).find((x) => x.name === 'Jacek');
+  assert(!/Miyeon, Yujin/.test(j.text) && /Miyeon: .*close and tender/.test(j.text), j.text);
+  assert.strictEqual((j.text.match(/jangnim/g) || []).length, 1, j.text);
+  const secs = lib.buildSecrets(chat).filter((x) => /child/.test(x.text));
+  assert.strictEqual(secs.length, 1, JSON.stringify(secs));
+});

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.37.0
+// @version      3.38.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -990,7 +990,9 @@
   // The keeper's format lines ("=== CHAPTER: … ===", "=== CAST === …") are not
   // part of a chapter: taken out when it is written, and from older ones here.
   function cleanChapterText(t) {
-    return String(t || '').replace(/\n?[^\S\n]*=+[^\S\n]*CAST\b[\s\S]*$/i, '').replace(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*CHAPTER\b[^=\n]*=+[^\S\n]*/gim, '').trim();
+    return String(t || '').replace(/\n?[^\S\n]*=+[^\S\n]*CAST\b[\s\S]*$/i, '')
+      // A bare list of names (the cast written without its heading) on its own line.
+      .replace(/^[^\S\n]*(?:[A-Z\u00C0-\u024F\uAC00-\uD7A3][\p{L}'’-]*(?: [A-Z][\p{L}'’-]*)?\s*,\s*){2,}[A-Z\u00C0-\u024F\uAC00-\uD7A3][\p{L}'’-]*(?: [A-Z][\p{L}'’-]*)?\.?[^\S\n]*$/gmu, '').replace(/^[^\S\n]*[*#_]*[^\S\n]*=+[^\S\n]*CHAPTER\b[^=\n]*=+[^\S\n]*/gim, '').trim();
   }
   function chaptersText(chat, budget) {
     const lines = [];
@@ -2323,7 +2325,7 @@
   // its input ("F9:", "S3", "[R12]"), notes on where facts are filed
   // ("already in Karina's entry", "-> covered"), plans ("we can add…"),
   // and questions. Quoted speech is ignored when checking.
-  const JUNK_RE = /(^|[\s(])(F|S)\d+\s*[:|\]\-–)]|\[R\d+|\balready (in|covered|recorded|reflected|has|have|listed|noted|captured)\b|\bin (his|her|their|its|the [\w'’ ]{1,40}?|[A-Z][\w-]*(?: [A-Z][\w-]*)?['’]s?|[\w-]+['’]s) entr(y|ies)\b|\b(the )?entry for\b|(->|→)\s*(in|covered|skip|temporary|same|already|not)\b|\b(we|i) (can|should|must|need|will|could|might|have to|do not|don't|already)\b|\bwe['’](ll|ve|d)\b|\bfor brevity\b|^\s*[-*•]?\s*similarly,? (for|with) (the )?(others|rest|remaining)\b|\b(headings?|sections?) (with nothing|that (are|is) empty)\b|\btoken limit\b|\b(output|write) (only|the|this|that|these)\b.*\bentr(y|ies)\b|^\s*[-*•]?\s*(implementation|correction|after review|summary of changes|changes|plan|reasoning|analysis)\s*:\s*$|\b(the )?(new events|events list|this request|previous request|previous update|knowledge base|the instructions)\b|[:\-–]\s*(temporary|skip|none)\s*\.?$|\bnot recorded\b|\bremains? unchanged\b|^\s*[-*•]?\s*(in )?(the )?[\w'’ ]{1,40}?['’]s? entr(y|ies)\s*[:.]|\bentry\s*:\s*(add|update|include|record)\b|^\s*[-*•]?\s*in (the )?[\w'’ ]{1,40}?(entry|entries)\.?\s*$|\bin the key moments of\b|\b(add|include) (a |the )?bullets?\b|^\s*(we update|now,? we (write|update|output|add)|let me|first,? we)\b|\b(this|that) (is|counts as|isn't|is not) a (lasting )?fact\b|\b(recorded|covered|captured|reflected|noted|listed|kept|stored|mentioned) in (the |his |her |their |its )?([\w'’ ]{1,30} )?(entr(y|ies)|sections?|timeline|key moments)\b|^\s*[-*•]?\s*JOB\s*:|\bwrite the (changed|new|complete) (story )?sections?\b|\b(and|write) the CAST\b|^\s*[-*•]?\s*=+\s*(SECTION|CAST|CHAPTER|ENTRY)\b/i;
+  const JUNK_RE = /(^|[\s(])(F|S)\d+\s*[:|\]\-–)]|\[R\d+|\balready (in|covered|recorded|reflected|has|have|listed|noted|captured)\b|\bin (his|her|their|its|the [\w'’ ]{1,40}?|[A-Z][\w-]*(?: [A-Z][\w-]*)?['’]s?|[\w-]+['’]s) entr(y|ies)\b|\b(the )?entry for\b|(->|→)\s*(in|covered|skip|temporary|same|already|not)\b|\b(we|i) (can|should|must|need|will|could|might|have to|do not|don't|already)\b|\bwe['’](ll|ve|d)\b|\bfor brevity\b|^\s*[-*•]?\s*similarly,? (for|with) (the )?(others|rest|remaining)\b|\b(headings?|sections?) (with nothing|that (are|is) empty)\b|\btoken limit\b|\b(output|write) (only|the|this|that|these)\b.*\bentr(y|ies)\b|^\s*[-*•]?\s*(implementation|correction|after review|summary of changes|changes|plan|reasoning|analysis)\s*:\s*$|\b(the )?(new events|events list|this request|previous request|previous update|knowledge base|the instructions)\b|[:\-–]\s*(temporary|skip|none)\s*\.?$|\bnot recorded\b|\bremains? unchanged\b|^\s*[-*•]?\s*(in )?(the )?[\w'’ ]{1,40}?['’]s? entr(y|ies)\s*[:.]|\bentry\s*:\s*(add|update|include|record)\b|^\s*[-*•]?\s*in (the )?[\w'’ ]{1,40}?(entry|entries)\.?\s*$|\bin the key moments of\b|\b(add|include) (a |the )?bullets?\b|^\s*(we update|now,? we (write|update|output|add)|let me|first,? we)\b|\b(this|that) (is|counts as|isn't|is not) a (lasting )?fact\b|\b(recorded|covered|captured|reflected|noted|listed|kept|stored|mentioned) in (the |his |her |their |its )?([\w'’ ]{1,30} )?(entr(y|ies)|sections?|timeline|key moments)\b|^\s*[-*•]?\s*JOB\s*:|\bwrite the (changed|new|complete) (story )?sections?\b|\b(and|write) the CAST\b|^\s*[-*•]?\s*=+\s*(SECTION|CAST|CHAPTER|ENTRY)\b|^\s*(entries|entry|cast|no entries)\.?\s*$/i;
   const unquoted = (l) => l.replace(/"[^"]*"|“[^”]*”/g, '""');
   const isJunk = (l, questions) => { const u = unquoted(l); return JUNK_RE.test(u) || (questions && u.trim().length < 300 && /\?\s*$/.test(u.trim())); };
   // Removes the keeper's working-out from any text. Once two such lines are
@@ -2585,6 +2587,7 @@
       const a = names.includes(x.a.toLowerCase()), b = names.includes(x.b.toLowerCase());
       if (a === b) continue;
       const me = (a ? x.a : x.b).toLowerCase(), other = a ? x.b : x.a;
+      if (/,|&/.test(other)) continue; // a group, not one relationship
       const mine = pairsOf[me] || 0, theirs = pairsOf[other.toLowerCase()] || 0;
       if (mine > theirs || (mine === theirs && me < other.toLowerCase())) { out.push('- ' + other + ': ' + x.status + ' (more under ' + other + ')'); continue; }
       out.push('- ' + other + ': ' + x.status + (x.now ? ' — ' + x.now : '') + (x.dynamic ? '. ' + x.dynamic.replace(/\.$/, '') : '') +
@@ -2746,11 +2749,13 @@
       section('Abilities & Skills', uniq(by('ability')).map((r) => '- ' + r.v));
       const likes = [].concat(uniq(by('likes')).map((r) => '- Likes: ' + r.v), uniq(by('dislikes')).map((r) => '- Dislikes: ' + r.v), uniq(by('boundary')).map((r) => '- Boundary: ' + r.v));
       section('Likes, Dislikes & Boundaries', likes, likes, likes.filter((x) => /^- Boundary/.test(x)).concat(likes.filter((x) => !/^- Boundary/.test(x)).slice(-4)));
-      section('Backstory', uniq(by('backstory')).map((r) => '- ' + r.v));
+      section('Backstory', alike(uniq(by('backstory')), 0.6).map((r) => '- ' + r.v));
       // Relationships: one line per person, with where things stand now. The
       // pinned message keeps where things stand and the 3 newest lasting facts.
       const targets = [];
-      for (const r of p.records) if ((r.k === 'relationship' || r.k === 'stands') && r.t && !targets.some((t) => t.toLowerCase() === r.t.toLowerCase())) targets.push(r.t);
+      // "Miyeon, Yujin, Chaewon: …" is a group event, not one relationship: left out.
+      const groupTarget = (t) => /,|&|\band\b/i.test(t) && t.split(/\s*(?:,|&|\band\b)\s*/i).filter(Boolean).length > 1;
+      for (const r of p.records) if ((r.k === 'relationship' || r.k === 'stands') && r.t && !groupTarget(r.t) && !targets.some((t) => t.toLowerCase() === r.t.toLowerCase())) targets.push(r.t);
       const rel = targets.map((t) => {
         const of = (k) => p.records.filter((r) => r.k === k && r.t.toLowerCase() === t.toLowerCase());
         const hist = uniq(of('relationship')).map((r) => r.v);
@@ -2801,7 +2806,7 @@
       // The pinned message has one "Story moments" list instead (see storyMoments).
       void shown;
       section('Key Moments', moments.map(momentLine), []);
-      section('Other', uniq(by('other')).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
+      section('Other', alike(uniq(by('other')), 0.6).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
       const typed = single(by('type'));
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
       // Without a type: a person only if something personal is known about them.
@@ -2882,7 +2887,11 @@
         const wb = sigWords(secrets[b].text);
         if (wb.size < 3) continue;
         let n = 0; for (const w of wa) if (wb.has(w)) n++;
-        if (n / Math.min(wa.size, wb.size) < 0.6) continue;
+        // Two secrets of the same person (and only theirs) about the same thing
+        // ("wants Jacek's baby" / "said yes to a child with Jacek") merge with less in common.
+        const own = (x) => [...x.people.values()].filter((p) => p.how === 'their secret').map((p) => p.who.toLowerCase()).sort().join('|');
+        const sameOwner = own(secrets[a]) && own(secrets[a]) === own(secrets[b]);
+        if (n / Math.min(wa.size, wb.size) < 0.6 && !(sameOwner && n >= 3 && n / Math.min(wa.size, wb.size) >= 0.35)) continue;
         const x = secrets[a], y = secrets[b];
         for (const [k, v] of y.people) { const prev = x.people.get(k); if (!prev || prev.at <= v.at) x.people.set(k, v); }
         if (y.text.length > x.text.length) x.text = y.text;
@@ -3670,7 +3679,7 @@
       const user2 = 'SECRETS:\n<<<\n' + lines.join('\n') + '\n>>>\n\nTHE REPLIES WHERE THEY WERE RECORDED (summaries):\n<<<\n' + ev + '\n>>>\n\nTHE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-20000) + '\n>>>\n\n' +
         'JOB: SECRETS CHECK. For each secret, who really knows it? Think of the person it was confided to, revealed to, or who was part of it (e.g. a secret someone showed or confessed to Jacek: Jacek knows it).\n' +
         '- "- Person | knows | [exact secret name] how they know (reply N)" for each person who knows a secret but is not listed as knowing it.\n' +
-        '- "- [secret name] = [other secret name]" for two listed secrets that are the same secret (the same fact about the same person, worded differently).\n' +
+        '- "- [secret name] = [other secret name]" for two listed secrets that are the same secret (the same fact about the same person, worded differently, or one is a later step of the other, e.g. wanting something and then saying yes to it). Check every secret of the same person against each other.\n' +
         'Only what the texts show; never guess. Write "none" if nothing is missing. Output only those lines.';
       out2 = cleanOutput(await callLLM(updateSystem(), user2));
     }

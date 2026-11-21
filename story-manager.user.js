@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.38.1
+// @version      3.39.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -997,8 +997,13 @@
   function chaptersText(chat, budget) {
     const lines = [];
     let size = 0;
+    // A chapter that tells the same events as one of the two before it (a
+    // rebuild can write one twice) is left out of the pinned message.
+    const sig = chat.chapters.map((c) => sigWords(cleanChapterText(c.short || c.text)));
+    const repeat = (i) => [i - 1, i - 2].some((j) => { if (j < 0) return false; const a = sig[i], b = sig[j]; if (a.size < 8 || b.size < 8) return false; let n = 0; for (const w of a) if (b.has(w)) n++; return n / Math.min(a.size, b.size) >= 0.7; });
     for (let i = chat.chapters.length - 1; i >= 0; i--) {
       const c = chat.chapters[i];
+      if (settings.momentsShown !== 'all' && repeat(i)) continue;
       // Older chapters: their short version (the full one stays stored).
       const old = c.short && i < chat.chapters.length - FULL_CHAPTERS && settings.momentsShown !== 'all';
       const full = 'Chapter ' + (i + 1) + ': ' + c.title + '\n' + cleanChapterText(old ? c.short : c.text);
@@ -1078,11 +1083,30 @@
     const shown = list.filter((m) => pick.has(m));
     return { left: list.length - shown.length, lines: shown.map((m) => '- ' + (m.at !== Infinity ? '(reply ' + m.at + ') ' : '') + m.who.join(', ') + ': ' + m.v) };
   }
+  // A section the keeper kept adding to: the same point said again in other
+  // words is kept once (the first, which is the keeper's newest wording), and
+  // in the world only the first "Time:" line (older times are out of date).
+  function tidyBullets(text, world) {
+    const lines = String(text || '').split('\n');
+    const kept = [];
+    const seen = [];
+    let time = false;
+    for (const l of lines) {
+      const b = l.match(/^\s*[-*•]\s+(.*)$/);
+      if (!b) { kept.push(l); continue; }
+      if (world && /^\**\s*(time|date|when)\s*\**\s*:/i.test(b[1])) { if (time) continue; time = true; }
+      const w = sigWords(b[1]);
+      if (w.size >= 3 && seen.some((o) => { let n = 0; for (const a of w) if (o.has(a)) n++; return n / Math.min(w.size, o.size) >= 0.7; })) continue;
+      seen.push(w);
+      kept.push(l);
+    }
+    return kept.join('\n');
+  }
   function buildFactsPlan(chat, size) {
     const budget = size || Math.max(2000, Number(settings.injectBudget) || DEFAULT_SETTINGS.injectBudget);
     const head = [];
     if (chat.pinned.trim()) head.push('## Must remember\n' + chat.pinned.trim());
-    const now = ['Current Scene', 'Open Threads'].map((t) => [t, sectionOf(chat.memory, t).trim()]).filter(([, x]) => x);
+    const now = ['Current Scene', 'Open Threads'].map((t) => [t, t === 'Open Threads' ? tidyBullets(sectionOf(chat.memory, t).trim()) : sectionOf(chat.memory, t).trim()]).filter(([, x]) => x);
     // Any other section the keeper wrote (except the world) belongs to "now" too.
     const others = (chat.memory.match(/^##\s*(.+?)\s*$/gm) || []).map((h) => h.replace(/^##\s*/, '').trim())
       .filter((t) => !/^(current scene|open threads|world & timeline|story so far)$/i.test(t)).map((t) => [t, sectionOf(chat.memory, t).trim()]).filter(([, x]) => x);
@@ -1091,7 +1115,7 @@
     const secrets = secretsText(chat);
     if (secrets) head.push('## Who knows what\n(Characters only know the secrets listed for them; never let anyone act on a secret they do not know.)\n' + secrets);
     const tail = [];
-    let world = sectionOf(chat.memory, 'World & Timeline').trim();
+    let world = tidyBullets(sectionOf(chat.memory, 'World & Timeline').trim(), true);
     // The keeper's old "Turning points:" list is left out: the story moments replace it.
     if (settings.momentsShown !== 'all') {
       world = world.replace(/\n*\**turning points:?\**[\s\S]*$/i, '').trim();
@@ -1708,7 +1732,7 @@
     '  For a major moment, write what happened and, when the story shows a lasting change, what is different since: "argued about his calm → since then she offers quiet comfort when he is down (affects: Shuhua & Jacek)". Leave out the arrow part when nothing lasting changed.',
     '  "major moment": only when it changes something that lasts: a relationship starts, changes or ends, a secret comes out, a first time, a confession, a promise or vow, a fight or making up, a move, a big decision. Rare: most replies have none. Hugs, kisses, meals, teasing, coffee and dozing off are never major.',
     '  "minor moment": worth remembering but changes little (a date, a gift, a small plan, a meaningful talk).',
-    '  "routine moment": everyday things (meals, chores, banter, sleeping, texts, an intimate scene with nothing new in it). Leave out what is not worth remembering at all.',
+    '  "routine moment": everyday things (meals, chores, banter, sleeping, texts, an intimate scene with nothing new in it). Every reply has at least one moment for the main characters in it (minor or routine when nothing major happened).',
     '  A secret is something a character hides from someone in the story, always with what it is after its [short name]; an intimate scene is a key moment, not a secret.',
     '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
     '  One subject per record: never "Tiffany and Irene" — write a record for each of them. To say what a place or thing is, use kind "type" (place, item, group) or "basics". Write FACTS: none if there are none.',
@@ -2551,6 +2575,7 @@
     (chat.manualRecords || []).forEach((r, n) => out.push(Object.assign({ id: 'manual#' + (r.n != null ? r.n : n), at: Infinity, manual: true }, r)));
     // Corrections from the check-ups (see reconcileFacts), placed at the reply they were made after.
     (chat.reconRecords || []).forEach((r, n) => {
+      r = Object.assign({}, r, { v: String(r.v || '').replace(/\s*\((reply \d+[^)]*)\)\s*$/i, '') });
       if ((r.k === 'done' && NOT_DONE_RE.test(r.v)) || (r.k === 'knows' && NO_NEWS_RE.test(r.v)) || ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v))) return;
       out.push(Object.assign({ id: 'recon#' + n, recon: true }, r));
     });
@@ -2637,7 +2662,7 @@
   // or only repeat what is known ("knows … already knows"): never used.
   const NOT_DONE_RE = /\b(still open|not done|not yet|in progress|ongoing|remains? (open|pending|unresolved)|still pending|no change|unchanged|not completed|underway|is happening|happening now|upcoming|still ahead|in progress|currently)\b/i;
   const NO_NEWS_RE = /\b(already knows?|already known|already listed|no change|unchanged)\b/i;
-  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|waiting|standing|leaning|parked|sat|stood|at the moment|for now|now at|no longer|currently at|with jacek|with him|with her|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently)\b/i;
+  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|waiting|standing|leaning|parked|sat|stood|at the moment|for now|now at|no longer|currently at|with jacek|with him|with her|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently|arriving|leaving|playing|laughing|asleep|fell asleep|sleeping|claimed the middle|surrounded by|then (her|his|the)|(late |early )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday) (night|morning|afternoon|evening)|in the (master suite )?bed)\b/i;
   const GROUP_HINT_RE = /\b(magazine|tabloid|outlet|media|news|newspaper|label|girl group|boy group|idol group|company|agency|entertainment|corporation|firm|fund|brand|network|channel|team|band|crew)\b/i;
   const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
@@ -2879,7 +2904,10 @@
         for (const p of whoOf(r.s)) {
           const prev = x.people.get(p.toLowerCase());
           if (prev && prev.at > r.at) continue; // the newest record about this person wins
+          if (prev && prev.how === 'their secret') continue; // their own secret: they always know it
           if (prev && r.recon && r.k === 'knows' && prev.knows) continue; // a check-up only adds new knowers
+          // "knows … does not know the secret": the keeper contradicting itself.
+          if (r.k === 'knows' && /\b(does not|doesn['’]t|did not|didn['’]t) know\b|\bunaware of (it|the secret)\b/i.test(rest)) continue;
           x.people.set(p.toLowerCase(), { who: p, knows: r.k === 'knows', at: r.at, how: r.k === 'knows' ? rest : '' });
         }
       }
@@ -2897,18 +2925,23 @@
         // ("wants Jacek's baby" / "said yes to a child with Jacek") merge with less in common.
         const own = (x) => [...x.people.values()].filter((p) => p.how === 'their secret').map((p) => p.who.toLowerCase()).sort().join('|');
         const sameOwner = own(secrets[a]) && own(secrets[a]) === own(secrets[b]);
-        if (n / Math.min(wa.size, wb.size) < 0.6 && !(sameOwner && n >= 3 && n / Math.min(wa.size, wb.size) >= 0.35)) continue;
+        // One without an owner ("[my dumbass]") joins its owned twin the same way.
+        const oneUnowned = !own(secrets[a]) !== !own(secrets[b]);
+        if (n / Math.min(wa.size, wb.size) < 0.6 && !((sameOwner || oneUnowned) && n >= 3 && n / Math.min(wa.size, wb.size) >= 0.35)) continue;
         const x = secrets[a], y = secrets[b];
-        for (const [k, v] of y.people) { const prev = x.people.get(k); if (!prev || prev.at <= v.at) x.people.set(k, v); }
+        for (const [k, v] of y.people) { const prev = x.people.get(k); if (prev && prev.how === 'their secret') continue; if (!prev || prev.at <= v.at || v.how === 'their secret') x.people.set(k, v); }
         if (y.text.length > x.text.length) x.text = y.text;
         x.cover = x.cover || y.cover;
         secrets.splice(b, 1);
       }
     }
     // A secret that is only a label ("[car play]") says nothing to the story AI.
-    return secrets.filter((x) => x.text && normValue(x.text) !== normValue(x.name)).map((x) => {
+    return secrets.filter((x) => x.text && normValue(x.text) !== normValue(x.name) && !/\b(no|not an?y?|does not (seem to )?have an?y?|doesn['’]t have an?y?) secret\b/i.test(x.text)).map((x) => {
       const people = [...x.people.values()];
       const everyone = people.some((p) => p.knows && EVERYONE_RE.test(p.who));
+      // Whoever the secret belongs to knows it, whatever a later record says.
+      const ownerSet = new Set(people.filter((p) => p.how === 'their secret').map((p) => p.who.toLowerCase()));
+      for (const p of people) if (ownerSet.has(p.who.toLowerCase())) { p.knows = true; if (p.how !== 'their secret') p.how = 'their secret'; }
       return {
         name: x.name || x.text.split(/[.;,]/)[0].split(/\s+/).slice(0, 5).join(' '),
         text: x.text,
@@ -3662,7 +3695,7 @@
       'THE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-30000) + '\n>>>\n\n' +
       'STILL LISTED AS OPEN:\n<<<\n' + open.join('\n').slice(-30000) + '\n>>>\n\nSECRETS AND WHO KNOWS THEM:\n<<<\n' + secrets.join('\n').slice(-15000) + '\n>>>\n\n' +
       'JOB: CHECK-UP. Using only what the texts above show, list ONLY real changes, one per line, each ending with the reply that shows it as "(reply N)":\n' +
-      '- "- Person | done | a few words of the goal or promise (reply N)" only when the thing itself happened or was kept, dropped or replaced. Not when planning for it moved on, it is underway or still ahead (a party in 20 days is not done because its plan is locked), and never because it is not mentioned.\n' +
+      '- "- Person | done | a few words of the goal or promise (reply N)" only when the thing itself happened or was kept, dropped or replaced. Not when planning for it moved on, it is underway or still ahead (a party in 20 days is not done because its plan is locked), and never because it is not mentioned. Also, for a plan set for a day or time the story has clearly passed (a lunch "tomorrow at 1 PM" when the story is days later) that never happened: "- Person | done | dropped: a few of its words (reply N)" with the reply that shows the later day.\n' +
       '- "- Person | location | their new home or base (reply N)" only when they moved house; never where they are at the moment (that is the scene). "- Person | role | new role (reply N)" only when their job or role changed.\n' +
       '- "- Person | knows | [exact listed secret name] how they learned it (reply N)" only for a person NOT already listed as knowing it, who clearly learned it (told, confessed to, overheard, said in the group chat; "Everyone" when everyone knows).\n' +
       '- "- [secret name] = [other secret name]" when two listed secrets are the same secret (use the listed names exactly).\n' +
@@ -6038,7 +6071,15 @@
     if (kinds) bad.push(kinds + ' objects or places filed as characters');
     if (twins) bad.push(twins + ' duplicate people');
     const facts = factsMode(chat) ? ' · ' + allRecords(chat).length + ' facts' : ' · classic format';
-    return (bad.length ? '⚠ ' + bad.join(', ') : 'OK') + facts;
+    let moments = '';
+    if (factsMode(chat)) {
+      const ms = allRecords(chat).filter((r) => r.k === 'moment');
+      const n = (t) => ms.filter((r) => (r.tier === 'turning' ? 'major' : r.tier || (r.imp ? 'major' : 'unmarked')) === t).length;
+      const last = ms.filter((r) => r.at !== Infinity).reduce((m, r) => Math.max(m, r.at), 0);
+      moments = ' · moments: ' + n('major') + ' major, ' + n('minor') + ' minor, ' + n('routine') + ' routine, ' + n('unmarked') + ' unmarked; newest in reply ' + (last || 'none') +
+        ' · replies without a moment: ' + chat.log.filter((e) => !(e.records || []).some((r) => r.k === 'moment')).length;
+    }
+    return (bad.length ? '⚠ ' + bad.join(', ') : 'OK') + facts + moments;
   }
 
   // The memory format of this story, and the switch.

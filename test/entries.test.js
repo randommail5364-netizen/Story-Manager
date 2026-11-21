@@ -734,7 +734,7 @@ test('relationships in the pinned message come from the list written at the end 
   const es = lib.buildEntries(chat);
   const j = es.find((x) => x.name === 'Jacek'), w = es.find((x) => x.name === 'Winter');
   assert(/- Winter: dating — close and trusting/.test(j.pinText) && !/red scarf/.test(j.pinText) && /red scarf/.test(j.text), j.pinText);
-  assert(/- Jacek: dating — close and trusting/.test(w.pinText) && /- Karina: bandmates/.test(w.pinText), w.pinText);
+  assert(/- Jacek: dating \(more under Jacek\)/.test(w.pinText) && /- Karina: bandmates/.test(w.pinText), w.pinText); // in full once, under Jacek (fewer pairs)
 });
 
 test('GPT review fixes: done goals leave the pinned message; secret names in any order; capital names are groups; places only; chapter format lines', () => {
@@ -867,6 +867,17 @@ test('short portraits: several characters per request, only from their facts, ne
   relLib.setAnswers(['=== PORTRAIT: Seulgi ===\nSeulgi is kind and calm, nice.']);
   await relLib.writeShortPortraits(chat, job, Infinity);
   assert(/makes everyone feel safe/.test(chat.portraits.seulgi.text));
+});
+
+test('pinned message: each relationship in full once (under the person with fewer); leaked instructions and "None stated" are dropped', () => {
+  const chat = { ignored: [], entries: [], log: [{ id: 'r1', text: 'x', records: lib.parseRecords(['- Shuhua | personality | fierce', '- Winter | personality | quiet', '- Jacek | personality | calm'].join('\n')) }],
+    relMap: { at: 1, list: [{ a: 'Jacek', b: 'Shuhua', status: 'girlfriend', dynamic: 'they spar', shaped: '', understood: 'None stated' }, { a: 'Jacek', b: 'Winter', status: 'girlfriend', dynamic: 'quiet together', shaped: '', understood: '' }] } };
+  const es = lib.buildEntries(chat);
+  const t = (n) => { const e = es.find((x) => x.name === n); return e.pinText || e.text; };
+  assert(/- Jacek: girlfriend\. they spar\./.test(t('Shuhua')) && !/None stated/.test(t('Shuhua')), t('Shuhua'));
+  assert(/- Shuhua: girlfriend \(more under Shuhua\)/.test(t('Jacek')) && !/they spar/.test(t('Jacek')), t('Jacek'));
+  const cleaned = lib.dropJunk('Turning points:\n- Jacek met Ahyeon at The Canvas.\nJOB: SCENE. Write the changed STORY sections and the CAST now. No entries.\n- Next point.');
+  assert(!/JOB: SCENE/.test(cleaned.text || cleaned) && /Next point/.test(cleaned.text || cleaned), JSON.stringify(cleaned));
 });
 
 Promise.all(pending).then(() => console.log('All ' + passed + ' entry checks passed.'));

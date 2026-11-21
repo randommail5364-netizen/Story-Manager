@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.36.0
+// @version      3.36.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2288,7 +2288,7 @@
   // its input ("F9:", "S3", "[R12]"), notes on where facts are filed
   // ("already in Karina's entry", "-> covered"), plans ("we can add…"),
   // and questions. Quoted speech is ignored when checking.
-  const JUNK_RE = /(^|[\s(])(F|S)\d+\s*[:|\]\-–)]|\[R\d+|\balready (in|covered|recorded|reflected|has|have|listed|noted|captured)\b|\bin (his|her|their|its|the [\w'’ ]{1,40}?|[A-Z][\w-]*(?: [A-Z][\w-]*)?['’]s?|[\w-]+['’]s) entr(y|ies)\b|\b(the )?entry for\b|(->|→)\s*(in|covered|skip|temporary|same|already|not)\b|\b(we|i) (can|should|must|need|will|could|might|have to|do not|don't|already)\b|\bwe['’](ll|ve|d)\b|\bfor brevity\b|^\s*[-*•]?\s*similarly,? (for|with) (the )?(others|rest|remaining)\b|\b(headings?|sections?) (with nothing|that (are|is) empty)\b|\btoken limit\b|\b(output|write) (only|the|this|that|these)\b.*\bentr(y|ies)\b|^\s*[-*•]?\s*(implementation|correction|after review|summary of changes|changes|plan|reasoning|analysis)\s*:\s*$|\b(the )?(new events|events list|this request|previous request|previous update|knowledge base|the instructions)\b|[:\-–]\s*(temporary|skip|none)\s*\.?$|\bnot recorded\b|\bremains? unchanged\b|^\s*[-*•]?\s*(in )?(the )?[\w'’ ]{1,40}?['’]s? entr(y|ies)\s*[:.]|\bentry\s*:\s*(add|update|include|record)\b|^\s*[-*•]?\s*in (the )?[\w'’ ]{1,40}?(entry|entries)\.?\s*$|\bin the key moments of\b|\b(add|include) (a |the )?bullets?\b|^\s*(we update|now,? we (write|update|output|add)|let me|first,? we)\b|\b(this|that) (is|counts as|isn't|is not) a (lasting )?fact\b|\b(recorded|covered|captured|reflected|noted|listed|kept|stored|mentioned) in (the |his |her |their |its )?([\w'’ ]{1,30} )?(entr(y|ies)|sections?|timeline|key moments)\b/i;
+  const JUNK_RE = /(^|[\s(])(F|S)\d+\s*[:|\]\-–)]|\[R\d+|\balready (in|covered|recorded|reflected|has|have|listed|noted|captured)\b|\bin (his|her|their|its|the [\w'’ ]{1,40}?|[A-Z][\w-]*(?: [A-Z][\w-]*)?['’]s?|[\w-]+['’]s) entr(y|ies)\b|\b(the )?entry for\b|(->|→)\s*(in|covered|skip|temporary|same|already|not)\b|\b(we|i) (can|should|must|need|will|could|might|have to|do not|don't|already)\b|\bwe['’](ll|ve|d)\b|\bfor brevity\b|^\s*[-*•]?\s*similarly,? (for|with) (the )?(others|rest|remaining)\b|\b(headings?|sections?) (with nothing|that (are|is) empty)\b|\btoken limit\b|\b(output|write) (only|the|this|that|these)\b.*\bentr(y|ies)\b|^\s*[-*•]?\s*(implementation|correction|after review|summary of changes|changes|plan|reasoning|analysis)\s*:\s*$|\b(the )?(new events|events list|this request|previous request|previous update|knowledge base|the instructions)\b|[:\-–]\s*(temporary|skip|none)\s*\.?$|\bnot recorded\b|\bremains? unchanged\b|^\s*[-*•]?\s*(in )?(the )?[\w'’ ]{1,40}?['’]s? entr(y|ies)\s*[:.]|\bentry\s*:\s*(add|update|include|record)\b|^\s*[-*•]?\s*in (the )?[\w'’ ]{1,40}?(entry|entries)\.?\s*$|\bin the key moments of\b|\b(add|include) (a |the )?bullets?\b|^\s*(we update|now,? we (write|update|output|add)|let me|first,? we)\b|\b(this|that) (is|counts as|isn't|is not) a (lasting )?fact\b|\b(recorded|covered|captured|reflected|noted|listed|kept|stored|mentioned) in (the |his |her |their |its )?([\w'’ ]{1,30} )?(entr(y|ies)|sections?|timeline|key moments)\b|^\s*[-*•]?\s*JOB\s*:|\bwrite the (changed|new|complete) (story )?sections?\b|\b(and|write) the CAST\b|^\s*[-*•]?\s*=+\s*(SECTION|CAST|CHAPTER|ENTRY)\b/i;
   const unquoted = (l) => l.replace(/"[^"]*"|“[^”]*”/g, '""');
   const isJunk = (l, questions) => { const u = unquoted(l); return JUNK_RE.test(u) || (questions && u.trim().length < 300 && /\?\s*$/.test(u.trim())); };
   // Removes the keeper's working-out from any text. Once two such lines are
@@ -2541,12 +2541,19 @@
     const list = chat.relMap && chat.relMap.list;
     if (!list || !list.length) return null;
     const names = [p.name].concat(p.aliases || []).map((n) => n.toLowerCase());
+    // Each pair in full once: under the person with fewer relationships (Shuhua
+    // holds "Jacek: …"); the one with more (Jacek) gets the status only.
+    const pairsOf = {};
+    for (const x of list) for (const n of [x.a, x.b]) pairsOf[n.toLowerCase()] = (pairsOf[n.toLowerCase()] || 0) + 1;
     const out = [];
     for (const x of list) {
       const a = names.includes(x.a.toLowerCase()), b = names.includes(x.b.toLowerCase());
       if (a === b) continue;
-      out.push('- ' + (a ? x.b : x.a) + ': ' + x.status + (x.now ? ' — ' + x.now : '') + (x.dynamic ? '. ' + x.dynamic.replace(/\.$/, '') : '') +
-        (x.shaped ? '. Shaped by: ' + x.shaped.replace(/\.$/, '') : '') + (x.understood ? '. Understandings: ' + x.understood.replace(/\.$/, '') : '') + (x.dynamic || x.shaped || x.understood ? '.' : ''));
+      const me = (a ? x.a : x.b).toLowerCase(), other = a ? x.b : x.a;
+      const mine = pairsOf[me] || 0, theirs = pairsOf[other.toLowerCase()] || 0;
+      if (mine > theirs || (mine === theirs && me < other.toLowerCase())) { out.push('- ' + other + ': ' + x.status + ' (more under ' + other + ')'); continue; }
+      out.push('- ' + other + ': ' + x.status + (x.now ? ' — ' + x.now : '') + (x.dynamic ? '. ' + x.dynamic.replace(/\.$/, '') : '') +
+        (x.shaped ? '. Shaped by: ' + x.shaped.replace(/\.$/, '') : '') + (x.understood && !/^(none|none stated|not stated|n\/?a|nothing)\.?$/i.test(x.understood) ? '. Understandings: ' + x.understood.replace(/\.$/, '') : '') + (x.dynamic || x.shaped || x.understood ? '.' : ''));
     }
     return out;
   }
@@ -3549,7 +3556,7 @@
         const x = pairs.get(k);
         if (!x || !field('Status')) continue;
         const understood = field('Understandings');
-        written.push({ a: x.a, b: x.b, status: field('Status'), dynamic: field('Dynamic'), shaped: field('Shaped by'), understood: /^none\.?$/i.test(understood) ? '' : understood, count: x.count, at: Date.now() });
+        written.push({ a: x.a, b: x.b, status: field('Status'), dynamic: field('Dynamic'), shaped: field('Shaped by'), understood: /^(none|none stated|not stated|n\/?a|nothing)\.?$/i.test(understood) ? '' : understood, count: x.count, at: Date.now() });
       }
     }
     if (!written.length) throw new Error('the memory keeper did not write a usable list of relationships');

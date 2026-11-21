@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.39.0
+// @version      3.40.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -6487,6 +6487,37 @@
     return out;
   }
 
+  // "Export for testing": everything Story Manager made from the story (the
+  // summaries, their facts and source replies, check-up corrections and where
+  // they came from, chapters, the memory, the built entries and the pinned
+  // message) — never the chat's own messages. Used to test new versions on a
+  // real story before they are released.
+  function testExport(chat) {
+    const version = typeof GM_info !== 'undefined' && GM_info && GM_info.script ? GM_info.script.version : '?';
+    let pinned = '';
+    // (Without the user's own message text that the pinned message carries.)
+    try { const plan = buildPlan(chat, memoryMsgSize); if (plan) { plan.fillAll = true; pinned = composeMemory(plan, '').text; } } catch (e) { pinned = ''; }
+    return {
+      kind: 'story-manager-test-export', exportVersion: 1, smVersion: version, exportedAt: new Date().toISOString(),
+      format: chat.format || 'classic',
+      settings: { momentsShown: settings.momentsShown, detail: settings.detail },
+      log: chat.log.map((e, i) => ({ reply: i + 1, id: e.id, v: e.v || '', chapter: e.chapter, folded: !!e.folded, summary: e.text, facts: e.facts || '', records: e.records || [] })),
+      manualRecords: chat.manualRecords || [], hiddenRecords: chat.hiddenRecords || [],
+      reconRecords: chat.reconRecords || [], reconReport: chat.reconReport || null, reconAt: chat.reconAt || 0,
+      secretAlias: chat.secretAlias || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
+      relMap: chat.relMap || null, portraits: chat.portraits || {},
+      chapters: (chat.chapters || []).map((c) => ({ title: c.title, text: c.text, short: c.short || '' })),
+      memory: chat.memory || '', pinnedNote: chat.pinned || '',
+      entries: (chat.entries || []).map((e) => ({ name: e.name, kind: e.kind, aliases: e.aliases || [], text: e.text, pinText: e.pinText || '', miniText: e.miniText || '' })),
+      pinnedMessage: pinned,
+    };
+  }
+  function exportForTesting() {
+    const chat = currentId && chats[currentId];
+    if (!chat) { toast('Open the story first.'); return; }
+    const ok = downloadText('story-manager-test-' + currentId.slice(0, 8) + '.json', JSON.stringify(testExport(chat), null, 1));
+    toast(ok ? 'Saved the test file. It holds your story\'s summaries and memory (not the chat itself).' : 'Could not save the file.', !ok);
+  }
   function diagnosticsBox() {
     const box = el('textarea', { readonly: true, class: 'diag' });
     box.style.display = 'none';
@@ -6503,7 +6534,8 @@
     return el('div', {},
       el('div', { class: 'btns' },
         el('button', { class: 'btn', onclick: show }, 'Diagnostics'),
-        el('button', { class: 'btn', onclick: copy }, 'Copy diagnostics')),
+        el('button', { class: 'btn', onclick: copy }, 'Copy diagnostics'),
+        el('button', { class: 'btn', onclick: exportForTesting }, 'Export for testing')),
       box);
   }
 

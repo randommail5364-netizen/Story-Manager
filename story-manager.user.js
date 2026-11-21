@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.40.0
+// @version      3.41.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1133,7 +1133,8 @@
     const pinnedText = (e) => {
       if (settings.momentsShown === 'all') return e.text;
       if (!main.has(e) && !inPlay.has(e) && e.miniText) return e.miniText;
-      return e.pinText || e.text;
+      // (An empty pinned version — e.g. only unsorted facts — means nothing to show.)
+      return e.pinText != null ? e.pinText : e.text;
     };
     const pack = (e) => ({ name: e.name, kind: e.kind || '', keys: entryKeys(e), text: pinnedText(e) });
     const plan = {
@@ -1142,8 +1143,8 @@
       head: head.join('\n\n'),
       tail: tail.join('\n\n'),
       charTitle: 'Characters, places & things',
-      core: order.filter((e) => size === Infinity || inPlay.has(e)).map(pack),
-      extra: order.filter((e) => size !== Infinity && !inPlay.has(e)).map(pack),
+      core: order.filter((e) => size === Infinity || inPlay.has(e)).map(pack).filter((x) => x.text.trim()),
+      extra: order.filter((e) => size !== Infinity && !inPlay.has(e)).map(pack).filter((x) => x.text.trim()),
       log: chat.log.slice(-Math.max(Math.max(0, Number(settings.logAttach) || 0), chat.log.filter((e) => e.chapter == null).length)).map((e) => e.text),
       budget,
     };
@@ -1428,6 +1429,7 @@
   // they don't each add a chat to the user's MiniApps history. Requests that
   // run at the same time each get their own helper chat (slot).
   const helperChats = [];  // slot -> { slug, id, uses }
+  const helperTag = [];    // slot -> { chat, pos } of the latest answer
   const helperKey = (slot) => (slot ? 'helperChat' + slot : 'helperChat');
 
   // Every helper chat ever used (also old ones after a fresh one was started),
@@ -1611,6 +1613,9 @@
     }
     rememberHelper(cid);
     helperChats[slot] = reuse && cid === usedChat.id ? Object.assign({}, usedChat, { uses: usedChat.uses + 1 }) : { slug, id: cid, uses: 1 };
+    // Which helper chat answered, and how many requests it had seen: to measure
+    // whether the keeper gets worse the longer a helper chat runs.
+    helperTag[slot] = { chat: String(cid).slice(0, 8), pos: helperChats[slot].uses };
     await Store.set(helperKey(slot), helperChats[slot]);
     // The send reply lists the messages it added (our request, maybe a
     // greeting); the answer comes after our request's position.
@@ -1720,7 +1725,7 @@
     '- After each summary write FACTS: and then, one per line, the lasting facts this reply revealed or changed, as records: "- Subject | kind | fact".',
     '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
     '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
-      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, done, nickname, major moment, minor moment, routine moment.',
+      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, done, nickname, learned, believes, condition, major moment, minor moment, routine moment.',
     '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are or what they did in this scene.',
     '  "relationship: X" is a lasting fact about the two of them (dating, engaged, rivals, what they call each other), not a scene; a scene is a key moment. Outfits worn in a scene are not possessions.',
     '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
@@ -1734,14 +1739,25 @@
     '  "minor moment": worth remembering but changes little (a date, a gift, a small plan, a meaningful talk).',
     '  "routine moment": everyday things (meals, chores, banter, sleeping, texts, an intimate scene with nothing new in it). Every reply has at least one moment for the main characters in it (minor or routine when nothing major happened).',
     '  A secret is something a character hides from someone in the story, always with what it is after its [short name]; an intimate scene is a key moment, not a secret.',
+    '  "knows" is ONLY for a secret: it always starts with the secret\'s [short name]. Anything else someone found out or was told (not a secret) is "learned". Something that happened is a moment, never "knows".',
+    '  "condition": a person\'s lasting condition until it changes (dead, badly wounded, missing, captured, pregnant, cursed), not a passing state.',
+    '  "believes": what a character thinks is true, which may be wrong ("- Lena | believes | [the king] the king is loyal"). Write what is really true as its own fact; never present a belief or a claim as true.',
+    '  "where things stand: X" is how things are between them now, never what one of them did in the scene (that is a moment).',
     '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
     '  One subject per record: never "Tiffany and Irene" — write a record for each of them. To say what a place or thing is, use kind "type" (place, item, group) or "basics". Write FACTS: none if there are none.',
-    '  Example:',
+    '  Example (a made-up story; use your story\'s own names):',
     '  FACTS:',
-    '  - Karina | relationship: Winter | comforted Winter after the fight and slept beside her',
-    '  - Karina | where things stand: Winter | close again; promised to stop teasing her about Jacek',
-    '  - Park Ji-won | role | COO of SM Entertainment',
-    '  - Mango plushie | status | delivered to the penthouse',
+    '  - Lena | relationship: Tomas | sworn sister-in-arms since the siege of Varn',
+    '  - Lena | where things stand: Tomas | trusting again after their quarrel; she promised to stop testing his loyalty',
+    '  - Lena | minor moment | mended Tomas\'s cloak by the fire and told him about her brother',
+    '  - Tomas | major moment | confessed he deserted at Varn → since then Lena keeps the truth from the council',
+    '  - Tomas | secret | [Varn] he deserted his post at the siege of Varn',
+    '  - Lena | knows | [Varn] Tomas confessed it to her at the campfire',
+    '  - Lena | learned | the eastern pass is closed by snow until spring',
+    '  - Captain Orrin | believes | [Varn] Tomas held the gate to the end',
+    '  - Orrin | role | captain of the city watch',
+    '  - The silver key | status | hidden under the chapel floor',
+    '  Wrong: "- Lena | knows | Tomas kissed her by the fire" (a moment, not a secret). Wrong: "- Lena | where things stand: Tomas | he mended her cloak" (a scene, not a state).',
   ];
   function summarySystem(facts) {
     return [
@@ -2052,12 +2068,14 @@
         (factsMode(chat) ? 'JOB: SUMMARISE. Write one summary and its FACTS records for each [R…] reply now.' : 'JOB: SUMMARISE. Write one summary and one FACTS line for each [R…] reply now.');
       const out = cleanOutput(await callLLM(summarySystem(factsMode(chat)), user, slot));
       checkStop();
+      const tag = helperTag[slot] && !compare.slug ? Object.assign({}, helperTag[slot]) : null;
       const log = /^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out;
       // Working-out inside a summary is removed; a summary that is mostly
       // working-out counts as missing, so it is asked for again.
       const entries = parseKeeperAnswer(log, list.filter((m) => m.role === 'assistant')).entries.filter((e) => {
         const c = cleanSummary(e.text);
         e.text = c.text;
+        if (tag) { e.hc = tag.chat; e.hp = tag.pos; }
         return !c.bad;
       });
       return { out, entries };
@@ -2498,6 +2516,7 @@
     ['role', /^(role|job|occupation|position|title|profession|rank)$/],
     ['type', /^(type|is a|what it is|category)$/],
     ['status', /^(status|condition of item|state of item)$/],
+    ['condition', /^(condition|health|alive|injur(y|ies)|wounds?|fate)$/],
     ['location', /^(location|lives|home|lives in|based in)$/],
     ['basics', /^(basics?|identity|info|about)$/],
     ['appearance', /^(appearance|looks?|body|build|hair|eyes|face|features?|scar|tattoo)$/],
@@ -2513,7 +2532,9 @@
     ['promise', /^(promises?|vows?|agreements?|commitments?|deals?)$/],
     ['secret', /^(secrets?)$/],
     ['notknows', /^(does not know|doesn'?t know|does not know about|doesn'?t know about|unaware of|must not know|must not find out|kept from|not told|in the dark about)$/],
-    ['knows', /^(knows|knows about|is aware of|aware of|learned|found out|was told|overheard|discovered|in on)$/],
+    ['knows', /^(knows|knows about|is aware of|aware of|in on)$/],
+    ['learned', /^(learned|learnt|found out|was told|overheard|discovered|realized|realised|heard)$/],
+    ['believes', /^(believes?|thinks?|suspects?|assumes?|is convinced|convinced|claims?)$/],
     ['cover', /^(cover story|cover|public story|official story|what others are told|what outsiders are told|alibi)$/],
     ['goal', /^(goals?|plans?|wants|desires?|intentions?)$/],
     ['done', /^(done|completed|complete|kept|fulfilled|dropped|cancelled|canceled|resolved|goal done|promise kept|no longer|finished)$/],
@@ -2521,7 +2542,7 @@
     ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?|(major|important|big|key major|minor|routine|small) (key )?moments?)$/],
   ];
   // Kinds that hold one value at a time: the newest is true, older ones are history.
-  const SINGLE_KINDS = new Set(['fullname', 'age', 'role', 'type', 'status', 'location', 'stands']);
+  const SINGLE_KINDS = new Set(['fullname', 'age', 'role', 'type', 'status', 'condition', 'location', 'stands']);
   function recordKind(k) {
     // "relationship with Winter", "Relationship to Winter", "where things stand with Winter" → kind and target.
     let raw = String(k || '').replace(/\([^)]*\)/g, '').replace(/\*+/g, '').trim();
@@ -2545,7 +2566,10 @@
       // A record's subject is a name and its kind a short label. "Mira is a
       // healer | Ash is a dragon | …" (old-style facts on one line) is not a record.
       if (s.split(/\s+/).length > 5 || /\b(is|was|are|were|has|had|did|does|became|got|gave|said|told)\b/i.test(s) || /^(the|a|an|they|she|he|it|we|i)\b/i.test(s)) continue;
-      if (k.kind === 'other' && k.label.split(/\s+/).length > 3) continue;
+      // A kind Story Manager does not know is kept (as "unclassified"), never dropped.
+      if (k.kind === 'other' && k.label.split(/\s+/).length > 3) k.kind = 'unclassified';
+      // Learning a named secret is knowing it.
+      if (k.kind === 'learned' && /^\s*\[[^\]]+\]/.test(m[3])) k.kind = 'knows';
       // "Lecture Hall B | place | a raked auditorium…": the kind says what it IS.
       const isA = k.label.match(/^(place|location type|venue|building|room|item|object|thing|group|organisation|organization|lore|event)$/);
       if (isA) {
@@ -2562,6 +2586,36 @@
       }
       out.push(rec);
     }
+    return out;
+  }
+
+  // Fact quality: each record checked against its kind. Nothing is dropped —
+  // a record that fails is kept (in the full entry, under "Unsorted") with
+  // why, so it can be sorted later. Statuses:
+  //   ok · unclassified (a kind Story Manager does not know) · no-secret
+  //   ("knows" that names no secret: a moment or something learned, filed
+  //   wrongly) · unresolved ("knows [x]" where no secret [x] exists yet — it
+  //   may come later, or be another name for one) · suspect-state ("where
+  //   things stand" that reads like a scene; flagged only, still used).
+  const SCENE_STATE_RE = /^\s*(he|she|they|i|we)\s+\w+ed\b|^\s*\w+ed (him|her|them|his|the)\b/i;
+  function factStatus(r, secretKeys, keyOf) {
+    if (r.k === 'unclassified') return 'unclassified';
+    if (r.k === 'knows' || r.k === 'notknows') {
+      const m = String(r.v).match(/^\s*\[([^\]]+)\]/);
+      if (!m) return r.k === 'knows' ? 'no-secret' : 'ok';
+      return secretKeys.has(keyOf(m[1])) ? 'ok' : 'unresolved';
+    }
+    if (r.k === 'stands' && SCENE_STATE_RE.test(r.v)) return 'suspect-state';
+    return 'ok';
+  }
+  const secretKeyOf = (n) => normValue(n).split(' ').filter((w) => w && !STOP_WORDS.has(w) && !/^(on|of|to|a|an|in|at|by|is|my|me)$/.test(w)).sort().join(' ');
+  function factQuality(chat) {
+    const recs = allRecords(chat);
+    const alias = chat.secretAlias || {};
+    const keys = new Set();
+    for (const r of recs) if (r.k === 'secret') { const m = String(r.v).match(/^\s*\[([^\]]+)\]/); if (m) keys.add(secretKeyOf(m[1])); }
+    for (const k of Object.keys(alias)) keys.add(k);
+    const out = recs.map((r) => ({ r, status: factStatus(r, keys, secretKeyOf) }));
     return out;
   }
 
@@ -2670,6 +2724,8 @@
     // Knowledge records ("knows", "does not know", "cover story") are not facts
     // of their own: they make a person exist and feed "Who knows what".
     const records = allRecords(chat).filter((r) => r.k !== 'cover');
+    // Records that failed the fact check (see factQuality) stay in the full entry, under "Unsorted".
+    const unsortedIds = new Set(factQuality(chat).filter((x) => x.status === 'no-secret' || x.status === 'unresolved' || x.status === 'unclassified').map((x) => x.r.id));
     // Secrets are put together once; each person's entry lists what they know.
     Object.defineProperty(chat, '__secrets', { value: buildSecrets(chat), configurable: true, enumerable: false, writable: true });
     const skip = new Set((chat.ignored || []).map((n) => n.toLowerCase()));
@@ -2702,7 +2758,7 @@
       if ((r.k === 'knows' || r.k === 'notknows') && EVERYONE_RE.test(r.s.trim())) continue;
       let p = find(r.s);
       if (!p) { p = { name: r.s, aliases: [], records: [] }; people.push(p); }
-      if (r.k === 'knows' || r.k === 'notknows') { p.knowsOnly = true; continue; }
+      if ((r.k === 'knows' || r.k === 'notknows') && !unsortedIds.has(r.id)) { p.knowsOnly = true; continue; }
       // The fuller name is the entry's name ("Jacek Kowalski" over "Jacek").
       if (r.s.length > p.name.length && r.s.toLowerCase().startsWith(p.name.toLowerCase() + ' ')) { p.aliases.push(p.name); p.name = r.s; }
       p.records.push(r);
@@ -2756,7 +2812,7 @@
         const v = single(by(k));
         if (v) { basics.push('- ' + label + ': ' + v); basicsNow.push('- ' + label + ': ' + now(by(k))); }
       };
-      one('Full name', 'fullname'); one('Age', 'age'); one('Role', 'role');
+      one('Full name', 'fullname'); one('Age', 'age'); one('Role', 'role'); one('Condition', 'condition');
       // "Lives / based" is a place, not where they went at some moment.
       const isThing = by('type').length ? !/character|person/i.test(single(by('type'))) : /^(item|place|group)$/.test(guessKind(p.name, [], '') || '');
       // (Where a thing is may be temporary; for a person only a home counts.)
@@ -2831,11 +2887,18 @@
       // The pinned message has one "Story moments" list instead (see storyMoments).
       void shown;
       section('Key Moments', moments.map(momentLine), []);
+      // What they found out (not a secret) and what they believe (may be wrong).
+      const learned = alike(uniq(by('learned')), 0.6).map((r) => '- Learned: ' + r.v);
+      const believes = alike(uniq(by('believes')), 0.6).map((r) => '- Believes (may not be true): ' + r.v);
+      section('Knowledge & Beliefs', learned.concat(believes), learned.slice(-3).concat(believes), believes);
+      // Facts the keeper filed under a wrong or unknown kind: kept, not shown in the pinned message.
+      const unsorted = p.records.filter((r) => unsortedIds.has(r.id));
+      section('Unsorted (kind unclear; kept for sorting later)', unsorted.map((r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + (r.label || r.k) + ': ' + r.v), []);
       section('Other', alike(uniq(by('other')), 0.6).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
       const typed = single(by('type'));
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
       // Without a type: a person only if something personal is known about them.
-      const personal = p.knowsOnly || p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory)$/.test(r.k));
+      const personal = p.knowsOnly || p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory|learned|believes)$/.test(r.k));
       // A name in capitals ("BABYMONSTER", "IVE") is a group, even with personal facts.
       const capsGroup = /^[A-Z0-9()&' -]{3,20}$/.test(p.name) && /[A-Z]{3}/.test(p.name);
       const kind = capsGroup && !kindWord ? 'group' : kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase())
@@ -2966,7 +3029,7 @@
   const factsMode = (chat) => chat && chat.format === 'facts';
 
   // "Choi" and "Ms. Choi" are the same person; "Mr. Kim" and "Ms. Kim" may not be.
-  const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|cfo|coo|cto|cmo|chairman|chairwoman|chair|vp|president|executive|producer|coach|teacher|officer|detective|agent|captain)\.?\s+/i;
+  const TITLE_RE = /^(?:ms|mr|mrs|miss|mx|dr|prof|sir|madam|madame|lady|lord|director|manager|ceo|cfo|coo|cto|cmo|chairman|chairwoman|chair|vp|president|executive|producer|coach|teacher|officer|detective|agent|captain|inspector|constable|sheriff|sergeant|sgt|corporal|lieutenant|lt|major|colonel|col|general|gen|commander|admiral|marshal|king|queen|prince|princess|duke|duchess|count|countess|baron|baroness|emperor|empress|professor|doctor|nurse|judge|senator|minister|governor|mayor|priest|chief|commissioner)\.?\s+/i;
   function sameButTitle(a, b) {
     const ta = TITLE_RE.test(a);
     const tb = TITLE_RE.test(b);
@@ -6058,6 +6121,25 @@
 
   // What is still wrong in a memory, by the same rules the cleaning uses (it
   // should all read 0 after a tidy-up; anything else means a rule is missing).
+  // Fact quality for Diagnostics: how many facts pass their kind's check, by
+  // reply range and by how long the helper chat had been running.
+  function factQualityText(chat) {
+    const q = factQuality(chat).filter((x) => x.r.at !== Infinity && !x.r.recon);
+    if (!q.length) return 'no facts yet';
+    const count = (list) => { const c = {}; for (const x of list) c[x.status] = (c[x.status] || 0) + 1; return c; };
+    const pct = (list) => (list.length ? Math.round(100 * list.filter((x) => x.status === 'ok').length / list.length) + '%' : '-');
+    const c = count(q);
+    const parts = ['ok ' + (c.ok || 0) + ' of ' + q.length + ' (' + pct(q) + ')'];
+    for (const [k, label] of [['no-secret', '"knows" without a secret'], ['unresolved', '"knows" an unknown secret'], ['unclassified', 'unknown kind'], ['suspect-state', '"where things stand" that reads like a scene (flagged, still used)']]) if (c[k]) parts.push(c[k] + ' ' + label);
+    const n = chat.log.length;
+    const step = Math.max(10, Math.ceil(n / 5));
+    const ranges = [];
+    for (let a = 1; a <= n; a += step) { const b = Math.min(n, a + step - 1); ranges.push(a + '–' + b + ' ' + pct(q.filter((x) => x.r.at >= a && x.r.at <= b))); }
+    const byLog = new Map(chat.log.map((e, i) => [i + 1, e]));
+    const withPos = q.filter((x) => byLog.get(x.r.at) && byLog.get(x.r.at).hp);
+    const pos = withPos.length ? ' · by helper chat position: ' + [[1, 5], [6, 15], [16, 30], [31, 9999]].map(([a, b]) => { const l = withPos.filter((x) => byLog.get(x.r.at).hp >= a && byLog.get(x.r.at).hp <= b); return l.length ? (b > 999 ? a + '+' : a + '–' + b) + ' ' + pct(l) + ' (' + l.length + ')' : ''; }).filter(Boolean).join(', ') : ' · by helper chat position: not recorded yet (summaries from v3.41 on)';
+    return parts.join(', ') + ' · ok by replies: ' + ranges.join(', ') + pos;
+  }
   function memoryHealth(chat) {
     const junk = chat.entries.reduce((n, e) => n + e.text.split('\n').filter((l) => isJunk(l, true)).length, 0) +
       chat.memory.split('\n').filter((l) => isJunk(l)).length;
@@ -6342,6 +6424,7 @@
       'Settings: saved here ' + (settings.settingsAt ? ago(settings.settingsAt) + ' (' + new Date(settings.settingsAt).toLocaleString() + ')' : 'never') +
         ' · on GitHub: ' + (!settings.githubToken ? 'sync off' : sync.remoteSettings ? 'saved ' + new Date(sync.remoteSettings.at).toLocaleString() + ', keeper ' + sync.remoteSettings.keeper : 'none yet') + '\n' +
       'Memory health: ' + (chat ? memoryHealth(chat) : 'no chat') + '\n' +
+      (chat && factsMode(chat) ? 'Fact quality: ' + factQualityText(chat) + '\n' : '') +
       'Summaries made with: ' + (chat && chat.log.length ? summaryVersions(chat).join(', ') : 'none yet') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
       'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + factsSplit(chat) + '), ' +
         chat.log.filter((e) => e.checked).length + ' facts-checked, ' + st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +
@@ -6501,7 +6584,7 @@
       kind: 'story-manager-test-export', exportVersion: 1, smVersion: version, exportedAt: new Date().toISOString(),
       format: chat.format || 'classic',
       settings: { momentsShown: settings.momentsShown, detail: settings.detail },
-      log: chat.log.map((e, i) => ({ reply: i + 1, id: e.id, v: e.v || '', chapter: e.chapter, folded: !!e.folded, summary: e.text, facts: e.facts || '', records: e.records || [] })),
+      log: chat.log.map((e, i) => ({ reply: i + 1, id: e.id, v: e.v || '', chapter: e.chapter, folded: !!e.folded, summary: e.text, facts: e.facts || '', records: e.records || [], helperChat: e.hc || '', helperPos: e.hp || 0 })),
       manualRecords: chat.manualRecords || [], hiddenRecords: chat.hiddenRecords || [],
       reconRecords: chat.reconRecords || [], reconReport: chat.reconReport || null, reconAt: chat.reconAt || 0,
       secretAlias: chat.secretAlias || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],

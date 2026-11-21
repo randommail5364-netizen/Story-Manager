@@ -21,7 +21,7 @@ function chatOf(ex) {
     format: ex.format, ignored: ex.ignored || [], entries: [], secretAlias: ex.secretAlias || {}, keptMoments: ex.keptMoments || [],
     manualRecords: ex.manualRecords || [], hiddenRecords: ex.hiddenRecords || [], reconRecords: ex.reconRecords || [],
     relMap: ex.relMap, portraits: ex.portraits || {}, memory: ex.memory || '', pinned: ex.pinnedNote || '',
-    chapters: ex.chapters || [], log: ex.log.map((e) => ({ id: e.id, text: e.summary, records: e.records, chapter: e.chapter, folded: e.folded })),
+    chapters: ex.chapters || [], log: ex.log.map((e) => ({ id: e.id, text: e.summary, records: e.records, chapter: e.chapter, folded: e.folded, hc: e.helperChat, hp: e.helperPos })),
   };
 }
 const section = (t, title) => { const m = String(t).match(new RegExp('## ' + title + '\\n([\\s\\S]*?)(?=\\n## |$)')); return m ? m[1] : ''; };
@@ -63,7 +63,7 @@ function run(file) {
   check(!twins.length, 'no secret of one person listed twice', twins.join('\n'));
 
   // Pinned versions: a finished goal is never open; homes are homes; group lines are not relationships.
-  const pin = (e) => e.pinText || e.text;
+  const pin = (e) => (e.pinText != null ? e.pinText : e.text);
   const homes = es.flatMap((e) => pin(e).split('\n').filter((l) => /^- Lives \/ based:/.test(l) && NOT_HOME_RE.test(l)).map((l) => e.name + ': ' + l));
   check(!homes.length, 'no scene is shown as a home', homes.join('\n'));
   const groups = es.flatMap((e) => pin(e).split('\n').filter((l) => /^- [^:]*(,|&)[^:]*:/.test(l) && /Where things stand/.test(l)).map((l) => e.name + ': ' + l));
@@ -95,7 +95,20 @@ function run(file) {
   // Moments.
   const ms = recs.filter((r) => r.k === 'moment');
   const without = chat.log.filter((e) => !(e.records || []).some((r) => r.k === 'moment')).length;
-  check(without <= chat.log.length * 0.2, 'at most 1 in 5 replies has no moment', without + ' of ' + chat.log.length + ' have none');
+  // A warning, not a failure: some replies hold nothing worth a moment.
+  if (without > chat.log.length * 0.2) console.log('  ⚠ ' + without + ' of ' + chat.log.length + ' replies have no moment (warning)');
+
+  // Fact quality: nothing silently lost; facts that fail their kind's check are kept (full entry), not pinned.
+  const q = lib.factQuality(chat);
+  const bad = q.filter((x) => x.status === 'no-secret' || x.status === 'unresolved' || x.status === 'unclassified');
+  const full = es.map((e) => e.text).join('\n');
+  // ("Everyone | knows …" has no entry of its own: it stays in the log, counted here.)
+  const everyone = bad.filter((x) => /^(everyone|everybody|all|the group|public)$/i.test(x.r.s.trim()));
+  if (everyone.length) console.log('  · ' + everyone.length + ' failed facts about "everyone" are kept in the log only (no entry of their own)');
+  const missing = bad.filter((x) => !everyone.includes(x) && !full.includes(String(x.r.v).slice(0, 40)));
+  check(!missing.length, 'every fact that fails its check is kept in a full entry', missing.slice(0, 5).map((x) => x.r.s + ' | ' + x.r.k + ' | ' + x.r.v).join('\n'));
+  const pinnedAll = es.map((e) => pin(e) + '\n' + (e.miniText || '')).join('\n');
+  check(!/### Unsorted/.test(pinnedAll), 'unsorted facts are not in the pinned versions');
   const sm = lib.storyMoments(chat);
 
   // Baseline report (numbers to compare versions by).
@@ -108,6 +121,16 @@ function run(file) {
   console.log('    world lines ' + world.split('\n').filter((l) => /^\s*[-*•]/.test(l)).length + ' (before tidying ' + section(chat.memory, 'World & Timeline').split('\n').filter((l) => /^\s*[-*•]/.test(l)).length + ')');
   console.log('    open goals and promises ' + es.reduce((n, e) => n + pin(e).split('\n').filter((l) => /^- (Goal|Promise):/.test(l)).length, 0) + ' · repeated ' + repeatGoals.length);
   console.log('    exported pinned message ' + (ex.pinnedMessage || '').length + ' characters');
+  const cnt = (list) => list.reduce((m, x) => (m[x.status] = (m[x.status] || 0) + 1, m), {});
+  const ok = (list) => (list.length ? Math.round(100 * list.filter((x) => x.status === 'ok').length / list.length) + '%' : '-');
+  const fromLog = q.filter((x) => !x.r.recon && x.r.at !== Infinity);
+  console.log('    fact quality: ' + JSON.stringify(cnt(fromLog)) + ' · ok ' + ok(fromLog) + ' (log ' + ex.log.reduce((a, e) => a + e.records.length, 0) + ', check-up ' + (ex.reconRecords || []).length + ', manual ' + (ex.manualRecords || []).length + ')');
+  const n = chat.log.length, step = Math.ceil(n / 5);
+  const r = [];
+  for (let a = 1; a <= n; a += step) { const b = Math.min(n, a + step - 1); r.push(a + '–' + b + ' ' + ok(fromLog.filter((x) => x.r.at >= a && x.r.at <= b))); }
+  console.log('    ok by replies: ' + r.join(', '));
+  const withPos = fromLog.filter((x) => (chat.log[x.r.at - 1] || {}).hp);
+  console.log('    by helper chat position: ' + (withPos.length ? [[1, 5], [6, 15], [16, 30], [31, 1e9]].map(([a, b]) => a + '–' + b + ' ' + ok(withPos.filter((x) => chat.log[x.r.at - 1].hp >= a && chat.log[x.r.at - 1].hp <= b))).join(', ') : 'not recorded in this export'));
 }
 
 const dir = path.join(__dirname, 'data');

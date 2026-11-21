@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.36.1
+// @version      3.37.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1035,11 +1035,46 @@
   }
 
   // The facts format's layout: Must remember → Now → Characters, places &
-  // things (main characters first) → World & turning points → History,
+  // things (main characters first) → World → Story moments → History,
   // chapter by chapter → Recent events.
-  function turningPoints(chat) {
-    const list = alike(allRecords(chat).filter((r) => r.k === 'moment' && r.tier === 'turning'), 0.6);
-    return list.sort((a, b) => a.at - b.at).map((r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + r.s + ': ' + r.v);
+  // "Story moments": one list for the whole story in place of each
+  // character's key moments. The newest STORY_MAJOR major moments (turning
+  // points count as major), STORY_MINOR minor and STORY_ROUTINE routine ones,
+  // plus each character's newest major moment so no one is left without one.
+  // The same event under several people is listed once, with all their names.
+  const STORY_MAJOR = 40, STORY_MINOR = 15, STORY_ROUTINE = 5;
+  function storyMoments(chat) {
+    const skip = new Set((chat.ignored || []).map((n) => n.toLowerCase()));
+    const recs = allRecords(chat).filter((r) => r.k === 'moment' && r.s && !skip.has(r.s.toLowerCase()) && !PLACEHOLDER_SUBJECT_RE.test(r.s.trim()));
+    const tiered = recs.some((r) => r.tier || r.imp);
+    const kept = chat.keptMoments || [];
+    const tierOf = (r) => (r.manual || kept.includes(r.id) || r.tier === 'turning' || r.imp ? 'major'
+      : tiered ? (r.tier === 'major' ? 'major' : r.tier || 'minor') : (BIG_MOMENT_RE.test(r.v) ? 'major' : 'minor'));
+    const list = [];
+    for (const r of recs) {
+      const w = sigWords(r.v);
+      const twin = list.find((m) => m.at === r.at && (() => { let n = 0; for (const a of w) if (m.w.has(a)) n++; return n >= 2 && n / Math.min(w.size, m.w.size || 1) >= 0.5; })());
+      const t = tierOf(r);
+      if (twin) {
+        if (!twin.who.some((x) => x.toLowerCase() === r.s.toLowerCase())) twin.who.push(r.s);
+        if (r.v.length > twin.v.length) { twin.v = r.v; twin.w = w; }
+        if (['major', 'minor', 'routine'].indexOf(t) < ['major', 'minor', 'routine'].indexOf(twin.t)) twin.t = t;
+      } else list.push({ at: r.at, v: r.v, w, who: [r.s], t });
+    }
+    const order = (a, b) => (a.at === Infinity ? 1e9 : a.at) - (b.at === Infinity ? 1e9 : b.at);
+    list.sort(order);
+    const pick = new Set();
+    const newest = (t, n) => list.filter((m) => m.t === t).slice(-n).forEach((m) => pick.add(m));
+    newest('major', STORY_MAJOR); newest('minor', STORY_MINOR); newest('routine', STORY_ROUTINE);
+    const covered = new Set();
+    for (const m of pick) for (const n of m.who) covered.add(n.toLowerCase());
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m.t !== 'major' || pick.has(m)) continue;
+      if (m.who.some((n) => !covered.has(n.toLowerCase()))) { pick.add(m); for (const n of m.who) covered.add(n.toLowerCase()); }
+    }
+    const shown = list.filter((m) => pick.has(m));
+    return { left: list.length - shown.length, lines: shown.map((m) => '- ' + (m.at !== Infinity ? '(reply ' + m.at + ') ' : '') + m.who.join(', ') + ': ' + m.v) };
   }
   function buildFactsPlan(chat, size) {
     const budget = size || Math.max(2000, Number(settings.injectBudget) || DEFAULT_SETTINGS.injectBudget);
@@ -1055,11 +1090,13 @@
     if (secrets) head.push('## Who knows what\n(Characters only know the secrets listed for them; never let anyone act on a secret they do not know.)\n' + secrets);
     const tail = [];
     let world = sectionOf(chat.memory, 'World & Timeline').trim();
-    // Turning points from the moments the keeper marked (one line each, the same
-    // event under several people once), in place of the keeper's own list.
-    const turns = turningPoints(chat);
-    if (turns.length && settings.momentsShown !== 'all') world = world.replace(/\n*\**turning points:?\**[\s\S]*$/i, '').trim() + '\n\nTurning points:\n' + turns.join('\n');
-    if (world) tail.push('## World & turning points\n' + world);
+    // The keeper's old "Turning points:" list is left out: the story moments replace it.
+    if (settings.momentsShown !== 'all') {
+      world = world.replace(/\n*\**turning points:?\**[\s\S]*$/i, '').trim();
+      if (world) tail.push('## World\n' + world);
+      const sm = storyMoments(chat);
+      if (sm.lines.length) tail.push('## Story moments (oldest first)\n' + (sm.left ? '(' + sm.left + ' older moments are left out here; History covers them.)\n' : '') + sm.lines.join('\n'));
+    } else if (world) tail.push('## World & Timeline\n' + world);
     if (chat.chapters.length) tail.push('## History, chapter by chapter\n' + chaptersText(chat, Math.round(budget * 0.3)));
     const inPlay = new Set(entriesInPlay(chat));
     const main = new Set(mainCharacters(chat));
@@ -1657,7 +1694,7 @@
     '- After each summary write FACTS: and then, one per line, the lasting facts this reply revealed or changed, as records: "- Subject | kind | fact".',
     '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
     '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
-      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, done, nickname, turning point, major moment, minor moment, routine moment.',
+      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, done, nickname, major moment, minor moment, routine moment.',
     '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are or what they did in this scene.',
     '  "relationship: X" is a lasting fact about the two of them (dating, engaged, rivals, what they call each other), not a scene; a scene is a key moment. Outfits worn in a scene are not possessions.',
     '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
@@ -1665,10 +1702,9 @@
     '  "- Everyone | knows | [short name]" when it comes out (e.g. confessed in the group chat); when someone is told or confesses it to someone, a knows record for each person who now knows; reuse the exact short name already used for that secret; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
     '  "done": a goal, plan or promise of theirs that was carried out, kept, dropped or replaced in this reply: "- Person | done | the goal or promise, in a few of its words".',
     '  Times: write the story day or date ("the day of the escape room", "Saturday"), never "today", "tomorrow" or "tonight" (they are wrong a day later).',
-    '  Moments (a short line saying what happened to or because of them in this reply) have four levels; choose one:',
-    '  "turning point": changes the whole story for good (a new or ended relationship, a secret coming out, a move, a death, a big decision). Rare: at most one every several replies.',
-    '  For a turning point or major moment, write what happened and, when the story shows a lasting change, what is different since: "argued about his calm → since then she offers quiet comfort when he is down (affects: Shuhua & Jacek)". Leave out the arrow part when nothing lasting changed.',
-    '  "major moment": matters for this character later (a first time, a confession, a promise or vow, a fight or making up, something they will remember).',
+    '  Moments (a short line saying what happened to or because of them in this reply) have three levels; choose one:',
+    '  For a major moment, write what happened and, when the story shows a lasting change, what is different since: "argued about his calm → since then she offers quiet comfort when he is down (affects: Shuhua & Jacek)". Leave out the arrow part when nothing lasting changed.',
+    '  "major moment": only when it changes something that lasts: a relationship starts, changes or ends, a secret comes out, a first time, a confession, a promise or vow, a fight or making up, a move, a big decision. Rare: most replies have none. Hugs, kisses, meals, teasing, coffee and dozing off are never major.',
     '  "minor moment": worth remembering but changes little (a date, a gift, a small plan, a meaningful talk).',
     '  "routine moment": everyday things (meals, chores, banter, sleeping, texts, an intimate scene with nothing new in it). Leave out what is not worth remembering at all.',
     '  A secret is something a character hides from someone in the story, always with what it is after its [short name]; an intimate scene is a key moment, not a secret.',
@@ -1717,10 +1753,9 @@
       'STORY rules:',
       '- Every line of every entry must be a fact in the entry format ("### Heading", "- bullet", or "Label: value"). Never write your working-out (which fact goes where, what is already covered, what you will output).',
       '- ## Current Scene must describe the situation after the NEWEST event (later events override earlier ones, e.g. a punishment that was changed). Rewrite it fully each time it changes; never keep outdated parts.',
-      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (only what is still unresolved: plans, promises, mysteries, things that must be followed up — remove a thread once it is resolved; never finished events, never what someone is doing right now (that is the Current Scene), never secrets (they are kept separately, with who knows them)), ## World & Timeline (world rules, the date and time (name days and times as the story does, never just "tomorrow" — it is wrong a day later), how much time has passed, important background, and "Turning points:").',
-      '- "Turning points:" in ## World & Timeline is a short list of the story\'s major turning points, oldest first, one line each with when it happened and what changed because of it (a new relationship, a secret revealed, a move, a falling-out and its repair). Keep every earlier one and add new ones; this list may make the section longer than the others.',
+      '- Sections: ## Current Scene (where and when it is, who is present, what is happening right now), ## Open Threads (only what is still unresolved: plans, promises, mysteries, things that must be followed up — remove a thread once it is resolved; never finished events, never what someone is doing right now (that is the Current Scene), never secrets (they are kept separately, with who knows them)), ## World & Timeline (world rules, the date and time (name days and times as the story does, never just "tomorrow" — it is wrong a day later), how much time has passed, important background; no list of events — they are kept separately).',
       '- Output only the sections that change, each as === SECTION: Name === followed by its complete new text, keeping every fact that is still true. Leave out sections that did not change. If a section is empty, write it in full.',
-      '- Keep each section short, at most about 1,500 characters (World & Timeline may be longer for its turning points): it is sent with every message. What happened belongs in the history (chapters), details about characters, places and items in their entries.',
+      '- Keep each section short, at most about 1,500 characters : it is sent with every message. What happened belongs in the history (chapters), details about characters, places and items in their entries.',
       '- Details about a character, place or item belong in its entry, not here.',
       '',
       'ENTRY rules:',
@@ -2763,9 +2798,9 @@
       const newest = (t, n) => new Set(moments.filter((r) => tierOf(r) === t).slice(-n));
       const minorShown = newest('minor', MINOR_PINNED), routineShown = newest('routine', ROUTINE_PINNED);
       const shown = moments.filter((r) => { const t = tierOf(r); return t === 'turning' || t === 'major' || minorShown.has(r) || routineShown.has(r); });
-      section('Key Moments', moments.map(momentLine),
-        (shown.length < moments.length ? ['(' + (moments.length - shown.length) + ' older minor and routine moments are left out here; History covers them.)'] : []).concat(shown.map(momentLine)),
-        moments.filter((r) => importantMoment(chat, p, r, turning, weighty)).slice(-3).map(momentLine));
+      // The pinned message has one "Story moments" list instead (see storyMoments).
+      void shown;
+      section('Key Moments', moments.map(momentLine), []);
       section('Other', uniq(by('other')).map((r) => '- ' + (r.label && r.label !== 'other' ? r.label + ': ' : '') + r.v));
       const typed = single(by('type'));
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];

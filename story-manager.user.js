@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.38.0
+// @version      3.38.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2844,8 +2844,14 @@
     const find = (key, text) => secrets.find((x) => x.key === key) ||
       (text ? secrets.find((x) => { const a = normValue(x.text); const b = normValue(text); return a && b && (a.includes(b) || b.includes(a)); }) : null);
     const alias = chat.secretAlias || {};
+    // Whose secret each name is: two secrets of different people are never
+    // merged, whatever the keeper said ("Jacek wants to be a father" is not
+    // "Yujin wants his child").
+    const ownersOf = {};
+    for (const r of recs) if (r.k === 'secret') { const m = r.v.match(SECRET_NAME_RE); if (m) { const k = keyOf(m[1].trim(), ''); (ownersOf[k] = ownersOf[k] || new Set()); for (const w of r.s.split(/\s*(?:,|&|\band\b)\s*/)) if (w.trim()) ownersOf[k].add(w.trim().toLowerCase()); } }
+    const sameOwners = (a, b) => { const x = ownersOf[a], y = ownersOf[b]; return !x || !y || [...x].some((w) => y.has(w)); };
     const ensure = (name, text) => {
-      if (name && alias[keyOf(name, '')]) name = alias[keyOf(name, '')];
+      if (name && alias[keyOf(name, '')] && sameOwners(keyOf(name, ''), keyOf(alias[keyOf(name, '')], ''))) name = alias[keyOf(name, '')];
       const key = keyOf(name, text);
       let x = find(key, name ? '' : text);
       if (!x) { x = { key, name: name || '', text: '', people: new Map(), cover: '', at: 0 }; secrets.push(x); }
@@ -3696,6 +3702,7 @@
       if (same) {
         if (keyOfName(same[1]) === keyOfName(same[2])) skipped.push([line, 'already the same name']);
         else if (alias[keyOfName(same[2])] === same[1].trim()) skipped.push([line, 'already merged']);
+        else if ((() => { const own = (n) => ((chat.__secrets || []).find((x) => keyOfName(x.name) === keyOfName(n)) || {}).owners || []; const o1 = own(same[1]).map((w) => w.toLowerCase()), o2 = own(same[2]).map((w) => w.toLowerCase()); return o1.length && o2.length && !o1.some((w) => o2.includes(w)); })()) skipped.push([line, 'secrets of different people']);
         else { alias[keyOfName(same[2])] = same[1].trim(); applied.push(line); }
         continue;
       }

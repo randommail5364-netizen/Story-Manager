@@ -886,3 +886,12 @@ test('v3.38 fixes: cast lines out of chapters; stray "entries."; group relations
   const secs = lib.buildSecrets(chat).filter((x) => /child/.test(x.text));
   assert.strictEqual(secs.length, 1, JSON.stringify(secs));
 });
+
+test('secrets of different people never merge, even when the keeper says so', () => {
+  const R = (n, lines) => ({ id: 'r' + n, text: 'x', records: lib.parseRecords(lines.join('\n')) });
+  const chat = { ignored: [], entries: [], secretAlias: { 'baby jacek s wants': 'fatherhood want' }, log: [R(1, [
+    '- Jacek | secret | [fatherhood want] wants to be a father, told Yujin first',
+    '- Yujin | secret | [wants Jacek\'s baby] She wants to have a child with Jacek someday'])] };
+  assert.strictEqual(lib.buildSecrets(chat).length, 2);
+});
+

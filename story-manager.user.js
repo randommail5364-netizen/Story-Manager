@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.42.1
+// @version      3.42.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -748,7 +748,7 @@
     return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
       chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
       factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
-      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg]));
+      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg, chat.commitAlias]));
   }
 
   async function saveChat(chat, fromSync) {
@@ -2608,7 +2608,7 @@
   // refers to it by its [short name]; a "done" must name a real commitment of
   // that person and say it happened — a statement of intent never completes
   // anything, and an action that completes nothing is a moment filed wrongly.
-  const INTENT_RE = /^\s*(plan(s|ned|ning)?|intend(s|ed)?|will|would|shall|wants? to|wanted to|decided to|agreed to|promised to|vowed to|swore to|is going to|was going to|hopes? to|hoped to|prepar(es|ed|ing) to|set out to|aims? to|means? to|offered to|asked to|tried to|plans? for)\b/i;
+  const INTENT_RE = /^\s*(plan(s|ned|ning)?|intend(s|ed)?|will|would|shall|wants? to|wanted to|decided to|agreed to(?! (the|a|an|his|her|their|its|our|terms)\b)|promised to|vowed to|swore to|is going to|was going to|hopes? to|hoped to|prepar(es|ed|ing) to|set out to|aims? to|means? to|offered to|asked to|tried to|plans? for)\b/i;
   const LIFE_KINDS = new Set(['done', 'progress', 'cancelled', 'postponed']);
   const commitName = (v) => (String(v || '').match(/^\s*\[([^\]]{1,60})\]\s*/) || [])[1] || '';
   const commitText = (v) => String(v || '').replace(/^\s*\[[^\]]{1,60}\]\s*/, '').trim();
@@ -2625,18 +2625,37 @@
       return id;
     };
     const ownerOf = (r) => r.s.trim().toLowerCase();
+    // Wording alone merges two goals only when it is nearly the same AND no
+    // specifics differ (a day, a date, a time, a number, a name): "visit her on
+    // Monday" and "visit her on Friday" are two commitments. When unsure they
+    // stay separate — a wrong merge could silently erase an obligation.
+    const SPECIFIC_RE = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|\d+(:\d+)?(st|nd|rd|th|am|pm)?|[A-Z][\p{L}'-]+)\b/gu;
+    const specifics = (t) => new Set((String(t).replace(/^\s*\S+/, '').match(SPECIFIC_RE) || []).map((w) => w.toLowerCase()));
+    const conflict = (a, b) => { const x = specifics(a), y = specifics(b); return [...x].some((w) => !y.has(w)) && [...y].some((w) => !x.has(w)); };
+    const sameByWords = (a, b) => sim(a, b) >= 0.75 && !conflict(a, b);
+    const ownName = (owner, nm) => { const k = secretKeyOf(nm); return k ? reg.find((x) => x.owner === owner && (x.names.includes(k) || secretKeyOf(x.id) === k)) : null; };
     const byName = (owner, nm) => { const k = secretKeyOf(nm); if (!k) return null; return reg.find((x) => x.owner === owner && (x.names.includes(k) || secretKeyOf(x.id) === k)) || (() => { const all = reg.filter((x) => x.names.includes(k) || secretKeyOf(x.id) === k); return all.length === 1 ? all[0] : null; })(); };
     const ofRecord = new Map();
     for (const r of recs) {
       if (r.k !== 'goal' && r.k !== 'promise') continue;
       const owner = ownerOf(r), nm = commitName(r.v), text = commitText(r.v);
-      let c = (nm && byName(owner, nm)) || reg.filter((x) => x.owner === owner).map((x) => [x, sim(x.text, text)]).filter(([, v]) => v >= 0.6).sort((a, b) => b[1] - a[1]).map(([x]) => x)[0];
+      let c = (nm && ownName(owner, nm)) || reg.filter((x) => x.owner === owner && sameByWords(x.text, text)).map((x) => [x, sim(x.text, text)]).sort((a, b) => b[1] - a[1]).map(([x]) => x)[0];
       if (!c) { c = { id: newId(owner, nm, text), owner, who: r.s.trim(), names: [], text, kind: r.k, at: r.at, state: 'open', events: [] }; reg.push(c); }
       if (nm && !c.names.includes(secretKeyOf(nm))) c.names.push(secretKeyOf(nm));
-      if (text.length > (c.text || '').length && sim(c.text, text) >= 0.6) c.text = text;
+      if (text.length > (c.text || '').length && sameByWords(c.text, text)) c.text = text;
       if (!c.at || r.at < c.at) c.at = r.at;
       c.seen = true;
       ofRecord.set(r.id, { status: 'ok', c });
+    }
+    // Two goals the check-up said are one ("[a] = [b]", same person): merged.
+    for (const [from, to] of Object.entries(chat.commitAlias || {})) {
+      const a = reg.find((x) => x.id === from), b = reg.find((x) => x.id === to);
+      if (!a || !b || a === b || a.owner !== b.owner) continue;
+      for (const n of a.names) if (!b.names.includes(n)) b.names.push(n);
+      b.names.push(secretKeyOf(a.id));
+      for (const [k, v] of ofRecord) if (v.c === a) ofRecord.set(k, { status: 'ok', c: b });
+      if (a.at && (!b.at || a.at < b.at)) b.at = a.at;
+      reg.splice(reg.indexOf(a), 1);
     }
     for (const r of recs) {
       if (!LIFE_KINDS.has(r.k)) continue;
@@ -3851,6 +3870,7 @@
       '- "- Person | location | their new home or base (reply N)" only when they moved house; never where they are at the moment (that is the scene). "- Person | role | new role (reply N)" only when their job or role changed.\n' +
       '- "- Person | knows | [exact listed secret name] how they learned it (reply N)" only for a person NOT already listed as knowing it, who clearly learned it (told, confessed to, overheard, said in the group chat; "Everyone" when everyone knows).\n' +
       '- "- [secret name] = [other secret name]" when two listed secrets are the same secret (use the listed names exactly).\n' +
+      '- "- [goal name] = [other goal name]" when two goals or promises listed for the SAME person are one and the same commitment. Never for two that differ in when, where or with whom (a visit on Monday and a visit on Friday are two).\n' +
       'Never write lines that change nothing (no "already knows", "still open", "no change"). Never guess or invent. Write "none" if nothing changed. Output only those lines.';
     const keyOfName = (n) => normValue(n).split(' ').filter((w) => w && !STOP_WORDS.has(w) && !/^(on|of|to|a|an|in|at|by|is|my|me)$/.test(w)).sort().join(' ');
     const out1 = cleanOutput(await callLLM(updateSystem(), user));
@@ -3884,6 +3904,15 @@
       const line = l.trim();
       if (!line || /^none\.?$/i.test(line)) continue;
       const same = line.match(/\[([^\]]{1,60})\]\s*=\s*\[([^\]]{1,60})\]/);
+      // Two listed goals that are one: merged by id (never across people).
+      const goalIds = new Set((chat.commitReg || []).map((c) => c.id));
+      if (same && goalIds.has(same[1].trim()) && goalIds.has(same[2].trim())) {
+        const ga = chat.commitReg.find((c) => c.id === same[1].trim()), gb = chat.commitReg.find((c) => c.id === same[2].trim());
+        if (ga.owner !== gb.owner) skipped.push([line, 'goals of different people']);
+        else if ((chat.commitAlias || {})[gb.id] === ga.id) skipped.push([line, 'already merged']);
+        else { chat.commitAlias = Object.assign({}, chat.commitAlias, { [gb.id]: ga.id }); applied.push(line); }
+        continue;
+      }
       if (same) {
         if (keyOfName(same[1]) === keyOfName(same[2])) skipped.push([line, 'already the same name']);
         else if (alias[keyOfName(same[2])] === same[1].trim()) skipped.push([line, 'already merged']);
@@ -6677,7 +6706,7 @@
       log: chat.log.map((e, i) => ({ reply: i + 1, id: e.id, v: e.v || '', chapter: e.chapter, folded: !!e.folded, summary: e.text, facts: e.facts || '', records: e.records || [], helperChat: e.hc || '', helperPos: e.hp || 0 })),
       manualRecords: chat.manualRecords || [], hiddenRecords: chat.hiddenRecords || [],
       reconRecords: chat.reconRecords || [], reconReport: chat.reconReport || null, reconAt: chat.reconAt || 0,
-      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
+      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], commitAlias: chat.commitAlias || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
       relMap: chat.relMap || null, portraits: chat.portraits || {},
       chapters: (chat.chapters || []).map((c) => ({ title: c.title, text: c.text, short: c.short || '' })),
       memory: chat.memory || '', pinnedNote: chat.pinned || '',

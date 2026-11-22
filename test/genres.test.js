@@ -140,5 +140,30 @@ test('commitments keep their id through a rebuild with other names and wording',
   assert(/done/.test(entry(es, 'Mira').text) && !/lighthouse/.test(pin(entry(es, 'Mira'))), 'the old correction still applies');
 });
 
+test('commitments: similar but different ones stay separate; tricky "done" wording', () => {
+  const chat = story([
+    ['- Mira | promise | [visit Monday] visit her grandmother on Monday', '- Mira | promise | visit her grandmother on Friday', '- Envoy Sel | goal | [the treaty] bring the river clans to a treaty', '- Bram | goal | [supplies] prepare the supplies for the march'],
+    ['- Envoy Sel | done | [the treaty] the clans agreed to the treaty at the ford', '- Bram | done | [supplies] finished preparing the supplies and planned to leave at dawn', '- Mira | done | [visit Monday] visited her grandmother on Monday'],
+  ]);
+  const es = common(chat);
+  const cs = lib.commitState(chat);
+  assert.strictEqual(cs.reg.filter((c) => c.owner === 'mira').length, 2, 'Monday and Friday are two promises');
+  assert(/grandmother on Friday/.test(pin(entry(es, 'Mira'))) && !/on Monday/.test(pin(entry(es, 'Mira'))), 'only Monday is done');
+  assert(cs.reg.find((c) => c.id === 'the-treaty').state === 'done', '"agreed to the treaty" completes the goal');
+  assert(cs.reg.find((c) => c.id === 'supplies').state === 'done', '"finished preparing" is done, despite a later plan');
+  const plan = story([['- Envoy Sel | goal | [the treaty] bring the river clans to a treaty'], ['- Envoy Sel | done | [the treaty] agreed to meet the clans at the ford']]);
+  assert.strictEqual(lib.commitState(plan).reg[0].state, 'open', '"agreed to meet" is still a plan');
+});
+
+test('commitments: the check-up can merge two goals of one person, never of two people', () => {
+  const chat = story([['- Mira | promise | [keep quiet] will keep the plan between her and Tomas for now', '- Mira | promise | [no council] will keep the talk about the heir from the council', '- Tomas | promise | [no council two] will keep the talk about the heir from the council']]);
+  lib.buildEntries(chat);
+  const ids = chat.commitReg.map((c) => c.id);
+  chat.commitAlias = { [ids[1]]: ids[0], [ids[2]]: ids[0] };
+  const cs = lib.commitState(chat);
+  assert.strictEqual(cs.reg.filter((c) => c.owner === 'mira').length, 1, 'merged for Mira');
+  assert.strictEqual(cs.reg.filter((c) => c.owner === 'tomas').length, 1, 'Tomas keeps his own: ' + JSON.stringify(chat.commitReg));
+});
+
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');
 process.exit(failed ? 1 : 0);

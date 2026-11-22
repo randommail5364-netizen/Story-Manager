@@ -19,7 +19,7 @@ const overlap = (a, b) => { const x = sig(a), y = sig(b); if (!x.size || !y.size
 function chatOf(ex) {
   return {
     format: ex.format, ignored: ex.ignored || [], entries: [], secretAlias: ex.secretAlias || {}, keptMoments: ex.keptMoments || [],
-    commitReg: ex.commitReg || [], manualRecords: ex.manualRecords || [], hiddenRecords: ex.hiddenRecords || [], reconRecords: ex.reconRecords || [],
+    commitReg: ex.commitReg || [], commitAlias: ex.commitAlias || {}, manualRecords: ex.manualRecords || [], hiddenRecords: ex.hiddenRecords || [], reconRecords: ex.reconRecords || [],
     relMap: ex.relMap, portraits: ex.portraits || {}, memory: ex.memory || '', pinned: ex.pinnedNote || '',
     chapters: ex.chapters || [], log: ex.log.map((e) => ({ id: e.id, text: e.summary, records: e.records, chapter: e.chapter, folded: e.folded, hc: e.helperChat, hp: e.helperPos })),
   };
@@ -84,12 +84,14 @@ function run(file) {
   const falseDone = cs.reg.filter((c) => c.state === 'done' && INTENT.test(c.how || '')).map((c) => c.who + ' [' + c.id + ']: ' + c.how);
   check(!falseDone.length, 'no goal is completed by a statement of intent', falseDone.join('\n'));
   console.log('  · commitments: ' + cs.reg.length + ' (open ' + cs.reg.filter((c) => c.state === 'open').length + ', done ' + cs.reg.filter((c) => c.state === 'done').length + ', cancelled ' + cs.reg.filter((c) => c.state === 'cancelled').length + ', postponed ' + cs.reg.filter((c) => c.state === 'postponed').length + ')');
-  const repeatGoals = [];
+  const repeatGoals = [], maybeGoals = [];
   for (const e of es) {
     const open = pin(e).split('\n').filter((l) => /^- (Goal|Promise)( \[[^\]]*\])?( \([^)]*\))?:/.test(l)).map((l) => l.replace(/^- \w+( \[[^\]]*\])?( \([^)]*\))?: /, ''));
-    for (let i = 0; i < open.length; i++) for (let j = i + 1; j < open.length; j++) if (overlap(open[i], open[j]) >= 0.6) repeatGoals.push(e.name + ': ' + open[i] + ' / ' + open[j]);
+    for (let i = 0; i < open.length; i++) for (let j = i + 1; j < open.length; j++) { const v = overlap(open[i], open[j]); if (v >= 0.6) (v >= 0.75 ? repeatGoals : maybeGoals).push(e.name + ': ' + open[i] + ' / ' + open[j]); }
   }
-  check(!repeatGoals.length, 'no goal or promise listed twice', repeatGoals.join('\n'));
+  check(!repeatGoals.length, 'no goal or promise listed twice (clear repeats)', repeatGoals.join('\n'));
+  // Unclear pairs stay separate on purpose (a wrong merge could erase an obligation); the check-up may merge them.
+  if (maybeGoals.length) console.log('  ⚠ ' + maybeGoals.length + ' possible repeats left separate for the check-up:\n      ' + maybeGoals.join('\n      '));
 
   // Who people are survives in the shorter versions.
   const persona = es.filter((e) => /### Personality/.test(e.text) && !/### Personality|### Who they are now/.test((e.pinText || e.text) + (e.miniText || '')));

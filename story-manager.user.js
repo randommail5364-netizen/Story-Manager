@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.49.1
+// @version      3.49.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2604,7 +2604,8 @@
   function parseRecords(block) {
     const out = [];
     for (const l of String(block || '').split('\n')) {
-      const m = l.match(/^\s*[-*•]?\s*([^|\n]{1,60}?)\s*\|\s*([^|\n]{1,60}?)\s*\|\s*(.+?)\s*$/);
+      // (Some keepers wrap a line in quotes: "- Mira | done | …".)
+      const m = l.replace(/^\s*["“']+\s*/, '').replace(/\s*["”']+\s*$/, '').match(/^\s*[-*•]?\s*([^|\n]{1,60}?)\s*\|\s*([^|\n]{1,60}?)\s*\|\s*(.+?)\s*$/);
       if (!m) continue;
       const k = recordKind(m[2]);
       const s = m[1].replace(/^\*+|\*+$/g, '').replace(/\s*\([^)]*\)\s*$/, '').trim();
@@ -2954,6 +2955,8 @@
     // Sorting decisions (step B, see sortFacts) are a layer over the original
     // facts: the original is never changed and stays in r.orig. Facts the user
     // hid stay hidden; check-up and hand-added facts are never re-sorted.
+    // Subjects saved with stray quotes or list marks ("\"- Miyeon") by older versions: cleaned.
+    for (const r of out) if (/^["“'\s*•-]|["”']$/.test(r.s || '')) r.s = String(r.s).replace(/^["“'\s*•-]+|["”'\s]+$/g, '');
     const sorted = applySortings(chat, out.filter((r) => !hidden.has(r.id)));
     return sorted;
   }

@@ -46,7 +46,8 @@ function run(file) {
 
   // Nothing is lost: every person in the exported memory is still there.
   const names = new Set(es.map((e) => e.name.toLowerCase()));
-  const lost = (ex.entries || []).filter((e) => !names.has(e.name.toLowerCase())).map((e) => e.name);
+  // (Names saved with stray quotes or list marks by older versions now join the real person.)
+  const lost = (ex.entries || []).filter((e) => !names.has(e.name.replace(/^["“'\s*•-]+|["”'\s]+$/g, '').toLowerCase())).map((e) => e.name);
   check(!lost.length, 'every entry from the export still exists', lost.join(', '));
 
   // Secrets: the owner knows their own secret; nobody "knows" a secret their note says they do not.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.47.2
+// @version      3.47.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -6199,6 +6199,7 @@
       ui.body);
     root.append(ui.fab, ui.panel);
     setStatus();
+    setTimeout(prerenderPanel, 3000); // draw the panel ahead of time, once the page has settled
   }
 
   // Focusing a text box (or the keyboard opening) makes mobile browsers scroll
@@ -6224,7 +6225,8 @@
     if (want && !ui.panel.classList.contains('open')) pageScroll = scrollState();
     ui.panel.classList.toggle('open', want);
     if (want) {
-      renderPanel(true);
+      // Already drawn in the background (see renderPanel): just show it; otherwise draw now.
+      if (panelDirty || !ui.body.firstChild) renderPanel(true);
     } else {
       const active = root.activeElement;
       if (active && active.blur) active.blur();
@@ -6276,8 +6278,26 @@
   }
 
   // Re-render only when forced or when the user is not typing in the panel.
+  // The panel is drawn ahead of time while it is closed, when the browser is idle, so opening
+  // it is instant; anything that changes the memory marks it to be drawn again.
+  let panelDirty = true;
+  let prerenderQueued = false;
+  function prerenderPanel() {
+    if (prerenderQueued || !ui.panel) return;
+    prerenderQueued = true;
+    const idle = window.requestIdleCallback || ((f) => setTimeout(f, 1500));
+    idle(() => {
+      prerenderQueued = false;
+      if (!ui.panel || ui.panel.classList.contains('open') || !panelDirty) return;
+      drawPanel();
+    }, { timeout: 8000 });
+  }
   function renderPanel(force) {
-    if (!ui.panel || !ui.panel.classList.contains('open')) return;
+    if (!ui.panel) return;
+    if (!ui.panel.classList.contains('open')) { panelDirty = true; prerenderPanel(); return; }
+    drawPanel(force);
+  }
+  function drawPanel(force) {
     const active = root.activeElement;
     if (!force && active && /TEXTAREA|INPUT|SELECT/.test(active.tagName)) return;
     ui.tabs.memory.classList.toggle('on', tab === 'memory');
@@ -6287,6 +6307,7 @@
     const keyOf = (d) => { const sm = d.querySelector(':scope > summary'); return sm ? sm.textContent.split(' · ')[0].replace(/^★ /, '') : ''; };
     const opened = new Set([...ui.body.querySelectorAll('details[open]')].map(keyOf).filter(Boolean));
     ui.body.replaceChildren(tab === 'memory' ? memoryView() : settingsView());
+    panelDirty = false;
     if (opened.size) for (const d of ui.body.querySelectorAll('details')) if (opened.has(keyOf(d))) d.open = true;
   }
 

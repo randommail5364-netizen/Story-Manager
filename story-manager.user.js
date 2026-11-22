@@ -4080,7 +4080,7 @@
     const e = chat.log[n - 1];
     if (!e || !normValue(e.text).includes(normValue(q))) return 'the quote is not in that reply';
     const owner = String(c.who || c.owner || '').toLowerCase();
-    const said = (q + ' ' + r.v).toLowerCase();
+    const said = (q + ' ' + commitText(r.v)).toLowerCase(); // (not the [name], which may mention them)
     const others = (String(c.text).match(/\b[A-Z][\p{L}'’-]{2,}\b/gu) || []).map((w) => w.replace(/['’]s$/, '')).filter((w, i, a) => a.indexOf(w) === i && w.toLowerCase() !== owner && !/^(I|The|A|An|He|She|They|His|Her|Their|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/.test(w));
     const missing = others.find((w) => !said.includes(w.toLowerCase()));
     return missing ? 'the evidence does not mention ' + missing + ', whom the goal is about' : '';

@@ -2605,7 +2605,8 @@
     const out = [];
     for (const l of String(block || '').split('\n')) {
       // (Some keepers wrap a line in quotes: "- Mira | done | …".)
-      const m = l.replace(/^\s*["“']+\s*/, '').replace(/\s*["”']+\s*$/, '').match(/^\s*[-*•]?\s*([^|\n]{1,60}?)\s*\|\s*([^|\n]{1,60}?)\s*\|\s*(.+?)\s*$/);
+      const wrapped = /^\s*["“']+\s*[-*•]?\s*[^|]+\|/.test(l);
+      const m = (wrapped ? l.replace(/^\s*["“']+\s*/, '').replace(/\s*["”']+\s*$/, '') : l).match(/^\s*[-*•]?\s*([^|\n]{1,60}?)\s*\|\s*([^|\n]{1,60}?)\s*\|\s*(.+?)\s*$/);
       if (!m) continue;
       const k = recordKind(m[2]);
       const s = m[1].replace(/^\*+|\*+$/g, '').replace(/\s*\([^)]*\)\s*$/, '').trim();

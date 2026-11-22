@@ -748,7 +748,7 @@
     return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
       chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
       factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
-      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias]));
+      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg]));
   }
 
   async function saveChat(chat, fromSync) {
@@ -6674,7 +6674,7 @@
       log: chat.log.map((e, i) => ({ reply: i + 1, id: e.id, v: e.v || '', chapter: e.chapter, folded: !!e.folded, summary: e.text, facts: e.facts || '', records: e.records || [], helperChat: e.hc || '', helperPos: e.hp || 0 })),
       manualRecords: chat.manualRecords || [], hiddenRecords: chat.hiddenRecords || [],
       reconRecords: chat.reconRecords || [], reconReport: chat.reconReport || null, reconAt: chat.reconAt || 0,
-      secretAlias: chat.secretAlias || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
+      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
       relMap: chat.relMap || null, portraits: chat.portraits || {},
       chapters: (chat.chapters || []).map((c) => ({ title: c.title, text: c.text, short: c.short || '' })),
       memory: chat.memory || '', pinnedNote: chat.pinned || '',

@@ -15,6 +15,7 @@ function story(replies, memory = '') {
 }
 const entry = (es, n) => es.find((e) => e.name === n) || { text: '', pinText: '' };
 const pin = (e) => (e.pinText != null ? e.pinText : e.text);
+const story2 = (replies) => { const c = story(replies.map((r) => r.lines)); replies.forEach((r, i) => { if (r.text) c.log[i].text = r.text; }); return c; };
 let n = 0, failed = 0;
 function test(name, fn) { n++; try { fn(); console.log('  ✓ ' + name); } catch (e) { failed++; console.log('  ✗ ' + name + '\n    ' + e.message.split('\n').slice(0, 6).join('\n    ')); } }
 // Checks every story must pass.
@@ -257,6 +258,49 @@ test('sorting answers are judged the same way in any genre', () => {
   const src3 = 'The envoy refused the terms. The sergeant was wounded at the gate.';
   assert.strictEqual(J(fact('Envoy', 'knows', 'the envoy refused the terms', 'no-secret'), { kind: 'moment major', value: 'the envoy accepted the terms' }, src3, ctx).decision, 'unsure');
   assert.strictEqual(J(fact('Sergeant', 'knows', 'the sergeant was wounded at the gate', 'no-secret'), { kind: 'moment major', value: 'the sergeant was killed at the gate' }, src3, ctx).decision, 'unsure');
+});
+
+test('scheduled events are upcoming, not past moments; they close when they happen', () => {
+  const chat = story([
+    ['- Mira | scheduled | [recording] recording session on Friday afternoon'],
+    ['- Mira | done | [recording] recorded the new song with Tomas in studio B'],
+    ['- Ilse | scheduled | [council] council meeting on Thursday at noon'],
+  ]);
+  const es = common(chat);
+  assert(/Upcoming \[council\]/.test(pin(entry(es, 'Ilse'))), 'an upcoming event is shown as upcoming');
+  assert(!/recording session/.test(pin(entry(es, 'Mira'))) && /done, reply 2/.test(entry(es, 'Mira').text), 'once it happened it leaves the pinned message');
+  assert(!lib.allRecords(chat).some((r) => r.k === 'moment'), 'never turned into a moment');
+});
+
+test('recaps: repeated facts are not counted again, new ones are', () => {
+  const chat = story2([
+    { lines: ['- Lena | relationship: Tomas | sworn sister-in-arms since the siege of Varn', '- Lena | major moment | swore to retake Varn'] },
+    { text: 'Recap of earlier events: Lena and Tomas swore their oath at Varn.', lines: ['- Lena | relationship: Tomas | sworn sister-in-arms since the siege of Varn', '- Lena | major moment | swore to retake Varn before winter', '- Lena | appearance | a burn scar across her left hand'] },
+  ]);
+  const recs = lib.allRecords(chat);
+  assert.strictEqual(recs.filter((r) => r.k === 'relationship').length, 1);
+  assert.strictEqual(recs.filter((r) => r.k === 'moment').length, 1);
+  assert(recs.some((r) => r.k === 'appearance' && r.fromRecap), 'a new fact from a recap counts');
+});
+
+test('a scene filed as "where things stand" stays out of the pinned version; a real state stays in', () => {
+  const chat = story([
+    ['- Leeseo | where things stand: Jacek | close and trusting since the festival'],
+    ['- Leeseo | where things stand: Jacek | she has no schedule tomorrow and stays with him tonight'],
+  ]);
+  const e = entry(lib.buildEntries(chat), 'Leeseo');
+  assert(/close and trusting/.test(pin(e)) && !/no schedule/.test(pin(e)), pin(e));
+  assert(/no schedule/.test(e.text), 'kept in the full entry');
+});
+
+test('a secret everyone knows becomes one short line; one told to a group stays a secret with the group as knower', () => {
+  const chat = story([
+    ['- Ren | secret | [the debt] he owes the guild a fortune', '- Everyone | knows | [the debt] it was read out in the square',
+     '- Ren | secret | [the letter] he kept the queen\'s letter', '- The council | knows | [the letter] he showed it to the council'],
+  ]);
+  const t = lib.secretsText(chat);
+  assert(/No longer secret \(everyone knows\): \[the debt\]/.test(t) && !/owes the guild a fortune/.test(t), t);
+  assert(/\[the letter\][\s\S]*Knows: [^\n]*The council/.test(t), t);
 });
 
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');

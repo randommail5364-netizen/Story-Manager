@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.46.1
+// @version      3.47.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -748,7 +748,7 @@
     return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
       chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
       factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
-      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg, chat.commitAlias, chat.sortings]));
+      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg, chat.commitAlias, chat.sortings, chat.commitChecked]));
   }
 
   async function saveChat(chat, fromSync) {
@@ -1728,14 +1728,15 @@
     '- After each summary write FACTS: and then, one per line, the lasting facts this reply revealed or changed, as records: "- Subject | kind | fact".',
     '  Subject: the exact name of the person, place or item the fact is about (one record per subject; never a pronoun or "unnie"/"oppa").',
     '  Kind: one of full name, age, role, type (character/place/item/group), status, location, appearance, personality, ability, likes, dislikes, boundary, backstory, ' +
-      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, done, progress, postponed, cancelled, want, nickname, learned, believes, condition, major moment, minor moment, routine moment.',
+      'relationship: <other person>, where things stand: <other person>, possession, promise, secret, knows, does not know, cover story, goal, scheduled, done, progress, postponed, cancelled, want, nickname, learned, believes, condition, major moment, minor moment, routine moment.',
     '  "where things stand: X" is the state of their relationship with X NOW (what changed, what each needs, what was promised) — never where they are or what they did in this scene.',
     '  "relationship: X" is a lasting fact about the two of them (dating, engaged, rivals, what they call each other), not a scene; a scene is a key moment. Outfits worn in a scene are not possessions.',
     '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
     '  "- Person | knows | [short name] how they found out" when someone learns, is told or overhears it; "- Person | does not know | [short name]" for someone it is kept from;',
     '  "- Everyone | knows | [short name]" when it comes out (e.g. confessed in the group chat); when someone is told or confesses it to someone, a knows record for each person who now knows; reuse the exact short name already used for that secret; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
     '  A goal or promise is only an explicit commitment (a promise, an appointment, an order, a vow) or a stated intention (decided to, means to, sets out to). A wish, a hope, an interest or a figure of speech is "want" ("- Lena | want | to see the sea again"), never a goal.',
-    '  Goals and promises (a plan, a quest, a mission, a vow, an appointment) get a short name in square brackets, like secrets: "- Person | goal | [short name] what they mean to do". Reuse the [short name] given in OPEN GOALS AND PROMISES when it is the same one.',
+    '  "scheduled": something set for a later time (an appointment, a session, a date, a meeting), with a [short name] and when: "- Lena | scheduled | [council] council meeting on Thursday at noon". It has not happened yet: never a moment. When it happens, write "done" with its [short name]; moved: "postponed"; called off: "cancelled".',
+    '  Goals and promises (a plan, a quest, a mission, a vow) get a short name in square brackets, like secrets: "- Person | goal | [short name] what they mean to do". Reuse the [short name] given in OPEN GOALS AND PROMISES when it is the same one.',
     '  What becomes of one, always with its [short name]: "done" only when it actually happened or was kept in this reply ("- Person | done | [short name] what happened"); "progress" for one step of it; "postponed" when it was moved to later; "cancelled" when it was dropped or broken. Planning, scheduling, agreeing to it, confirming it, being reminded of it or promising it again is NOT done (that is "progress", e.g. "progress | [visit] set for Thursday"); a part of it is "progress" too ("wrote three pages" of an essay to finish). Something someone did that completes no goal is a moment, never "done".',
     '  Times: write the story day or date ("the day of the tournament", "Saturday"), never "today", "tomorrow" or "tonight" (they are wrong a day later).',
     '  Moments (a short line saying what happened to or because of them in this reply) have three levels; choose one:',
@@ -1747,6 +1748,8 @@
     '  A secret is something a character hides from someone in the story, always with what it is after its [short name]; an intimate scene is a key moment, not a secret.',
     '  "knows" is ONLY for a secret: it always starts with the secret\'s [short name]. Anything else someone found out or was told (not a secret) is "learned". Something that happened is a moment, never "knows".',
     '  "condition": a person\'s lasting condition until it changes (dead, badly wounded, missing, captured, pregnant, cursed), not a passing state.',
+    '  When a secret is told to a group (a group chat, a council, a crew), write "knows" with the group as subject ("- The group chat | knows | [x] he posted it there"); "Everyone" only when the whole world knows.',
+    '  In a RECAP reply, write facts only for what is new or corrected; never repeat facts about earlier events.',
     '  "believes": what a character thinks is true, which may be wrong ("- Lena | believes | [the king] the king is loyal"). Write what is really true as its own fact; never present a belief or a claim as true.',
     '  "where things stand: X" is how things are between them now, never what one of them did in the scene (that is a moment).',
     '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
@@ -2571,7 +2574,8 @@
     ['learned', /^(learned|learnt|found out|was told|overheard|discovered|realized|realised|heard)$/],
     ['believes', /^(believes?|thinks?|suspects?|assumes?|is convinced|convinced|claims?)$/],
     ['cover', /^(cover story|cover|public story|official story|what others are told|what outsiders are told|alibi)$/],
-    ['goal', /^(goals?|plans?|intentions?|missions?|quests?|tasks?|appointments?|orders?)$/],
+    ['goal', /^(goals?|plans?|intentions?|missions?|quests?|tasks?|orders?)$/],
+    ['scheduled', /^(scheduled|appointments?|upcoming|set for|planned for|booked)$/],
     ['want', /^(wants?|desires?|wishes|wish|hopes?|dreams? of|longs? for|ambitions?|motivations?|interested in|curious about|drawn to)$/],
     ['done', /^(done|completed|complete|kept|fulfilled|resolved|goal done|promise kept|finished|achieved|accomplished)$/],
     ['cancelled', /^(dropped|cancelled|canceled|abandoned|no longer|called off|broken|promise broken|failed)$/],
@@ -2604,7 +2608,9 @@
       if (!k || !s || !v || TEMPLATE_NAME_RE.test(s) || isGeneric(s) || isJunk(v, true) || EMPTY_FACT_RE.test(v)) continue;
       // A record's subject is a name and its kind a short label. "Mira is a
       // healer | Ash is a dragon | …" (old-style facts on one line) is not a record.
-      if (s.split(/\s+/).length > 5 || /\b(is|was|are|were|has|had|did|does|became|got|gave|said|told)\b/i.test(s) || /^(the|a|an|they|she|he|it|we|i)\b/i.test(s)) continue;
+      // (A group that learns a secret — "The council | knows | [x]" — may start with "the".)
+      const groupKnower = (k.kind === 'knows' || k.kind === 'notknows') && /^the\s+\S/i.test(s) && s.split(/\s+/).length <= 4;
+      if (s.split(/\s+/).length > 5 || /\b(is|was|are|were|has|had|did|does|became|got|gave|said|told)\b/i.test(s) || (!groupKnower && /^(the|a|an|they|she|he|it|we|i)\b/i.test(s))) continue;
       // A kind Story Manager does not know is kept (as "unclassified"), never dropped.
       if (k.kind === 'other' && k.label.split(/\s+/).length > 3) k.kind = 'unclassified';
       // "done | dropped: …" (older check-ups): a cancellation.
@@ -2685,7 +2691,7 @@
     const byName = (owner, nm) => { const k = secretKeyOf(nm); if (!k) return null; return reg.find((x) => x.owner === owner && (x.names.includes(k) || secretKeyOf(x.id) === k)) || (() => { const all = reg.filter((x) => x.names.includes(k) || secretKeyOf(x.id) === k); return all.length === 1 ? all[0] : null; })(); };
     const ofRecord = new Map();
     for (const r of recs) {
-      if (r.k !== 'goal' && r.k !== 'promise') continue;
+      if (r.k !== 'goal' && r.k !== 'promise' && r.k !== 'scheduled') continue;
       const owner = ownerOf(r), nm = commitName(r.v), text = commitText(r.v);
       let c = (nm && ownName(owner, nm)) || reg.filter((x) => x.owner === owner && sameByWords(x.text, text)).map((x) => [x, sim(x.text, text)]).sort((a, b) => b[1] - a[1]).map(([x]) => x)[0];
       if (!c) { c = { id: newId(owner, nm, text), owner, who: r.s.trim(), names: [], text, kind: r.k, at: r.at, state: 'open', events: [] }; reg.push(c); }
@@ -2753,7 +2759,7 @@
   //   wrongly) · unresolved ("knows [x]" where no secret [x] exists yet — it
   //   may come later, or be another name for one) · suspect-state ("where
   //   things stand" that reads like a scene; flagged only, still used).
-  const SCENE_STATE_RE = /^\s*(he|she|they|i|we)\s+\w+ed\b|^\s*\w+ed (him|her|them|his|the)\b/i;
+  const SCENE_STATE_RE = /^\s*(he|she|they|i|we)\s+\w+ed\b|^\s*\w+ed (him|her|them|his|the)\b|\b(tomorrow|tonight|today|this (morning|afternoon|evening)|right now|at the moment|for now|next (day|morning)|no schedule)\b/i;
   function factStatus(r, secretKeys, keyOf, commits) {
     if (r.keptAsIs) return 'ok';
     if (r.k === 'unclassified') return 'unclassified';
@@ -2895,7 +2901,21 @@
   function allRecords(chat) {
     const hidden = new Set(chat.hiddenRecords || []);
     const out = [];
-    chat.log.forEach((e, i) => (e.records || []).forEach((r, n) => out.push(Object.assign({ id: e.id + '#' + n, at: i + 1 }, r))));
+    // A recap retells earlier events: its facts count only when they are new (nothing like them
+    // was recorded before for that person and kind). The rest stays in the log, unused.
+    const seenFacts = [];
+    const isRecap = (e) => /^\W*recap of earlier events/i.test(e.text || '');
+    chat.log.forEach((e, i) => (e.records || []).forEach((r, n) => {
+      const rec = Object.assign({ id: e.id + '#' + n, at: i + 1 }, r);
+      if (isRecap(e)) {
+        const w = sigWords(r.v);
+        const dup = seenFacts.some((x) => x.s === String(r.s).toLowerCase() && x.k === r.k && (() => { let m = 0; for (const a of w) if (x.w.has(a)) m++; return w.size && m / Math.min(w.size, x.w.size || 1) >= 0.6; })());
+        if (dup) return;
+        rec.fromRecap = true;
+      }
+      seenFacts.push({ s: String(r.s).toLowerCase(), k: r.k, w: sigWords(r.v) });
+      out.push(rec);
+    }));
     (chat.manualRecords || []).forEach((r, n) => out.push(Object.assign({ id: 'manual#' + (r.n != null ? r.n : n), at: Infinity, manual: true }, r)));
     // Corrections from the check-ups (see reconcileFacts), placed at the reply they were made after.
     (chat.reconRecords || []).forEach((r, n) => {
@@ -3119,7 +3139,8 @@
         const of = (k) => p.records.filter((r) => r.k === k && r.t.toLowerCase() === t.toLowerCase());
         const hist = uniq(of('relationship')).map((r) => r.v);
         const full = single(of('stands'));
-        const last = now(of('stands'));
+        // A "where things stand" that reads like a scene is kept in the full entry only.
+        const last = now(of('stands').filter((r) => !SCENE_STATE_RE.test(r.v)));
         const short = alike(uniq(of('relationship')), 0.85).slice(-RELATION_FACTS).map((r) => r.v);
         return {
           t,
@@ -3144,7 +3165,7 @@
       // Their goals and promises, once each, with where each stands (see commitState).
       const mine = new Set([p.name].concat(p.aliases, p.records.map((r) => r.s.trim())).map((n) => n.toLowerCase()));
       const own = commits.reg.filter((c) => mine.has(c.owner)).sort((a, b) => (a.at || 0) - (b.at || 0));
-      const gpWord = (c) => (c.kind === 'promise' ? 'Promise' : 'Goal');
+      const gpWord = (c) => (c.kind === 'promise' ? 'Promise' : c.kind === 'scheduled' ? 'Upcoming' : 'Goal');
       const atTxt = (n) => (n && n !== Infinity ? ', reply ' + n : '');
       // The full entry keeps every step (progress, postponements) as history.
       const steps = (c) => { const l = (c.events || []).filter((ev) => ev.k === 'progress' || ev.k === 'postponed').map((ev) => ev.k + ' ' + atTxt(ev.at).slice(2) + ': ' + ev.v); return l.length ? ' [history: ' + l.join('; ') + ']' : ''; };
@@ -3304,12 +3325,15 @@
   }
   // The "Who knows what" text for the pinned message.
   function secretsText(chat) {
-    return buildSecrets(chat).map((x) => {
+    const all = buildSecrets(chat);
+    // Secrets the whole world knows are no longer secrets: one short line, not a full entry.
+    const pub = all.filter((x) => x.everyone);
+    return all.filter((x) => !x.everyone).map((x) => {
       const knows = x.everyone ? 'everyone (no longer a secret)' : x.knows.map((p) => p.who + (p.how && p.how !== 'their secret' ? ' (' + p.how + (p.at !== Infinity ? ', reply ' + p.at : '') + ')' : '')).join(', ');
       return '- [' + x.name + '] ' + (x.owners && x.owners.length ? x.owners.join(' and ') + '’s secret: ' : '') + (x.text || '') + '\n  Knows: ' + (knows || 'not recorded') +
         (x.notKnows.length ? ' · Does NOT know: ' + x.notKnows.map((p) => p.who).join(', ') : '') +
         (x.cover ? ' · Cover story: ' + x.cover : '');
-    }).join('\n');
+    }).concat(pub.length ? ['- No longer secret (everyone knows): ' + pub.map((x) => '[' + x.name + ']').join(', ')] : []).join('\n');
   }
 
   const factsMode = (chat) => chat && chat.format === 'facts';
@@ -4021,6 +4045,7 @@
   // says what is done, out of date or now known. Story Manager adds those as
   // facts; nothing is deleted (the full entries keep the history).
   const RECONCILE_EVERY = 10;
+  const GOALS_PER_CHECK = 25;
   async function reconcileFacts(chat) {
     const runId = 'c' + Date.now().toString(36);
     const at = chat.log.length;
@@ -4074,7 +4099,35 @@
         'Only what the texts show; never guess. Write "none" if nothing is missing. Output only those lines.';
       out2 = cleanOutput(await callLLM(updateSystem(), user2));
     }
-    const out = out1 + (out2 ? '\n' + out2 : '');
+    // The goals check (third request): the oldest open goals, promises and upcoming events not
+    // checked lately, each with the later summaries that mention its person and its words, asked
+    // one by one: done, cancelled, postponed, progress or still open — with the reply that shows it.
+    let out3 = '';
+    const reg = commitState(chat).reg.filter((c) => c.state !== 'done' && c.state !== 'cancelled' && (c.at || 0) <= at - 3);
+    const checked = chat.commitChecked || {};
+    const due = reg.filter((c) => !checked[c.id] || checked[c.id] <= at - 30).sort((a, b) => (a.at || 0) - (b.at || 0)).slice(0, GOALS_PER_CHECK);
+    if (due.length) {
+      let ev = '';
+      const used = new Set();
+      const blocks = due.map((c) => {
+        const w = sigWords(c.text);
+        const later = chat.log.map((e, i) => ({ e, n: i + 1 })).filter((x) => x.n > (c.at || 0) && String(x.e.text).toLowerCase().includes(String(c.who || c.owner).toLowerCase()))
+          .map((x) => { let m = 0; const o = sigWords(x.e.text); for (const a of w) if (o.has(a)) m++; return Object.assign(x, { score: m }); })
+          .filter((x) => x.score >= 2).sort((a, b) => b.score - a.score).slice(0, 3);
+        for (const x of later) if (!used.has(x.n) && ev.length < 40000) { used.add(x.n); ev += '[reply ' + x.n + '] ' + x.e.text + '\n\n'; }
+        return '[' + c.id + '] ' + (c.who || c.owner) + ' — ' + (c.kind === 'scheduled' ? 'upcoming: ' : c.kind === 'promise' ? 'promise: ' : 'goal: ') + c.text + ' (since reply ' + (c.at || '?') + ')' +
+          (later.length ? ' — see replies ' + later.map((x) => x.n).join(', ') : ' — not mentioned again');
+      });
+      const user3 = 'OPEN GOALS, PROMISES AND UPCOMING EVENTS:\n<<<\n' + blocks.join('\n') + '\n>>>\n\nLATER REPLIES (summaries):\n<<<\n' + ev + '\n>>>\n\n' +
+        'JOB: GOALS CHECK. For each listed one, using only the replies above, write one line if something changed:\n' +
+        '- "- Person | done | [exact id] what happened (reply N)" only when the reply shows it actually happened or was kept.\n' +
+        '- "- Person | cancelled | [exact id] why (reply N)" when it was dropped or broken; "- Person | postponed | [exact id] to when (reply N)"; "- Person | progress | [exact id] the step (reply N)".\n' +
+        'Talking about it, planning it, agreeing to it or being reminded of it is not done. Nothing for ones that are still open. Never guess. Output only those lines, or "none".';
+      out3 = cleanOutput(await callLLM(updateSystem(), user3));
+      chat.commitChecked = Object.assign({}, checked);
+      for (const c of due) chat.commitChecked[c.id] = at;
+    }
+    const out = out1 + (out2 ? '\n' + out2 : '') + (out3 ? '\n' + out3 : '');
     const got = [];
     const alias = Object.assign({}, chat.secretAlias || {});
     // A report of what the keeper said and what was done with it (Diagnostics).
@@ -4113,6 +4166,7 @@
         else if (r.k === 'knows' && !sec) skipped.push([line, 'no such secret']);
         else if (r.k === 'knows' && (sec.everyone || sec.knows.some((k) => k.who.toLowerCase() === r.s.toLowerCase()))) skipped.push([line, 'already listed as knowing']);
         else if ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v)) skipped.push([line, 'where they are now, not a home or role']);
+        else if (/^(done|cancelled|postponed|progress)$/.test(r.k) && (() => { const nm = commitName(r.v); const c = nm && (chat.commitReg || []).find((x) => secretKeyOf(x.id) === secretKeyOf(nm) || (x.names || []).includes(secretKeyOf(nm))); const n = Number((line.match(/\(reply (\d+)\)/i) || [])[1]); return c && c.at && n <= c.at; })()) skipped.push([line, 'the evidence is from before the goal existed']);
         else if (have.has(key)) skipped.push([line, 'already applied before']);
         else { have.add(key); got.push(Object.assign(r, { at, run: runId })); applied.push(line); }
       }

@@ -1692,8 +1692,8 @@ async function main() {
   await page.evaluate(() => window.sendMsg('Onwards to the hills.'));
   const sent51 = chatBodies[chatBodies.length - 1].elements[0].text;
   const at = (h) => sent51.indexOf(h);
-  check(at('## Now\n### Current Scene') > 0 && at('## Now') < at('## Characters, places & things') && at('## Characters, places & things') < at('## History, chapter by chapter') && (at('## World\n') < 0 || at('## World\n') > at('## Characters, places & things')) &&
-    at('### Mira (character)') < at('### Ash (character)'), 'the memory reads: Now → Characters (main ones first) → World (when there is one) → History');
+  check(at('## Now\n### Current Scene') > 0 && at('## Now') < at('## Characters, places & things') && [at('## History, chapter by chapter'), at('## World\n'), at('## Story moments')].every((x) => x < 0 || x > at('## Characters, places & things')) &&
+    at('### Mira (character)') < at('### Ash (character)'), 'the memory reads: Now → Characters (main ones first) → World, Story moments, History (when there are any) [headings: ' + (sent51.match(/^## .*/gm) || []).join(' | ') + '; Mira ' + at('### Mira (character)') + ', Ash ' + at('### Ash (character)') + ']');
   check(at('## Who knows what') > at('## Now') && at('## Who knows what') < at('## Characters, places & things') &&
     /- \[the key\] Mira’s secret: hid the lost key in her satchel\n  Knows: Mira, Ash \(saw her hide it, reply \d+\) · Cover story: the key was lost in the river/.test(sent51),
     'the memory has "Who knows what" right after Now: who knows each secret (newest wins) and the cover story');

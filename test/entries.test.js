@@ -37,7 +37,7 @@ function grabAsync(name) {
   }
   throw new Error('unbalanced ' + name);
 }
-const reconLib = new Function(factsConsts + consts + "  let answers = [];\n  const callLLM = async () => (answers.length ? answers.shift() : 'none');\n  const updateSystem = () => '';\n" +
+const reconLib = new Function(factsConsts + consts + "  let answers = [];\n  const callLLM = async () => (answers.length ? answers.shift() : 'none');\n  const updateSystem = () => '';\n  const checkStop = () => {};\n" +
   ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'closureProblem', 'sortingFor', 'applySortings', 'judgeSorting', 'doneMeans', 'commitState', 'factStatus', 'factQuality', 'buildEntries', 'buildSecrets', 'sigWords', 'consolidate', 'alike', 'importantMoment', 'relationsOf', 'mergeRel'].map(grab).join('\n') +
   '\n' + grabAsync('reconcileFacts') + '\nreturn { setAnswer: (a, b) => { answers = [a].concat(b ? [b] : []); }, reconcileFacts, buildEntries, buildSecrets };')();
 

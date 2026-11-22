@@ -366,5 +366,22 @@ test('a minor goal is not "probably over" while what it belongs to is still ahea
   assert(/Standing agreement: say "grey sky"/.test(e.pinText || e.text) && !/Goal \[cloud-signal\]/.test(e.pinText || ''));
 });
 
+test('knowing is not undone; a group-chat disclosure is that group, not everyone; a trip is not a home; "not a goal" leaves the goals', () => {
+  const chat = story([
+    ['- Ilse | secret | [the debt] she owes the guild', '- Ren | knows | [the debt] Tomas explained it to him'],
+    ['- Ren | does not know | [the debt]', '- Everyone | knows | [the debt] she posted it in the group chat'],
+    ['- Ren | location | away in the capital for the trade meetings', '- Ren | location | the mill house by the river', '- Bram | minor goal | [the joke] marry a goat, he joked'],
+  ]);
+  chat.commitTier = { 'the-joke': 'none' };
+  const sec = lib.buildSecrets(chat).find((x) => x.name === 'the debt');
+  assert(sec.knows.some((k) => k.who === 'Ren'), 'Ren still knows');
+  assert(!sec.everyone && sec.knows.some((k) => /group chat/i.test(k.who)), 'the group chat knows, not everyone');
+  const es = lib.buildEntries(chat);
+  const ren = es.find((e) => e.name === 'Ren');
+  assert(/Lives \/ based: the mill house/.test(ren.pinText || ren.text) && !/capital/.test(ren.pinText || ren.text));
+  const bram = es.find((e) => e.name === 'Bram');
+  assert(!/Goal \[the-joke\]/.test(bram.pinText || '') && /Not a goal/.test(bram.text));
+});
+
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');
 process.exit(failed ? 1 : 0);

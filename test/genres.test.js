@@ -247,7 +247,16 @@ test('sorting answers are judged the same way in any genre', () => {
   assert.strictEqual(J(fact('Vane', 'knows', 'found the torn ledger page', 'no-secret'), { kind: 'knows', value: '[the will] found it' }, src, ctx).decision, 'unsure', 'a secret that does not exist');
   assert.strictEqual(J(fact('Kade', 'done', 'took the ford', 'unmatched-done'), { kind: 'done', value: '[the-ford] took the ford before dawn', quote: 'took the ford before dawn' }, src, ctx).decision, 'sorted');
   assert.strictEqual(J(fact('Kade', 'done', 'took the ford', 'unmatched-done'), { kind: 'done', value: '[the-ford] took the ford before dawn', quote: 'stormed the castle at noon' }, src, ctx).decision, 'failed', 'a quote not in the summary');
-  assert.strictEqual(J(fact('Kade', 'stands', 'crossed the river', 'suspect-state'), { kind: 'keep', value: '' }, src, ctx).decision, 'kept');
+  assert.strictEqual(J(fact('Kade', 'stands', 'crossed the river', 'suspect-state'), { kind: 'keep', value: '' }, src, ctx).decision, 'unsure', '"keep" is not proof');
+  // Never into "where things stand", even with a quote.
+  assert.strictEqual(J(fact('Kade', 'knows', 'crossed the river with his company', 'no-secret'), { kind: 'stands: Vane', value: "Kade's company crossed the river", quote: 'company crossed the river' }, src, ctx).decision, 'unsure');
+  // "not" judged against the original fact, not other sentences of the summary.
+  const src2 = 'Rosa did not sleep. Ilse asked Bram how he handles all the attention.';
+  assert.strictEqual(J(fact('Ilse', 'knows', 'asked Bram how he handles the attention', 'no-secret'), { kind: 'moment minor', value: 'Ilse asked Bram how he handles all the attention', quote: 'Rosa did not sleep' }, src2, ctx).decision, 'sorted');
+  // Reversed outcomes, with no "not" in either.
+  const src3 = 'The envoy refused the terms. The sergeant was wounded at the gate.';
+  assert.strictEqual(J(fact('Envoy', 'knows', 'the envoy refused the terms', 'no-secret'), { kind: 'moment major', value: 'the envoy accepted the terms' }, src3, ctx).decision, 'unsure');
+  assert.strictEqual(J(fact('Sergeant', 'knows', 'the sergeant was wounded at the gate', 'no-secret'), { kind: 'moment major', value: 'the sergeant was killed at the gate' }, src3, ctx).decision, 'unsure');
 });
 
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');

@@ -90,6 +90,10 @@ function run(file) {
   const disagree = threadLines.filter((l) => !cs.closedThread(l) && [...closedIds].some((c) => overlap(c.text, l) >= 0.9) && !cs.reg.some((c) => c.state !== 'done' && c.state !== 'cancelled' && overlap(c.text, l) >= 0.5));
   check(!disagree.length, 'no pinned thread is a goal that is already done or cancelled', disagree.join('\n'));
   if (hidden.length) console.log('  · ' + hidden.length + ' threads left out as finished goals:\n      ' + hidden.map(([l, c]) => l.trim().slice(0, 90) + '  ← [' + c.id + '] ' + c.state).join('\n      '));
+  // Sorting never files anything as "where things stand"; every sorted fact keeps its original.
+  const sortedRecs = recs.filter((r) => r.sortedBy);
+  check(!sortedRecs.some((r) => r.k === 'stands'), 'no sorted fact is in "where things stand"', sortedRecs.filter((r) => r.k === 'stands').slice(0, 5).map((r) => r.s + ': ' + r.v).join('\n'));
+  check(sortedRecs.every((r) => r.orig && r.orig.v), 'every sorted fact keeps its original');
   console.log('  · commitments: ' + cs.reg.length + ' (open ' + cs.reg.filter((c) => c.state === 'open').length + ', done ' + cs.reg.filter((c) => c.state === 'done').length + ', cancelled ' + cs.reg.filter((c) => c.state === 'cancelled').length + ', postponed ' + cs.reg.filter((c) => c.state === 'postponed').length + ')');
   const repeatGoals = [], maybeGoals = [];
   for (const e of es) {

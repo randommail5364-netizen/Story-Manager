@@ -2780,6 +2780,7 @@
     if (best && bestV >= 0.5) return { d: best, sure: false };
     return null;
   }
+  const decisionValid = (d) => !(d.decision === 'sorted' && d.to && d.to.k === 'stands') && d.decision !== 'kept';
   function applySortings(chat, recs) {
     const all = Object.values(chat.sortings || {});
     if (!all.length) return recs;
@@ -2795,6 +2796,8 @@
       if (!hit.sure) { review.push(hit.d.key); out.push(r); continue; }
       const d = hit.d;
       if (d.decision === 'dropped') continue;
+      // Decisions the current rules no longer allow (into "where things stand", or "kept") are not applied.
+      if (!decisionValid(d)) { out.push(r); continue; }
       if (d.decision === 'sorted' && d.to) out.push(Object.assign({}, r, { k: d.to.k, t: d.to.t || '', v: d.to.v, label: d.to.label || d.to.k, orig: { k: r.k, t: r.t, v: r.v }, sortedBy: d.key }, d.to.tier ? { tier: d.to.tier, imp: d.to.tier === 'major' } : {}));
       else out.push(Object.assign({}, r, d.decision === 'kept' ? { keptAsIs: true } : {}, { sortDecision: d.decision }));
     }
@@ -2805,6 +2808,11 @@
   // (the quote is in the source summary) and meaning (stays close to the original, no new names,
   // no flipped "not"). Returns { decision, to, why }.
   const SORT_KINDS = ['moment major', 'moment minor', 'moment routine', 'learned', 'knows', 'stands', 'progress', 'done', 'want', 'personality', 'keep', 'drop', 'unsure'];
+  // Opposite outcomes (refused / accepted, wounded / killed …): an answer may not swap one for the other.
+  const REVERSALS = [['refus', 'accept|agree'], ['won', 'lost'], ['alive|surviv', 'dead|died|killed'], ['wounded|injured', 'killed|dead'], ['arriv', 'left|depart'],
+    ['succeed|success', 'fail'], ['kept', 'broke'], ['admit', 'den(y|ie)'], ['remember', 'forg[eo]t'], ['love', 'hate'], ['start|began|begin', 'stop|ended|quit'],
+    ['open', 'clos'], ['join', 'left|quit'], ['trust', 'distrust|suspect'], ['forgave|forgive', 'blame'], ['found', 'lost'], ['captured', 'escaped|freed']]
+    .map(([a, b]) => [new RegExp('\\b(' + a + ')', 'i'), new RegExp('\\b(' + b + ')', 'i')]);
   const NEGATION_RE = /\b(not|never|no|refused|refuses|didn['’]t|doesn['’]t|won['’]t|wouldn['’]t|cannot|can['’]t|without|failed to|declined)\b/i;
   function judgeSorting(fact, answer, source, ctx) {
     const kind = String(answer.kind || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -2812,7 +2820,10 @@
     if (!SORT_KINDS.includes(base) && base !== 'moment' && !/^(moment|stands|knows|progress|done)\b/.test(base)) return { decision: 'failed', why: 'unknown kind "' + kind + '"' };
     if (base === 'unsure') return { decision: 'unsure', why: 'the keeper was unsure' };
     if (base === 'drop') return { decision: 'dropped', why: 'not worth keeping' };
-    if (base === 'keep') return fact.status === 'suspect-state' ? { decision: 'kept', why: 'the original kind was right' } : { decision: 'unsure', why: '"keep" for a fact that failed its check' };
+    // "keep" is not proof: a flagged fact stays as it was (still used, still flagged), not marked right.
+    if (base === 'keep') return { decision: 'unsure', why: 'the keeper kept the original kind; left as it was' };
+    // "Where things stand" is the one kind code cannot check (a state, not a scene): never a sorting result.
+    if (base === 'stands') return { decision: 'unsure', why: 'sorting never files a fact as "where things stand" (a scene is a moment)' };
     const v = String(answer.value || '').trim();
     if (v.length < 4) return { decision: 'failed', why: 'no value' };
     const src = normValue(source);
@@ -2828,7 +2839,9 @@
     const names = (v.match(/\b[A-Z][\p{L}'’-]{2,}\b/gu) || []).filter((n, i) => i > 0 || !/^[A-Z]/.test(v));
     const newName = names.find((n) => !String(source).includes(n) && !String(fact.r.v).includes(n) && n !== fact.r.s);
     if (newName) return { decision: 'unsure', why: 'names someone not in the source ("' + newName + '")' };
-    if (NEGATION_RE.test(v) !== NEGATION_RE.test(fact.r.v + ' ' + (answer.quote || '')) && NEGATION_RE.test(v) !== NEGATION_RE.test(source)) return { decision: 'unsure', why: 'a "not" was added or lost' };
+    if (NEGATION_RE.test(v) !== NEGATION_RE.test(fact.r.v)) return { decision: 'unsure', why: 'a "not" was added or lost' };
+    const flip = REVERSALS.find(([a, b]) => (a.test(v) && b.test(fact.r.v) && !b.test(v)) || (b.test(v) && a.test(fact.r.v) && !a.test(v)));
+    if (flip) return { decision: 'unsure', why: 'the outcome was reversed' };
     const to = { v };
     if (base === 'moment') { const tier = (kind.match(/major|minor|routine/) || ['minor'])[0]; Object.assign(to, { k: 'moment', tier, label: tier + ' moment' }); }
     else if (base === 'stands') { const t = (kind.split(':')[1] || answer.target || '').trim(); if (!t) return { decision: 'failed', why: '"where things stand" without the other person' }; Object.assign(to, { k: 'stands', t, label: 'where things stand' }); }
@@ -4089,7 +4102,8 @@
     const all = chat.sortings || {};
     return factQuality(chat).filter((x) => /^(no-secret|unresolved|unclassified|intent-not-done|unmatched-done|suspect-state)$/.test(x.status) &&
       !x.r.manual && !x.r.recon && x.r.at !== Infinity && !x.r.keptAsIs &&
-      (() => { const d = all[sortKey(String(x.r.id).split('#')[0], x.r)]; return !d || (d.decision === 'unsure' && (d.tries || 1) < 2); })());
+      (() => { const d = all[sortKey(String(x.r.id).split('#')[0], x.r)]; // (Decisions made under older rules — no "rule" mark — that were unsure or failed get one try under the current ones.)
+      return !d || !decisionValid(d) || (d.decision === 'unsure' && (d.tries || 1) < 2) || (!d.rule && (d.decision === 'unsure' || d.decision === 'failed')); })());
   }
   async function sortFacts(chat, job) {
     const todo = sortCandidates(chat);
@@ -4147,7 +4161,7 @@
         const a = answers.get(i + 1);
         const prev = chat.sortings[key];
         const res = !a ? { decision: 'unsure', why: a === null ? 'answered twice' : 'no answer' } : judgeSorting(x, a, src.get(rep).text, ctx);
-        chat.sortings[key] = { key, reply: rep, s: String(x.r.s).trim().toLowerCase(), k: x.r.k, v: x.r.v, status: x.status, to: res.to || null, decision: res.decision, why: res.why, batch: batchId + '-' + (bi + 1), at: Date.now(), tries: (prev && prev.tries || 0) + 1, answer: a ? (a.kind + ' | ' + a.value).slice(0, 300) : '' };
+        chat.sortings[key] = { key, reply: rep, s: String(x.r.s).trim().toLowerCase(), k: x.r.k, v: x.r.v, status: x.status, to: res.to || null, decision: res.decision, why: res.why, batch: batchId + '-' + (bi + 1), at: Date.now(), tries: (prev && prev.tries || 0) + 1, answer: a ? (a.kind + ' | ' + a.value + (a.quote ? ' | quote: "' + a.quote + '"' : '')).slice(0, 600) : '', rule: 2 };
         if (res.decision === 'sorted') sorted++;
       });
       await saveChat(chat);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.45.4
+// @version      3.45.5
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4336,14 +4336,23 @@
 
   // Undo the last check-up: its corrections stop counting (they were only ever added, never
   // changed anything else). Older check-ups (before runs were marked) are found by their reply.
-  function undoLastCheckup(chat) {
+  // Check-ups, each with its corrections (older ones, made before runs were marked, by the reply they ran after).
+  const checkupKey = (r) => r.run || 'at' + r.at;
+  function checkupRuns(chat) {
+    const runs = [];
+    for (const r of chat.reconRecords || []) {
+      const k = checkupKey(r);
+      let x = runs.find((y) => y.key === k);
+      if (!x) { x = { key: k, after: r.at, n: 0, sample: r.s + ' | ' + r.k + ' | ' + String(r.v).slice(0, 60) }; runs.push(x); }
+      x.n++;
+    }
+    return runs;
+  }
+  function undoCheckup(chat, key) {
     const all = chat.reconRecords || [];
-    const run = chat.lastReconRun;
-    const keep = run ? all.filter((r) => r.run !== run) : all.filter((r) => r.at !== chat.reconAt);
-    const n = all.length - keep.length;
-    chat.reconRecords = keep;
-    chat.lastReconRun = null;
-    return n;
+    chat.reconRecords = all.filter((r) => checkupKey(r) !== key);
+    if (chat.lastReconRun === key) chat.lastReconRun = null;
+    return all.length - chat.reconRecords.length;
   }
 
   async function runReconcile(id) {
@@ -6578,10 +6587,14 @@
           await runReconcile(chat.id);
         } }, 'Check what is out of date') : null,
         factsMode(chat) && (chat.reconRecords || []).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
-          if (!confirm('Undo the last check-up? Its corrections stop counting (goals it marked done open again). Nothing else changes.')) return;
-          const n = undoLastCheckup(chat);
+          const runs = checkupRuns(chat);
+          const pick = prompt('Undo which check-up? Its corrections stop counting (goals it marked done open again); nothing else changes.\n\n' +
+            runs.map((x, i) => (i + 1) + ') after reply ' + x.after + ': ' + x.n + ' corrections, e.g. ' + x.sample).join('\n') + '\n\nType its number:', String(runs.length));
+          const run = runs[Number(pick) - 1];
+          if (!run) return;
+          const n = undoCheckup(chat, run.key);
           await saveChat(chat); renderPanel(true); toast('Undone: ' + n + ' corrections from the last check-up.');
-        } }, 'Undo the last check-up') : null,
+        } }, 'Undo a check-up…') : null,
         factsMode(chat) && sortCandidates(chat).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           const n = sortCandidates(chat).length;

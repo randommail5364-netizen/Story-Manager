@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.45.3
+// @version      3.45.4
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2638,6 +2638,8 @@
   // that person and say it happened — a statement of intent never completes
   // anything, and an action that completes nothing is a moment filed wrongly.
   const INTENT_RE = /^\s*(plan(s|ned|ning)?|intend(s|ed)?|will|would|shall|wants? to|wanted to|decided to|agreed to(?! (the|a|an|his|her|their|its|our|terms)\b)|promised to|vowed to|swore to|is going to|was going to|hopes? to|hoped to|prepar(es|ed|ing) to|set out to|aims? to|means? to|offered to|asked to|tried to|plans? for)\b/i;
+  // A plan, wish or promise, with or without a subject first ("he will …", "Mira wants to …", "she vowed …").
+  const isIntent = (t) => { const x = String(t).replace(/^\s*["“']+/, ''); return INTENT_RE.test(x) || INTENT_RE.test(x.replace(/^\s*(he|she|they|i|we|it|[A-Z][\p{L}'’-]+)\s+(?:(?:is|was|has|had)\s+)?/u, '')) || /^\s*(he|she|they|[A-Z][\p{L}'’-]+)\s+(wants?|wished?|hopes?|vowed|swore|promised|reaffirmed|is thinking|was thinking|thinks|plans?|will|would)\b/u.test(x); };
   const LIFE_KINDS = new Set(['done', 'progress', 'cancelled', 'postponed']);
   // A "done" is judged against what the goal asks for:
   //  - setting it up (scheduled, arranged, agreed, confirmed, promised again,
@@ -2706,7 +2708,7 @@
     for (const r of recs) {
       if (!LIFE_KINDS.has(r.k)) continue;
       const owner = ownerOf(r), nm = commitName(r.v), text = commitText(r.v);
-      if (r.k === 'done' && INTENT_RE.test(text)) { ofRecord.set(r.id, { status: 'intent' }); continue; }
+      if (r.k === 'done' && isIntent(text)) { ofRecord.set(r.id, { status: 'intent' }); continue; }
       let c = nm ? byName(owner, nm) : null;
       // Without a name: only a near-identical goal of the same person, nothing specific in conflict.
       if (!c && !nm) c = reg.filter((x) => x.owner === owner && (x.at || 0) <= r.at && sameByWords(x.text, text)).map((x) => [x, sim(x.text, text)]).sort((a, b) => b[1] - a[1]).map(([x]) => x)[0];
@@ -2880,7 +2882,7 @@
       const c = m && ctx.goals.find((g) => g.id === m[1].trim() && g.owner === String(fact.r.s).trim().toLowerCase());
       if (!c) return { decision: 'unsure', why: 'names no goal of this person' };
       if (c.at !== undefined && fact.r.at < c.at) return { decision: 'unsure', why: 'the goal only appears later' };
-      if (base === 'done' && (INTENT_RE.test(commitText(v)) || doneMeans(c.text, commitText(v)) !== 'done')) return { decision: 'unsure', why: 'not a completion' };
+      if (base === 'done' && (isIntent(commitText(v)) || doneMeans(c.text, commitText(v)) !== 'done')) return { decision: 'unsure', why: 'not a completion' };
       to.k = base;
     } else to.k = base;
     if (!to.label) to.label = to.k;
@@ -4020,6 +4022,7 @@
   // facts; nothing is deleted (the full entries keep the history).
   const RECONCILE_EVERY = 10;
   async function reconcileFacts(chat) {
+    const runId = 'c' + Date.now().toString(36);
     const at = chat.log.length;
     const recs = allRecords(chat);
     const open = [];
@@ -4105,17 +4108,18 @@
         if (!/^(done|cancelled|postponed|progress|role|location|knows)$/.test(r.k)) skipped.push([line, 'kind "' + (r.label || r.k) + '" is not a check-up correction']);
         else if (!(Number((line.match(/\(reply (\d+)\)/i) || [])[1]) <= at)) skipped.push([line, 'no reply given as evidence']);
         else if (r.k === 'done' && NOT_DONE_RE.test(r.v)) skipped.push([line, 'says it is not done']);
-        else if (r.k === 'done' && INTENT_RE.test(commitText(r.v))) skipped.push([line, 'a plan, not something done']);
+        else if (r.k === 'done' && isIntent(commitText(r.v))) skipped.push([line, 'a plan, not something done']);
         else if (r.k === 'knows' && NO_NEWS_RE.test(r.v)) skipped.push([line, 'nothing new']);
         else if (r.k === 'knows' && !sec) skipped.push([line, 'no such secret']);
         else if (r.k === 'knows' && (sec.everyone || sec.knows.some((k) => k.who.toLowerCase() === r.s.toLowerCase()))) skipped.push([line, 'already listed as knowing']);
         else if ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v)) skipped.push([line, 'where they are now, not a home or role']);
         else if (have.has(key)) skipped.push([line, 'already applied before']);
-        else { have.add(key); got.push(Object.assign(r, { at })); applied.push(line); }
+        else { have.add(key); got.push(Object.assign(r, { at, run: runId })); applied.push(line); }
       }
     }
     chat.reconReport = { at: Date.now(), open: open.length, secrets: secrets.length, answer: out.slice(0, 6000), applied, skipped };
     chat.reconRecords = (chat.reconRecords || []).concat(got);
+    chat.lastReconRun = runId;
     chat.secretAlias = alias;
     chat.reconAt = at;
     return got.length;
@@ -4328,6 +4332,18 @@
         return e.stopped ? 'stopped' : 'failed';
       }
     });
+  }
+
+  // Undo the last check-up: its corrections stop counting (they were only ever added, never
+  // changed anything else). Older check-ups (before runs were marked) are found by their reply.
+  function undoLastCheckup(chat) {
+    const all = chat.reconRecords || [];
+    const run = chat.lastReconRun;
+    const keep = run ? all.filter((r) => r.run !== run) : all.filter((r) => r.at !== chat.reconAt);
+    const n = all.length - keep.length;
+    chat.reconRecords = keep;
+    chat.lastReconRun = null;
+    return n;
   }
 
   async function runReconcile(id) {
@@ -6561,6 +6577,11 @@
           await save(true);
           await runReconcile(chat.id);
         } }, 'Check what is out of date') : null,
+        factsMode(chat) && (chat.reconRecords || []).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          if (!confirm('Undo the last check-up? Its corrections stop counting (goals it marked done open again). Nothing else changes.')) return;
+          const n = undoLastCheckup(chat);
+          await saveChat(chat); renderPanel(true); toast('Undone: ' + n + ' corrections from the last check-up.');
+        } }, 'Undo the last check-up') : null,
         factsMode(chat) && sortCandidates(chat).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           const n = sortCandidates(chat).length;

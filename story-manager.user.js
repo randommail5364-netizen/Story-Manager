@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.42.0
+// @version      3.42.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1733,9 +1733,9 @@
     '  "- Everyone | knows | [short name]" when it comes out (e.g. confessed in the group chat); when someone is told or confesses it to someone, a knows record for each person who now knows; reuse the exact short name already used for that secret; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
     '  Goals and promises (a plan, a quest, a mission, a vow, an appointment) get a short name in square brackets, like secrets: "- Person | goal | [short name] what they mean to do". Reuse the [short name] given in OPEN GOALS AND PROMISES when it is the same one.',
     '  What becomes of one, always with its [short name]: "done" only when it actually happened or was kept in this reply ("- Person | done | [short name] what happened"); "progress" for one step of it; "postponed" when it was moved to later; "cancelled" when it was dropped or broken. Planning, agreeing or preparing to do it is NOT done. Something someone did that completes no goal is a moment, never "done".',
-    '  Times: write the story day or date ("the day of the escape room", "Saturday"), never "today", "tomorrow" or "tonight" (they are wrong a day later).',
+    '  Times: write the story day or date ("the day of the tournament", "Saturday"), never "today", "tomorrow" or "tonight" (they are wrong a day later).',
     '  Moments (a short line saying what happened to or because of them in this reply) have three levels; choose one:',
-    '  For a major moment, write what happened and, when the story shows a lasting change, what is different since: "argued about his calm → since then she offers quiet comfort when he is down (affects: Shuhua & Jacek)". Leave out the arrow part when nothing lasting changed.',
+    '  For a major moment, write what happened and, when the story shows a lasting change, what is different since: "quarrelled over the broken oath → since then he no longer trusts her with the watch (affects: Tomas & Lena)". Leave out the arrow part when nothing lasting changed.',
     '  "major moment": only when it changes something that lasts: a relationship starts, changes or ends, a secret comes out, a first time, a confession, a promise or vow, a fight or making up, a move, a big decision. Rare: most replies have none. Hugs, kisses, meals, teasing, coffee and dozing off are never major.',
     '  "minor moment": worth remembering but changes little (a date, a gift, a small plan, a meaningful talk).',
     '  Use all three moment levels: most everyday replies have routine moments.',
@@ -1746,7 +1746,7 @@
     '  "believes": what a character thinks is true, which may be wrong ("- Lena | believes | [the king] the king is loyal"). Write what is really true as its own fact; never present a belief or a claim as true.',
     '  "where things stand: X" is how things are between them now, never what one of them did in the scene (that is a moment).',
     '  Only lasting facts: not where someone is, what they wear, or how they look or feel at this moment (no "bound", "in tears", "naked"). Appearance is their lasting looks (body, hair, eyes, usual style). "status" is only for things (e.g. a gift: delivered).',
-    '  One subject per record: never "Tiffany and Irene" — write a record for each of them. To say what a place or thing is, use kind "type" (place, item, group) or "basics". Write FACTS: none if there are none.',
+    '  One subject per record: never "Lena and Tomas" — write a record for each of them. To say what a place or thing is, use kind "type" (place, item, group) or "basics". Write FACTS: none if there are none.',
     '  Example (a made-up story; use your story\'s own names):',
     '  FACTS:',
     '  - Lena | relationship: Tomas | sworn sister-in-arms since the siege of Varn',
@@ -1895,7 +1895,7 @@
     '### Personality & Voice (traits, habits, mannerisms, how they talk, typical phrases) · ### Abilities & Skills · ### Likes, Dislikes & Boundaries · ' +
     '### Backstory · ### Relationships (one bullet per other character: what they are to each other, how they feel, the key moments between them, in order; and for each important one a "Where things stand:" line — the state of the RELATIONSHIP: what last changed between them, what each needs, what was promised, what is still unresolved; never where they are or what they are doing at this moment — rewritten whenever it changes) · ' +
     '### Key Moments (the important things that happened to or because of them, in order, with specifics) · ' +
-    '### Goals, Promises & Secrets (and who knows each secret). In "add" updates, start each bullet with its topic, e.g. "- Relationships – Karina: …" or "- Key Moments: …". ' +
+    '### Goals, Promises & Secrets (and who knows each secret). In "add" updates, start each bullet with its topic, e.g. "- Relationships – Lena: …" or "- Key Moments: …". ' +
     'Leave out headings with nothing known: never write "None stated" or "Unknown". ' +
     'Entries hold LASTING facts only: never where someone is, what they are doing, wearing or feeling at this moment — that is written once, in the Current Scene. ' +
     'Be concrete: exact names, numbers, words said, places and objects, not vague impressions like "they grew closer".';
@@ -2783,7 +2783,7 @@
     return kept;
   }
   // Words that make a key moment important even when the keeper did not mark it.
-  const BIG_MOMENT_RE = /\b(first (time|kiss|date|night)|for the first time|confess(ed|ion|es)?|propos(ed|al)|engaged|married|wedding|pregnan|vow(ed|s)?|promis(ed|e)|reveal(ed|s)?|found out|discover(ed|s)|learn(ed|s|t) (that|about|the truth)|exposed|broke up|break-?up|made up|reconcil|forgave|betray|moved (in|out|to)|quit|fired|died|death|virginity|deflower|i love you|in love|claimed? (her|him|them) as|became (his|her|their)|agreed to|decided to|pact)\b/i;
+  const BIG_MOMENT_RE = /\b(first (time|kiss|date|night)|for the first time|confess(ed|ion|es)?|propos(ed|al)|engaged|married|wedding|pregnan|vow(ed|s)?|promis(ed|e)|reveal(ed|s)?|found out|discover(ed|s)|learn(ed|s|t) (that|about|the truth)|exposed|broke up|break-?up|made up|reconcil|forgave|betray|moved (in|out|to)|quit|fired|died|death|virginity|deflower|i love you|in love|became (his|her|their)|agreed to|decided to|pact|killed|captured|escaped|rescued|kidnapped|arrested|exiled|crowned|defeated|won the|lost the|battle|war|alliance|treaty|oath|sworn|swore|surrender(ed)?|invaded|conquered|solved|accused|framed|cursed|awakened|transformed)\b/i;
   function importantMoment(chat, p, r, turning, weighty) {
     if (r.imp || r.manual || (chat.keptMoments || []).includes(r.id)) return true;
     if (r.at !== Infinity && (p.records.some((x) => x.at === r.at && /^(promise|secret)$/.test(x.k)) ||
@@ -2796,8 +2796,11 @@
   // or only repeat what is known ("knows … already knows"): never used.
   const NOT_DONE_RE = /\b(still open|not done|not yet|in progress|ongoing|remains? (open|pending|unresolved)|still pending|no change|unchanged|not completed|underway|is happening|happening now|upcoming|still ahead|in progress|currently)\b/i;
   const NO_NEWS_RE = /\b(already knows?|already known|already listed|no change|unchanged)\b/i;
-  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|waiting|standing|leaning|parked|sat|stood|at the moment|for now|now at|no longer|currently at|with jacek|with him|with her|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently|arriving|leaving|playing|laughing|asleep|fell asleep|sleeping|claimed the middle|surrounded by|then (her|his|the)|(late |early )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday) (night|morning|afternoon|evening)|in the (master suite )?bed)\b/i;
-  const GROUP_HINT_RE = /\b(magazine|tabloid|outlet|media|news|newspaper|label|girl group|boy group|idol group|company|agency|entertainment|corporation|firm|fund|brand|network|channel|team|band|crew)\b/i;
+  // English word lists like this one are only a fallback for stories in
+  // English; the kind checks (factQuality, commitState) do the real work and
+  // do not depend on the story's language, genre or names.
+  const NOT_HOME_RE = /\b(left|went|walked|arrived|returned|headed|was in|is in|was at|is at|passed|sitting|lying|doing|waiting|standing|leaning|parked|sat|stood|at the moment|for now|now at|no longer|currently at|with him|with her|\d{1,2}(:\d\d)?\s*(am|pm)|today|tonight|yesterday|this morning|right now|currently|arriving|leaving|playing|laughing|asleep|fell asleep|sleeping|surrounded by|then (her|his|the)|(late |early )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday) (night|morning|afternoon|evening)|in the (master suite )?bed)\b/i;
+  const GROUP_HINT_RE = /\b(magazine|tabloid|outlet|media|news|newspaper|label|girl group|boy group|idol group|company|agency|entertainment|corporation|firm|fund|brand|network|channel|team|band|crew|army|guild|clan|tribe|council|faction|legion|squad|regiment|cult|gang|fleet|order of|house of)\b/i;
   const normValue = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
   // Builds the entries from the records. Returns [{ name, kind, aliases, text, … }].
   function buildEntries(chat) {
@@ -3865,7 +3868,7 @@
         return '[' + x.name + '] ' + (x.owners && x.owners.length ? x.owners.join(' and ') + '\'s secret: ' : '') + x.text + ' — recorded in reply ' + (n || '?') + ' — listed as knowing: ' + (x.everyone ? 'everyone' : x.knows.map((k) => k.who).join(', ') || 'nobody');
       });
       const user2 = 'SECRETS:\n<<<\n' + lines.join('\n') + '\n>>>\n\nTHE REPLIES WHERE THEY WERE RECORDED (summaries):\n<<<\n' + ev + '\n>>>\n\nTHE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-20000) + '\n>>>\n\n' +
-        'JOB: SECRETS CHECK. For each secret, who really knows it? Think of the person it was confided to, revealed to, or who was part of it (e.g. a secret someone showed or confessed to Jacek: Jacek knows it).\n' +
+        'JOB: SECRETS CHECK. For each secret, who really knows it? Think of the person it was confided to, revealed to, or who was part of it (e.g. a secret someone showed or confessed to another character: that character knows it).\n' +
         '- "- Person | knows | [exact secret name] how they know (reply N)" for each person who knows a secret but is not listed as knowing it.\n' +
         '- "- [secret name] = [other secret name]" for two listed secrets that are the same secret (the same fact about the same person, worded differently, or one is a later step of the other, e.g. wanting something and then saying yes to it). Check every secret of the same person against each other.\n' +
         'Only what the texts show; never guess. Write "none" if nothing is missing. Output only those lines.';
@@ -6312,7 +6315,7 @@
     const recs = (e.recordIds || []).map((id) => byId.get(id)).filter(Boolean);
     const text = el('textarea', { class: 'entry', readonly: true });
     text.value = e.text;
-    const kindIn = el('input', { placeholder: 'kind, e.g. key moment, relationship: Winter', list: 'smx-kinds' });
+    const kindIn = el('input', { placeholder: 'kind, e.g. key moment, relationship: Tomas', list: 'smx-kinds' });
     const valueIn = el('input', { placeholder: 'the fact' });
     const del = el('button', { class: 'btn', onclick: () => {
       if (!confirm('Delete "' + e.name + '" and all its facts? It will not be created again. (Save to confirm.)')) return;
@@ -6367,7 +6370,7 @@
   // someone as knowing (or not knowing) a secret; their choice is the newest.
   function secretsView(chat) {
     const list = buildSecrets(chat);
-    const who = el('input', { placeholder: 'who, e.g. Giselle' });
+    const who = el('input', { placeholder: 'who, e.g. Lena' });
     const which = el('select', {}, ...list.map((x) => el('option', { value: x.name }, '[' + x.name + ']')));
     const how = el('select', {}, el('option', { value: 'knows' }, 'knows'), el('option', { value: 'notknows' }, 'does not know'));
     const add = async () => {

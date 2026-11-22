@@ -1766,7 +1766,24 @@
     '  - Lena | progress | [retake Varn] won the council\'s vote for the march',
     '  Wrong: "- Lena | done | [retake Varn] planned the march" (planning is not done). Wrong: "- Lena | done | cooked supper for the camp" (completes no goal: a moment). Wrong: "- Lena | knows | Tomas kissed her by the fire" (a moment, not a secret). Wrong: "- Lena | where things stand: Tomas | he mended her cloak" (a scene, not a state).',
   ];
-  function summarySystem(facts) {
+  // Version B of the fact rules, for the Keeper test only: the same kinds in
+  // a compact table, one example each (a made-up story).
+  const RECORD_RULES_COMPACT = [
+    '- After each summary write FACTS: and then one fact per line: "- Subject | kind | fact". Subject: one exact name (never a pronoun; one person per line).',
+    '  Kinds (use the one that fits; each fact once):',
+    '  moment major / moment minor / moment routine — something that happened (major: changes something lasting) — "- Lena | moment minor | mended Tomas\'s cloak by the fire"',
+    '  learned — something found out that is not a secret — "- Lena | learned | the eastern pass is closed until spring"',
+    '  secret / knows / does not know — only for a secret, always with its [short name] — "- Tomas | secret | [Varn] he deserted at Varn", "- Lena | knows | [Varn] he told her"',
+    '  believes — what someone thinks is true (may be wrong) — "- Orrin | believes | [Varn] Tomas held the gate"',
+    '  relationship: Other — a lasting fact about the two — "- Lena | relationship: Tomas | sworn sister-in-arms"',
+    '  where things stand: Other — how things are between them NOW, never a scene — "- Lena | where things stand: Tomas | trusting again after the quarrel"',
+    '  goal / promise — only a stated commitment or intention, with a [short name] — "- Lena | goal | [retake Varn] lead the Circle back to Varn"',
+    '  progress / done / postponed / cancelled — what became of a goal, with its [short name]; done only when it actually happened — "- Lena | progress | [retake Varn] won the council vote"',
+    '  want — a wish or interest, not a commitment — "- Lena | want | to see the sea again"',
+    '  personality / likes / dislikes / appearance / ability / backstory / role / location / condition / possession / nickname / type — lasting facts about someone or something',
+    '  Not: "knows" for anything but a secret; a scene as "where things stand"; a plan as "done". Dates as the story names them, never "today/tomorrow". Write FACTS: none if there are none.',
+  ];
+  function summarySystem(facts, rules) {
     return [
       'You are the continuity editor for a long-running interactive story / roleplay chat.',
       'Your job now: write a detailed summary of EACH story reply in the messages, so the storyteller AI can remember exactly what happened.',
@@ -1777,7 +1794,7 @@
       '- Each [R…] label gives the MOST its summary should be (longer replies get longer summaries). A short reply gets a short summary: never pad, never discuss the length. Cover the whole reply, including its end.',
       '- A story reply may begin with the storyteller AI\'s own planning or thinking (e.g. "Okay, the user wants…", notes on how to write the scene). That is not part of the story: ignore it and summarise only the story itself.',
       '- Write only the summaries and FACTS lines. Never write your own planning, questions about the task, notes on the format or the length, or what you are about to do.',
-    ].concat(facts ? RECORD_RULES : [
+    ].concat(facts ? (rules || RECORD_RULES) : [
       '- After each summary, on its own line, write FACTS: followed by the lasting facts this reply revealed or changed, separated by " | ": names and nicknames, relationships and feelings, confessions, promises, secrets (and who knows them), injuries and condition, possessions, appearance changes, places, rules of the world, dates and times. Write FACTS: none if there are none.',
     ], [
       '- A reply that is a recap gets a summary starting with "Recap of earlier events:".',
@@ -4198,6 +4215,99 @@
       } catch (e) {
         await saveChat(chat);
         toast(e.stopped ? 'Stopped. Pressing the button again goes on where it stopped.' : 'Sorting stopped: ' + (e.message || e) + '. Pressing the button again goes on where it stopped.', !e.stopped);
+        return e.stopped ? 'stopped' : 'failed';
+      }
+    });
+  }
+
+  // Keeper test (A/B): the same replies summarised with the current fact rules
+  // (A) and the compact ones (B). Read-only: nothing in the story's memory,
+  // sortings, goals or processing changes; the result is kept separately.
+  // 10 early, 10 middle and 10 late replies, 3 per request, identical input
+  // for both. Scores: right-kind share, how much each extracts (coverage of
+  // the names in the story's own summary of each reply), serious errors.
+  const KEEPER_TEST_EACH = 10;
+  const keeperTestCache = {};
+  async function keeperTest(chat, job) {
+    const all = await fetchMessages(chat.id, { mode: 'full' });
+    const replies = all.filter((m) => m.role === 'assistant' && m.id !== chat.greetingId && chat.log.some((e) => e.id === m.id));
+    if (replies.length < 6) throw new Error('The story needs more replies for a keeper test.');
+    const n = Math.min(KEEPER_TEST_EACH, Math.floor(replies.length / 3));
+    const mid = Math.floor(replies.length / 2) - Math.floor(n / 2);
+    const picks = [].concat(replies.slice(0, n), replies.slice(mid, mid + n), replies.slice(-n));
+    const parts = { early: replies.slice(0, n), middle: replies.slice(mid, mid + n), late: replies.slice(-n) };
+    const names = chat.entries.map((e) => e.name + (e.aliases && e.aliases.length ? ' (' + e.aliases.join(', ') + ')' : ''));
+    const batches = [];
+    for (const [part, list] of Object.entries(parts)) for (let i = 0; i < list.length; i += 3) batches.push({ part, replies: list.slice(i, i + 3) });
+    const result = { at: Date.now(), story: chat.id.slice(0, 8), replies: picks.length, variants: {} };
+    const keys = new Set();
+    for (const r of allRecords(chat)) if (r.k === 'secret') { const m = String(r.v).match(/^\s*\[([^\]]+)\]/); if (m) keys.add(secretKeyOf(m[1])); }
+    const commits = commitState(chat);
+    for (const [variant, rules] of [['A', RECORD_RULES], ['B', RECORD_RULES_COMPACT]]) {
+      const v = { facts: 0, byKind: {}, byStatus: {}, perPart: {}, outputChars: 0, answers: [], coverage: { names: 0, found: 0 } };
+      for (let bi = 0; bi < batches.length; bi++) {
+        checkStop();
+        const b = batches[bi];
+        const list = withPrompts(all, b.replies);
+        const user = (names.length ? 'KNOWN NAMES: ' + names.join('; ') + '\n\n' : '') +
+          'MESSAGES (oldest first):\n<<<\n' + formatMessages(list, chat.title) + '\n>>>\n\nJOB: SUMMARISE. Write one summary and its FACTS records for each [R…] reply now.';
+        const out = cleanOutput(await job('test', 'Keeper test ' + variant + ', ' + (bi + 1) + ' of ' + batches.length, () => callLLM(summarySystem(true, rules), user)));
+        v.outputChars += out.length;
+        const got = parseKeeperAnswer(/^\W*=+\s*LOG\s*=+/im.test(out) ? out : '=== LOG ===\n' + out, b.replies).entries;
+        for (const rep of b.replies) {
+          const g = got.find((x) => x.id === rep.id);
+          const recs = (g && g.records) || [];
+          const idx = chat.log.findIndex((e) => e.id === rep.id) + 1;
+          const pp = v.perPart[b.part] = v.perPart[b.part] || { facts: 0, ok: 0, moments: 0, replies: 0, noMoment: 0 };
+          pp.replies++;
+          if (!recs.some((r) => r.k === 'moment')) pp.noMoment++;
+          for (const r of recs) {
+            const st = factStatus(Object.assign({ id: 'kt#0', at: idx }, r), keys, secretKeyOf, null);
+            const status = r.k === 'done' && INTENT_RE.test(commitText(r.v)) ? 'intent-not-done' : st;
+            v.facts++; pp.facts++;
+            v.byKind[r.k] = (v.byKind[r.k] || 0) + 1;
+            v.byStatus[status] = (v.byStatus[status] || 0) + 1;
+            if (status === 'ok') pp.ok++;
+            if (r.k === 'moment') pp.moments++;
+          }
+          // Coverage: the known names in the story's own summary of this reply that the facts mention.
+          const own = (chat.log.find((e) => e.id === rep.id) || {}).text || '';
+          const factText = recs.map((r) => r.s + ' ' + r.v + ' ' + (r.t || '')).join(' ').toLowerCase();
+          for (const e of chat.entries) if ((e.kind || 'character') === 'character' && new RegExp('\\b' + e.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b').test(own)) { v.coverage.names++; if (factText.includes(e.name.toLowerCase())) v.coverage.found++; }
+          v.answers.push({ reply: idx, id: rep.id, part: b.part, summary: g ? g.text : '', facts: recs.map((r) => r.s + ' | ' + (r.label || r.k) + (r.t ? ': ' + r.t : '') + ' | ' + r.v) });
+        }
+      }
+      result.variants[variant] = v;
+    }
+    void commits;
+    result.replyTexts = picks.map((m) => ({ id: m.id, reply: chat.log.findIndex((e) => e.id === m.id) + 1, text: String(m.text || m.content || '').slice(0, 12000) }));
+    await Store.set('keeperTest:' + chat.id, result);
+    keeperTestCache[chat.id] = result;
+    return result;
+  }
+  function keeperTestText(r) {
+    if (!r) return '';
+    const line = (k) => {
+      const v = r.variants[k];
+      const ok = v.byStatus.ok || 0;
+      const serious = (v.byStatus['no-secret'] || 0) + (v.byStatus['intent-not-done'] || 0) + (v.byStatus.unclassified || 0);
+      const parts = ['early', 'middle', 'late'].map((p) => { const x = v.perPart[p]; return x ? p + ' ' + Math.round(100 * x.ok / Math.max(1, x.facts)) + '% ok, ' + (x.moments / x.replies).toFixed(1) + ' moments/reply' : ''; }).filter(Boolean).join(' · ');
+      return '  ' + k + ': ' + v.facts + ' facts (' + (v.facts / r.replies).toFixed(1) + ' per reply), right kind ' + Math.round(100 * ok / Math.max(1, v.facts)) + '%, serious errors ' + serious + ', names covered ' + v.coverage.found + '/' + v.coverage.names +
+        ', ' + Math.round(v.outputChars / Math.max(1, v.facts)) + ' answer characters per fact\n     ' + parts + '\n     kinds: ' + Object.entries(v.byKind).sort((a, b) => b[1] - a[1]).map(([k2, n]) => k2 + ' ' + n).join(', ');
+    };
+    return 'Keeper test (' + new Date(r.at).toLocaleString() + ', ' + r.replies + ' replies, A = current rules, B = compact rules):\n' + line('A') + '\n' + line('B') + '\n';
+  }
+  async function runKeeperTest(id) {
+    const chat = await getChat(id, true);
+    return withBusy(id, 1, async () => {
+      const job = async (kind, label, fn) => { setStep(id, label + '…'); const t = Date.now(); try { return await fn(); } catch (e) { if (!e.stopped) logJob(chat, { kind, label, ok: false, ms: Date.now() - t, error: String(e.message || e).slice(0, 200) }); throw e; } };
+      try {
+        const r = await keeperTest(chat, job);
+        logJob(chat, { kind: 'test', label: 'Keeper test (A/B) on ' + r.replies + ' replies', ok: true, ms: Date.now() - r.at });
+        toast('Keeper test done. See Diagnostics, and use "Download keeper test" to send it.');
+        return 'done';
+      } catch (e) {
+        toast(e.stopped ? 'Stopped.' : 'The keeper test failed: ' + (e.message || e), !e.stopped);
         return e.stopped ? 'stopped' : 'failed';
       }
     });
@@ -6835,6 +6945,7 @@
       'Memory health: ' + (chat ? memoryHealth(chat) : 'no chat') + '\n' +
       (chat && factsMode(chat) ? 'Fact quality: ' + factQualityText(chat) + '\n' : '') +
       (chat && factsMode(chat) ? sortingText(chat) : '') +
+      (chat && keeperTestCache[chat.id] ? keeperTestText(keeperTestCache[chat.id]) : '') +
       'Summaries made with: ' + (chat && chat.log.length ? summaryVersions(chat).join(', ') : 'none yet') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
       'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + factsSplit(chat) + '), ' +
         chat.log.filter((e) => e.checked).length + ' facts-checked, ' + st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +
@@ -7015,12 +7126,14 @@
     const box = el('textarea', { readonly: true, class: 'diag' });
     box.style.display = 'none';
     box.style.minHeight = '220px';
-    const show = () => {
+    const show = async () => {
+      const c = currentId && chats[currentId];
+      if (c && !(c.id in keeperTestCache)) { try { keeperTestCache[c.id] = await Store.get('keeperTest:' + c.id, null); } catch (e) { keeperTestCache[c.id] = null; } }
       box.value = diagnosticsText();
       box.style.display = '';
     };
     const copy = async () => {
-      show();
+      await show();
       // No select()/focus here: it would scroll the page (see togglePanel).
       try { await navigator.clipboard.writeText(box.value); toast('Diagnostics copied — paste them to Claude'); } catch (e) { toast('Long-press the text in the box to copy it'); }
     };
@@ -7028,7 +7141,21 @@
       el('div', { class: 'btns' },
         el('button', { class: 'btn', onclick: show }, 'Diagnostics'),
         el('button', { class: 'btn', onclick: copy }, 'Copy diagnostics'),
-        el('button', { class: 'btn', onclick: exportForTesting }, 'Export for testing')),
+        el('button', { class: 'btn', onclick: exportForTesting }, 'Export for testing'),
+        el('button', { class: 'btn', onclick: async () => {
+          const chat = currentId && chats[currentId];
+          if (!chat || !factsMode(chat)) { toast('Open a story that uses the facts format first.'); return; }
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          if (!confirm('Keeper test: summarise 30 replies (10 early, 10 middle, 10 late) twice — with the current rules and with compact rules — and compare. About 20 requests. Nothing in the story changes.')) return;
+          await runKeeperTest(chat.id);
+        } }, 'Keeper test (A/B)'),
+        el('button', { class: 'btn', onclick: async () => {
+          const chat = currentId && chats[currentId];
+          const r = chat && (keeperTestCache[chat.id] || await Store.get('keeperTest:' + chat.id, null));
+          if (!r) { toast('No keeper test yet for this story.'); return; }
+          if (!confirm('The file holds the 30 test replies themselves (story text) and both keepers\' answers, so the results can be checked by hand. Save it?')) return;
+          downloadText('story-manager-keeper-test-' + chat.id.slice(0, 8) + '.json', JSON.stringify(r, null, 1));
+        } }, 'Download keeper test')),
       box);
   }
 

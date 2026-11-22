@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.50.2
+// @version      3.50.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1998,7 +1998,9 @@
       if (split.states.length && (e.kind || 'character') === 'character') moved.push({ name: e.name, states: ['last known — ' + split.states[split.states.length - 1]] });
       e.text = squashRepeats(split.text);
       // Objects and places filed as characters.
-      if ((e.kind || 'character') === 'character') { const k = guessKind(e.name, [], e.text); if (k && k !== 'character') { e.kind = k; kinds++; } }
+      // (Entries built from facts already got their kind from the facts; never guessed again from text.)
+      if (e.fromFacts) { /* kind decided in buildEntries */ }
+      else if ((e.kind || 'character') === 'character') { const k = guessKind(e.name, [], e.text); if (k && k !== 'character') { e.kind = k; kinds++; } }
       // A person filed as a place or item (e.g. "Park Ji-won" as a park).
       else if (/^(place|item)$/.test(e.kind) && PERSON_RE.test(e.text) && !ITEM_WORDS.test(e.name)) { e.kind = 'character'; kinds++; }
     }
@@ -3270,10 +3272,17 @@
       const typed = single(by('type'));
       const kindWord = typed && (typed.match(/\b(character|person|place|item|object|group|lore)\b/i) || [])[1];
       // Without a type: a person only if something personal is known about them.
-      const personal = p.knowsOnly || p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory|learned|believes|want)$/.test(r.k));
+      // Someone who acts in the story (moments), has a personality, relationships, plans or knows things is a person.
+      const nameSaysThing = (typed && !/character|person|human|woman|man|girl|boy/i.test(typed)) || !!guessKind(p.name, [], '') || /^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|morning|evening)$/i.test(p.name);
+      const personal = p.knowsOnly || p.records.some((r) => /^(fullname|age|role|personality|ability|likes|dislikes|boundary|relationship|stands|promise|secret|goal|nickname|backstory|learned|believes|want|condition|scheduled)$/.test(r.k)) || !!portrait ||
+        (!nameSaysThing && p.records.some((r) => r.k === 'moment'));
       // A name in capitals ("BABYMONSTER", "IVE") is a group, even with personal facts.
       const capsGroup = /^[A-Z0-9()&' -]{3,20}$/.test(p.name) && /[A-Z]{3}/.test(p.name);
-      const kind = capsGroup && !kindWord ? 'group' : kindWord ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase())
+      // A chat, channel or board where people post is a group, not a person.
+      const chatGroup = /\b(group chat|chat|channel|forum|server|board)$/i.test(p.name);
+      // A "type: place/item" for a person (the keeper describing their apartment) does not make them a place.
+      const typedThing = kindWord && /^(place|item|object)$/i.test(kindWord) && personal && p.records.some((r) => /^(personality|likes|relationship|stands|moment|goal|learned)$/.test(r.k));
+      const kind = chatGroup ? 'group' : capsGroup && !kindWord ? 'group' : kindWord && !typedThing ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase()) : typedThing ? 'character'
         : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : GROUP_HINT_RE.test(p.name + '\n' + L.join('\n')) || /^[A-Z0-9]{2,6}$/.test(p.name) ? 'group' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
       const pinText = P.join('\n');

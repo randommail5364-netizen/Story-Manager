@@ -347,5 +347,24 @@ test('goal levels: a routine goal untouched for 10 replies is probably over; maj
   assert(/the-punch/.test(pin(entry(lib.buildEntries(chat), 'Ren'))));
 });
 
+test('a minor goal is not "probably over" while what it belongs to is still ahead; standing agreements never are', () => {
+  const quiet = Array.from({ length: 55 }, () => ['- Ren | minor moment | trained in the yard']);
+  const chat = story([[
+    '- Ren | major goal | [the wedding] marry Ilse at the midsummer wedding',
+    '- Ada | minor goal | [the flowers] gather wild roses for the midsummer wedding',
+    '- Bram | minor goal | [the boat] repair the old fishing boat',
+    '- Cora | minor goal | [cloud signal] say "grey sky" when she needs quiet support',
+  ]].concat(quiet));
+  lib.buildEntries(chat);
+  chat.commitTier = { 'cloud-signal': 'arrangement' };
+  const cs = lib.commitState(chat);
+  const get = (id) => cs.reg.find((c) => c.id === id);
+  assert(!get('the-flowers').stale, 'part of the wedding still ahead');
+  assert(get('the-boat').stale, 'unrelated and quiet: probably over');
+  assert(!get('cloud-signal').stale, 'an arrangement is never over');
+  const e = lib.buildEntries(chat).find((x) => x.name === 'Cora');
+  assert(/Standing agreement: say "grey sky"/.test(e.pinText || e.text) && !/Goal \[cloud-signal\]/.test(e.pinText || ''));
+});
+
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');
 process.exit(failed ? 1 : 0);

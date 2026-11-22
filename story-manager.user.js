@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.45.5
+// @version      3.46.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -6563,7 +6563,8 @@
         ? 'In play right now (sent with every message): ' + inPlay.join(', ') + '. Others are sent when your message mentions them.'
         : 'Characters, places and items get their own entries as the story goes on. Each is sent when it is in the current scene or your message mentions it.'),
       editors.map((ed) => ed.node),
-      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: addEntry }, '+ Add entry'),
+      el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: addEntry }, '+ Add entry')),
+      el('details', { class: 'entrybox' }, el('summary', {}, '🛠 More tools (rarely needed — Story Manager does these by itself)'), el('div', { class: 'btns' },
         factsMode(chat) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           if (!confirm('Have the memory keeper write the list of relationships (who is dating, married, … and how things stand) for the pinned message? One request. (A rebuild does this at its end.)')) return;
@@ -6609,7 +6610,7 @@
           if (!which) return;
           undoSortings(chat, which === 'all' ? { all: true } : which === 'last' ? { batch: last } : { key: which });
           await saveChat(chat); renderPanel(true); toast('Undone. The original facts count again.');
-        } }, 'Undo sorting…') : null),
+        } }, 'Undo sorting…') : null)),
       chat.ignored.length ? el('div', { class: 'hint' }, 'Deleted, not created again: ' + chat.ignored.join(', ') + ' ',
         el('button', { class: 'btn', onclick: async () => { chat.ignored = []; await saveChat(chat); renderPanel(true); } }, 'Allow again')) : null),
       el('div', { class: 'btns' },
@@ -6617,6 +6618,9 @@
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(false) }, 'Update now'),
         el('button', { class: 'btn', disabled: !chat.history.length, onclick: undo }, 'Undo last change')),
       el('div', { class: 'btns' },
+        el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat'),
+        el('button', { class: 'btn', disabled: isBusy, onclick: continueNew }, 'Continue in a new chat')),
+      el('details', { class: 'entrybox' }, el('summary', {}, '🛠 Repair tools (rarely needed)'), el('div', { class: 'btns' },
         el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           const left = chat.log.filter((e) => !e.inherited && !e.verified).length;
@@ -6660,9 +6664,7 @@
           if (!confirm(n + ' reply summaries have no facts list (the memory keeper skipped it, or an older version made them). Ask the memory keeper for their facts again? This takes about ' + Math.ceil(n / Math.max(1, detail().perChunk)) + ' requests.')) return;
           await runMissingFacts(chat.id);
         } }, 'Get missing facts lists') : null,
-        el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: redoFromSummaries }, 'Redo story & characters from summaries'),
-        el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(true) }, 'Rebuild from whole chat'),
-        el('button', { class: 'btn', disabled: isBusy, onclick: continueNew }, 'Continue in a new chat')),
+        el('button', { class: 'btn', disabled: isBusy || !chat.log.length, onclick: redoFromSummaries }, 'Redo story & characters from summaries'))),
       activityView(chat),
       diagnosticsBox());
   }
@@ -7192,7 +7194,8 @@
       el('div', { class: 'btns' },
         el('button', { class: 'btn', onclick: show }, 'Diagnostics'),
         el('button', { class: 'btn', onclick: copy }, 'Copy diagnostics'),
-        el('button', { class: 'btn', onclick: exportForTesting }, 'Export for testing'),
+        el('button', { class: 'btn', onclick: exportForTesting }, 'Export for testing')),
+      el('details', { class: 'entrybox' }, el('summary', {}, '🧪 Keeper test'), el('div', { class: 'btns' },
         el('button', { class: 'btn', onclick: async () => {
           const chat = currentId && chats[currentId];
           if (!chat || !factsMode(chat)) { toast('Open a story that uses the facts format first.'); return; }
@@ -7207,7 +7210,7 @@
           if (!r) { toast('No keeper test yet for this story.'); return; }
           if (!confirm('The file holds the 30 test replies themselves (story text) and both keepers\' answers, so the results can be checked by hand. Save it?')) return;
           downloadText('story-manager-keeper-test-' + chat.id.slice(0, 8) + '.json', JSON.stringify(r, null, 1));
-        } }, 'Download keeper test')),
+        } }, 'Download keeper test'))),
       box);
   }
 

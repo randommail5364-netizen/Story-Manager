@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.45.2
+// @version      3.45.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1351,17 +1351,18 @@
     return null;
   }
 
+  // Memory-keeper requests may take long on a local model (Ollama on a home PC): up to 15 minutes.
   function postJSON(url, headers, body) {
-    return requestJSON('POST', url, headers, body);
+    return requestJSON('POST', url, headers, body, 900000);
   }
 
-  async function requestJSON(method, url, headers, body) {
+  async function requestJSON(method, url, headers, body, timeout = 180000) {
     const gm = gmRequest();
     let res;
     if (gm) {
       res = await new Promise((resolve, reject) => {
         gm({
-          method, url, headers, data: body === undefined ? undefined : JSON.stringify(body), timeout: 180000,
+          method, url, headers, data: body === undefined ? undefined : JSON.stringify(body), timeout,
           onload: (r) => resolve({ status: r.status, text: r.responseText }),
           onerror: () => reject(new Error('Network error contacting ' + new URL(url).hostname)),
           ontimeout: () => reject(new Error('Timed out contacting ' + new URL(url).hostname)),

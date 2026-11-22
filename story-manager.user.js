@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.45.1
+// @version      3.45.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2084,8 +2084,15 @@
     // Only user messages (e.g. the newest one, still waiting for its reply): nothing to summarise.
     if (!replies.length) return [];
     const names = chat.entries.map((e) => e.name + (e.aliases && e.aliases.length ? ' (' + e.aliases.join(', ') + ')' : ''));
-    const scene = sectionOf(chat.memory, 'Current Scene').trim();
-    const openCommits = factsMode(chat) ? (chat.commitReg || []).filter((c) => c.state !== 'done' && c.state !== 'cancelled').slice(-80)
+    // The current scene only when it is really where the story stood just before these replies
+    // (new replies, none summarised yet); never for older replies being redone.
+    const logIds = new Set(chat.log.map((e) => e.id));
+    const fresh = replies.every((m) => !logIds.has(m.id));
+    const scene = fresh ? sectionOf(chat.memory, 'Current Scene').trim() : '';
+    // Only the open goals of people these messages mention, at most 15 (a long list made the
+    // keeper extract much less — Keeper test).
+    const batchText = msgs.map((m) => m.text || '').join('\n').toLowerCase();
+    const openCommits = factsMode(chat) ? (chat.commitReg || []).filter((c) => c.state !== 'done' && c.state !== 'cancelled' && batchText.includes(String(c.who || c.owner).toLowerCase())).slice(-15)
       .map((c) => (c.who || c.owner) + ': [' + c.id + '] ' + c.text) : [];
     const ask = async (list) => {
       const user = (names.length ? 'KNOWN NAMES: ' + names.join('; ') + '\n\n' : '') +

@@ -303,5 +303,32 @@ test('a secret everyone knows becomes one short line; one told to a group stays 
   assert(/\[the letter\][\s\S]*Knows: [^\n]*The council/.test(t), t);
 });
 
+test('a check-up closing a goal must quote its reply, and the quote must involve the people the goal is about', () => {
+  const chat = story([
+    ['- Ilse | promise | [tell about Bram] she will tell Ren if she talks to Bram'],
+    [], [],
+  ]);
+  chat.log[1].text = 'Ilse confessed in the group chat that she beat Ada at cards and asked Ren not to tell.';
+  chat.log[2].text = 'Ilse told Ren she had spoken to Bram at the market and that it meant nothing.';
+  lib.buildEntries(chat);
+  const P = (line) => lib.closureProblem(chat, lib.parseRecords(line)[0], line);
+  assert(/no quote/.test(P('- Ilse | done | [tell about Bram] she told him (reply 3)')));
+  assert(/not in that reply/.test(P('- Ilse | done | [tell about Bram] she told him (reply 3) quote: "she confessed everything to Ren at dawn"')));
+  assert(/Bram/.test(P('- Ilse | done | [tell about Bram] she confessed (reply 2) quote: "beat Ada at cards and asked Ren not to tell"')), 'wrong evidence: no Bram');
+  assert.strictEqual(P('- Ilse | done | [tell about Bram] she told Ren (reply 3) quote: "told Ren she had spoken to Bram at the market"'), '');
+});
+
+test('profiles: the same trait in other words counts once in the pinned version (newest wording); the full entry keeps all', () => {
+  const chat = story([
+    ['- Ren | personality | fiercely loyal to his friends, even when it costs him'],
+    ['- Ren | personality | blunt and impatient'],
+    ['- Ren | personality | loyal to his friends above everything, whatever it costs him'],
+  ]);
+  const e = entry(lib.buildEntries(chat), 'Ren');
+  assert.strictEqual((pin(e).match(/loyal/g) || []).length, 1, pin(e));
+  assert(/above everything/.test(pin(e)) && /blunt/.test(pin(e)));
+  assert.strictEqual((e.text.match(/loyal/g) || []).length, 2);
+});
+
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');
 process.exit(failed ? 1 : 0);

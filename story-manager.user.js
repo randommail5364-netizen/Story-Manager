@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.47.3
+// @version      3.48.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2982,6 +2982,19 @@
   // Two facts that say the same thing in other words ("Obsidian cuff bracelet
   // engraved 'Mine'" / "Obsidian bracelet engraved 'Mine' worn prominently"):
   // the longer one is kept.
+  // Profile consolidation for the pinned version: facts that say the same thing in other words
+  // (half or more of the shorter one's key words shared) count once — the NEWEST wording, at the
+  // position of the newest. Nothing is removed from the full entry.
+  function consolidate(list) {
+    const out = [];
+    for (const r of list) {
+      const w = sigWords(r.v);
+      const i = out.findIndex((x) => { const o = sigWords(x.v); if (!w.size || !o.size) return normValue(x.v) === normValue(r.v); let n = 0; for (const a of w) if (o.has(a)) n++; return n >= 2 && n / Math.min(w.size, o.size) >= 0.5; });
+      if (i >= 0) out.splice(i, 1);
+      out.push(r);
+    }
+    return out;
+  }
   function alike(list, share) {
     const kept = [];
     for (const r of list) {
@@ -3073,6 +3086,7 @@
     const weighty = new Set(allRecords(chat).filter((r) => /^(promise|secret|knows|notknows)$/.test(r.k)).map((r) => r.s.toLowerCase() + '#' + r.at));
     const built = people.filter((p) => !p.aliases.some((a) => skip.has(a.toLowerCase()))).map((p) => {
       const by = (k) => p.records.filter((r) => r.k === k);
+      const mineName = (n) => [p.name].concat(p.aliases, p.records.map((r) => r.s.trim())).some((x) => x.toLowerCase() === String(n).toLowerCase());
       const uniq = (list) => {
         const kept = [];
         for (const r of list) {
@@ -3124,10 +3138,13 @@
       section('Appearance', alike(uniq(by('appearance')), 0.75).map((r) => '- ' + r.v));
       // Minor characters keep who they are (personality, likes, boundaries) in the pinned message.
       const persona = uniq(by('personality')).map((r) => '- ' + r.v);
-      section('Personality & Voice', persona, persona, persona.slice(-6));
+      // Pinned: the same trait said again in other words counts once (the full entry keeps every wording).
+      const personaPin = consolidate(by('personality')).map((r) => '- ' + r.v);
+      section('Personality & Voice', persona, personaPin, personaPin.slice(-6));
       section('Abilities & Skills', uniq(by('ability')).map((r) => '- ' + r.v));
       const likes = [].concat(uniq(by('likes')).map((r) => '- Likes: ' + r.v), uniq(by('dislikes')).map((r) => '- Dislikes: ' + r.v), uniq(by('boundary')).map((r) => '- Boundary: ' + r.v));
-      section('Likes, Dislikes & Boundaries', likes, likes, likes.filter((x) => /^- Boundary/.test(x)).concat(likes.filter((x) => !/^- Boundary/.test(x)).slice(-4)));
+      const likesPin = [].concat(consolidate(by('likes')).map((r) => '- Likes: ' + r.v), consolidate(by('dislikes')).map((r) => '- Dislikes: ' + r.v), consolidate(by('boundary')).map((r) => '- Boundary: ' + r.v));
+      section('Likes, Dislikes & Boundaries', likes, likesPin, likesPin.filter((x) => /^- Boundary/.test(x)).concat(likesPin.filter((x) => !/^- Boundary/.test(x)).slice(-4)));
       section('Backstory', alike(uniq(by('backstory')), 0.6).map((r) => '- ' + r.v));
       // Relationships: one line per person, with where things stand now. The
       // pinned message keeps where things stand and the 3 newest lasting facts.
@@ -3164,6 +3181,7 @@
       // message; the full entry keeps it, marked done.
       // Their goals and promises, once each, with where each stands (see commitState).
       const mine = new Set([p.name].concat(p.aliases, p.records.map((r) => r.s.trim())).map((n) => n.toLowerCase()));
+      void mine;
       const own = commits.reg.filter((c) => mine.has(c.owner)).sort((a, b) => (a.at || 0) - (b.at || 0));
       const gpWord = (c) => (c.kind === 'promise' ? 'Promise' : c.kind === 'scheduled' ? 'Upcoming' : 'Goal');
       const atTxt = (n) => (n && n !== Infinity ? ', reply ' + n : '');
@@ -3197,7 +3215,10 @@
       // What they found out (not a secret) and what they believe (may be wrong).
       const learned = alike(uniq(by('learned')), 0.6).map((r) => '- Learned: ' + r.v);
       const believes = alike(uniq(by('believes')), 0.6).map((r) => '- Believes (may not be true): ' + r.v);
-      section('Knowledge & Beliefs', learned.concat(believes), learned.slice(-3).concat(believes), believes);
+      // A belief about a secret they have since come to know is out of date (full entry keeps it).
+      const knownTopics = new Set((chat.__secrets || []).filter((x) => x.knows.some((k) => mineName(k.who))).map((x) => secretKeyOf(x.name)));
+      const believesNow = consolidate(by('believes').filter((r) => { const m = String(r.v).match(/^\s*\[([^\]]+)\]/); return !(m && knownTopics.has(secretKeyOf(m[1]))); })).map((r) => '- Believes (may not be true): ' + r.v);
+      section('Knowledge & Beliefs', learned.concat(believes), consolidate(by('learned')).slice(-3).map((r) => '- Learned: ' + r.v).concat(believesNow), believesNow);
       // Facts the keeper filed under a wrong or unknown kind: kept, not shown in the pinned message.
       const unsorted = p.records.filter((r) => unsortedIds.has(r.id));
       section('Unsorted (kind unclear; kept for sorting later)', unsorted.map((r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + (r.label || r.k) + ': ' + r.v), []);
@@ -4046,6 +4067,24 @@
   // facts; nothing is deleted (the full entries keep the history).
   const RECONCILE_EVERY = 10;
   const GOALS_PER_CHECK = 25;
+  // A check-up "done" or "cancelled" for a goal must show its evidence: a quote that really is in
+  // the summary of the reply it cites, and that names the other people the goal is about (a
+  // completion involves them). Returns why it is refused, or ''.
+  function closureProblem(chat, r, line) {
+    const nm = commitName(r.v);
+    const c = nm && (chat.commitReg || []).find((x) => secretKeyOf(x.id) === secretKeyOf(nm) || (x.names || []).includes(secretKeyOf(nm)));
+    if (!c) return '';
+    const q = (String(line).match(/quote:\s*["“]([^"”]{8,})["”]/i) || [])[1];
+    if (!q) return 'no quote from the reply as evidence';
+    const n = evidenceReply(line);
+    const e = chat.log[n - 1];
+    if (!e || !normValue(e.text).includes(normValue(q))) return 'the quote is not in that reply';
+    const owner = String(c.who || c.owner || '').toLowerCase();
+    const said = (q + ' ' + r.v).toLowerCase();
+    const others = (String(c.text).match(/\b[A-Z][\p{L}'’-]{2,}\b/gu) || []).map((w) => w.replace(/['’]s$/, '')).filter((w, i, a) => a.indexOf(w) === i && w.toLowerCase() !== owner && !/^(I|The|A|An|He|She|They|His|Her|Their|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/.test(w));
+    const missing = others.find((w) => !said.includes(w.toLowerCase()));
+    return missing ? 'the evidence does not mention ' + missing + ', whom the goal is about' : '';
+  }
   // The reply a check-up line cites: "(reply 12)", or the newest of "(reply 51, 265)" / "(replies 3 and 9)".
   const evidenceReply = (line) => { const m = String(line).match(/\(repl(?:y|ies)\s+([\d\s,and&–-]+)\)/i); if (!m) return NaN; const ns = (m[1].match(/\d+/g) || []).map(Number); return ns.length ? Math.max(...ns) : NaN; };
   async function reconcileFacts(chat) {
@@ -4073,7 +4112,7 @@
       'STILL LISTED AS OPEN:\n<<<\n' + open.join('\n').slice(-30000) + '\n>>>\n\nSECRETS AND WHO KNOWS THEM:\n<<<\n' + secrets.join('\n').slice(-15000) + '\n>>>\n\n' +
       'JOB: CHECK-UP. Using only what the texts above show, list ONLY real changes, one per line, each ending with the reply that shows it as "(reply N)":\n' +
       '- "- Person | progress | [its short name] what step was taken (reply N)" when it was scheduled, confirmed, agreed, promised again or partly done — these are never "done".\n' +
-      '- "- Person | done | [its short name as listed] what happened (reply N)" only when the thing itself happened or was kept, dropped or replaced. Not when planning for it moved on, it is underway or still ahead (a party in 20 days is not done because its plan is locked), and never because it is not mentioned. Also, for a plan set for a day or time the story has clearly passed (a lunch "tomorrow at 1 PM" when the story is days later) that never happened: "- Person | postponed | [its short name] the day passed and it never happened (reply N)" with the reply that shows the later day; "- Person | cancelled | [its short name] why (reply N)" only when the story shows it was dropped.\n' +
+      '- "- Person | done | [its short name as listed] what happened (reply N) quote: \"words copied exactly from that reply\'s summary\"" only when the thing itself happened or was kept, dropped or replaced. Not when planning for it moved on, it is underway or still ahead (a party in 20 days is not done because its plan is locked), and never because it is not mentioned. Also, for a plan set for a day or time the story has clearly passed (a lunch "tomorrow at 1 PM" when the story is days later) that never happened: "- Person | postponed | [its short name] the day passed and it never happened (reply N)" with the reply that shows the later day; "- Person | cancelled | [its short name] why (reply N)" only when the story shows it was dropped.\n' +
       '- "- Person | location | their new home or base (reply N)" only when they moved house; never where they are at the moment (that is the scene). "- Person | role | new role (reply N)" only when their job or role changed.\n' +
       '- "- Person | knows | [exact listed secret name] how they learned it (reply N)" only for a person NOT already listed as knowing it, who clearly learned it (told, confessed to, overheard, said in the group chat; "Everyone" when everyone knows).\n' +
       '- "- [secret name] = [other secret name]" when two listed secrets are the same secret (use the listed names exactly).\n' +
@@ -4122,8 +4161,8 @@
       });
       const user3 = 'OPEN GOALS, PROMISES AND UPCOMING EVENTS:\n<<<\n' + blocks.join('\n') + '\n>>>\n\nLATER REPLIES (summaries):\n<<<\n' + ev + '\n>>>\n\n' +
         'JOB: GOALS CHECK. For each listed one, using only the replies above, write one line if something changed:\n' +
-        '- "- Person | done | [exact id] what happened (reply N)" only when the reply shows it actually happened or was kept.\n' +
-        '- "- Person | cancelled | [exact id] why (reply N)" when it was dropped or broken; "- Person | postponed | [exact id] to when (reply N)"; "- Person | progress | [exact id] the step (reply N)".\n' +
+        '- "- Person | done | [exact id] what happened (reply N) quote: \"words copied exactly from that reply\"" only when the reply shows it actually happened or was kept.\n' +
+        '- "- Person | cancelled | [exact id] why (reply N) quote: \"words copied exactly from that reply\"" when it was dropped or broken; "- Person | postponed | [exact id] to when (reply N)"; "- Person | progress | [exact id] the step (reply N)".\n' +
         'Talking about it, planning it, agreeing to it or being reminded of it is not done. Nothing for ones that are still open. Never guess. Output only those lines, or "none".';
       out3 = cleanOutput(await callLLM(updateSystem(), user3));
       chat.commitChecked = Object.assign({}, checked);
@@ -4168,6 +4207,7 @@
         else if (r.k === 'knows' && !sec) skipped.push([line, 'no such secret']);
         else if (r.k === 'knows' && (sec.everyone || sec.knows.some((k) => k.who.toLowerCase() === r.s.toLowerCase()))) skipped.push([line, 'already listed as knowing']);
         else if ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v)) skipped.push([line, 'where they are now, not a home or role']);
+        else if (/^(done|cancelled)$/.test(r.k) && closureProblem(chat, r, line)) skipped.push([line, closureProblem(chat, r, line)]);
         else if (/^(done|cancelled|postponed|progress)$/.test(r.k) && (() => { const nm = commitName(r.v); const c = nm && (chat.commitReg || []).find((x) => secretKeyOf(x.id) === secretKeyOf(nm) || (x.names || []).includes(secretKeyOf(nm))); const n = evidenceReply(line); return c && c.at && n <= c.at; })()) skipped.push([line, 'the evidence is from before the goal existed']);
         else if (have.has(key)) skipped.push([line, 'already applied before']);
         else { have.add(key); got.push(Object.assign(r, { at, run: runId })); applied.push(line); }

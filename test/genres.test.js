@@ -309,13 +309,13 @@ test('a check-up closing a goal must quote its reply, and the quote must involve
     [], [],
   ]);
   chat.log[1].text = 'Ilse confessed in the group chat that she beat Ada at cards and asked Ren not to tell.';
-  chat.log[2].text = 'Ilse told Ren she had spoken to Bram at the market and that it meant nothing.';
+  chat.log[2].text = 'Ilse told Ren she had talked to Bram at the market and that it meant nothing.';
   lib.buildEntries(chat);
   const P = (line) => lib.closureProblem(chat, lib.parseRecords(line)[0], line);
   assert(/no quote/.test(P('- Ilse | done | [tell about Bram] she told him (reply 3)')));
   assert(/not in that reply/.test(P('- Ilse | done | [tell about Bram] she told him (reply 3) quote: "she confessed everything to Ren at dawn"')));
   assert(/Bram/.test(P('- Ilse | done | [tell about Bram] she confessed (reply 2) quote: "beat Ada at cards and asked Ren not to tell"')), 'wrong evidence: no Bram');
-  assert.strictEqual(P('- Ilse | done | [tell about Bram] she told Ren (reply 3) quote: "told Ren she had spoken to Bram at the market"'), '');
+  assert.strictEqual(P('- Ilse | done | [tell about Bram] she told Ren (reply 3) quote: "told Ren she had talked to Bram at the market"'), '');
 });
 
 test('profiles: the same trait in other words counts once in the pinned version (newest wording); the full entry keeps all', () => {

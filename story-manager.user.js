@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.50.1
+// @version      3.50.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4127,7 +4127,13 @@
     const said = (q + ' ' + commitText(r.v)).toLowerCase(); // (not the [name], which may mention them)
     const others = (String(c.text).match(/\b[A-Z][\p{L}'’-]{2,}\b/gu) || []).map((w) => w.replace(/['’]s$/, '')).filter((w, i, a) => a.indexOf(w) === i && w.toLowerCase() !== owner && !/^(I|The|A|An|He|She|They|His|Her|Their|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/.test(w));
     const missing = others.find((w) => !said.includes(w.toLowerCase()));
-    return missing ? 'the evidence does not mention ' + missing + ', whom the goal is about' : '';
+    if (missing) return 'the evidence does not mention ' + missing + ', whom the goal is about';
+    // …and it must be about the same thing: at least one of the goal's own words (not a name).
+    const stem = (w) => w.slice(0, 4);
+    const goalWords = new Set([...sigWords(c.text)].filter((w) => !others.some((o) => o.toLowerCase() === w) && w !== owner).map(stem));
+    const evWords = new Set([...sigWords(said)].map(stem));
+    if (goalWords.size && ![...goalWords].some((w) => evWords.has(w))) return 'the evidence is not about this goal';
+    return '';
   }
   // The reply a check-up line cites: "(reply 12)", or the newest of "(reply 51, 265)" / "(replies 3 and 9)".
   const evidenceReply = (line) => { const m = String(line).match(/\(repl(?:y|ies)\s+([\d\s,and&–-]+)\)/i); if (!m) return NaN; const ns = (m[1].match(/\d+/g) || []).map(Number); return ns.length ? Math.max(...ns) : NaN; };

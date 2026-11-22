@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.45.0
+// @version      3.45.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4228,7 +4228,7 @@
   // the names in the story's own summary of each reply), serious errors.
   const KEEPER_TEST_EACH = 10;
   const keeperTestCache = {};
-  async function keeperTest(chat, job) {
+  async function keeperTest(chat, job, mode = 'rules') {
     const all = await fetchMessages(chat.id, { mode: 'full' });
     const replies = all.filter((m) => m.role === 'assistant' && m.id !== chat.greetingId && chat.log.some((e) => e.id === m.id));
     if (replies.length < 6) throw new Error('The story needs more replies for a keeper test.');
@@ -4239,17 +4239,25 @@
     const names = chat.entries.map((e) => e.name + (e.aliases && e.aliases.length ? ' (' + e.aliases.join(', ') + ')' : ''));
     const batches = [];
     for (const [part, list] of Object.entries(parts)) for (let i = 0; i < list.length; i += 3) batches.push({ part, replies: list.slice(i, i + 3) });
-    const result = { at: Date.now(), story: chat.id.slice(0, 8), replies: picks.length, variants: {} };
+    const result = { at: Date.now(), story: chat.id.slice(0, 8), replies: picks.length, variants: {}, mode };
+    // The context normal processing sends with each request: the current scene and the open goals.
+    const scene = sectionOf(chat.memory, 'Current Scene').trim();
+    const openCommits = (chat.commitReg || []).filter((c) => c.state !== 'done' && c.state !== 'cancelled').slice(-80).map((c) => (c.who || c.owner) + ': [' + c.id + '] ' + c.text);
+    const context = (scene ? 'WHERE THE STORY STOOD BEFORE THESE MESSAGES:\n<<<\n' + scene + '\n>>>\n\n' : '') +
+      (openCommits.length ? 'OPEN GOALS AND PROMISES (use these [short names] for their done / progress / postponed / cancelled):\n' + openCommits.join('\n') + '\n\n' : '');
+    const variants = mode === 'context'
+      ? [['A', RECORD_RULES, ''], ['A+context', RECORD_RULES, context]]
+      : [['A', RECORD_RULES, ''], ['B', RECORD_RULES_COMPACT, '']];
     const keys = new Set();
     for (const r of allRecords(chat)) if (r.k === 'secret') { const m = String(r.v).match(/^\s*\[([^\]]+)\]/); if (m) keys.add(secretKeyOf(m[1])); }
     const commits = commitState(chat);
-    for (const [variant, rules] of [['A', RECORD_RULES], ['B', RECORD_RULES_COMPACT]]) {
+    for (const [variant, rules, extra] of variants) {
       const v = { facts: 0, byKind: {}, byStatus: {}, perPart: {}, outputChars: 0, answers: [], coverage: { names: 0, found: 0 } };
       for (let bi = 0; bi < batches.length; bi++) {
         checkStop();
         const b = batches[bi];
         const list = withPrompts(all, b.replies);
-        const user = (names.length ? 'KNOWN NAMES: ' + names.join('; ') + '\n\n' : '') +
+        const user = (names.length ? 'KNOWN NAMES: ' + names.join('; ') + '\n\n' : '') + extra +
           'MESSAGES (oldest first):\n<<<\n' + formatMessages(list, chat.title) + '\n>>>\n\nJOB: SUMMARISE. Write one summary and its FACTS records for each [R…] reply now.';
         const out = cleanOutput(await job('test', 'Keeper test ' + variant + ', ' + (bi + 1) + ' of ' + batches.length, () => callLLM(summarySystem(true, rules), user)));
         v.outputChars += out.length;
@@ -4295,14 +4303,15 @@
       return '  ' + k + ': ' + v.facts + ' facts (' + (v.facts / r.replies).toFixed(1) + ' per reply), right kind ' + Math.round(100 * ok / Math.max(1, v.facts)) + '%, serious errors ' + serious + ', names covered ' + v.coverage.found + '/' + v.coverage.names +
         ', ' + Math.round(v.outputChars / Math.max(1, v.facts)) + ' answer characters per fact\n     ' + parts + '\n     kinds: ' + Object.entries(v.byKind).sort((a, b) => b[1] - a[1]).map(([k2, n]) => k2 + ' ' + n).join(', ');
     };
-    return 'Keeper test (' + new Date(r.at).toLocaleString() + ', ' + r.replies + ' replies, A = current rules, B = compact rules):\n' + line('A') + '\n' + line('B') + '\n';
+    const names = Object.keys(r.variants);
+    return 'Keeper test (' + new Date(r.at).toLocaleString() + ', ' + r.replies + ' replies, ' + (r.mode === 'context' ? 'A = current rules without context, A+context = with the scene and open goals normal processing sends' : 'A = current rules, B = compact rules') + '):\n' + names.map(line).join('\n') + '\n';
   }
-  async function runKeeperTest(id) {
+  async function runKeeperTest(id, mode) {
     const chat = await getChat(id, true);
     return withBusy(id, 1, async () => {
       const job = async (kind, label, fn) => { setStep(id, label + '…'); const t = Date.now(); try { return await fn(); } catch (e) { if (!e.stopped) logJob(chat, { kind, label, ok: false, ms: Date.now() - t, error: String(e.message || e).slice(0, 200) }); throw e; } };
       try {
-        const r = await keeperTest(chat, job);
+        const r = await keeperTest(chat, job, mode);
         logJob(chat, { kind: 'test', label: 'Keeper test (A/B) on ' + r.replies + ' replies', ok: true, ms: Date.now() - r.at });
         toast('Keeper test done. See Diagnostics, and use "Download keeper test" to send it.');
         return 'done';
@@ -7146,8 +7155,9 @@
           const chat = currentId && chats[currentId];
           if (!chat || !factsMode(chat)) { toast('Open a story that uses the facts format first.'); return; }
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
-          if (!confirm('Keeper test: summarise 30 replies (10 early, 10 middle, 10 late) twice — with the current rules and with compact rules — and compare. About 20 requests. Nothing in the story changes.')) return;
-          await runKeeperTest(chat.id);
+          const which = prompt('Keeper test: summarise 30 replies (10 early, 10 middle, 10 late) twice and compare. About 20 requests; nothing in the story changes.\n\nType 1 to compare the current rules with compact rules, or 2 to compare the current rules with and without the context normal processing sends (scene and open goals).', '2');
+          if (which !== '1' && which !== '2') return;
+          await runKeeperTest(chat.id, which === '2' ? 'context' : 'rules');
         } }, 'Keeper test (A/B)'),
         el('button', { class: 'btn', onclick: async () => {
           const chat = currentId && chats[currentId];

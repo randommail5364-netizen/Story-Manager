@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.50.0
+// @version      3.50.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4184,6 +4184,7 @@
         'Only what the texts show; never guess. Write "none" if nothing is missing. Output only those lines.';
       out2 = cleanOutput(await callLLM(updateSystem(), user2));
     }
+    let levelsAnswer = '';
     // Levels for goals written without one (older summaries): one request, up to 100 at a time.
     // (Goals labelled before "arrangement" existed are asked about once more.)
     const levelless = commitState(chat).reg.filter((c) => !c.levelFromRecord && (!(chat.commitTier || {})[c.id] || !chat.commitTierV2) && c.state !== 'done' && c.state !== 'cancelled').slice(0, 100);
@@ -4191,6 +4192,7 @@
       const userL = 'GOALS, PROMISES AND UPCOMING EVENTS:\n' + levelless.map((c) => '[' + c.id + '] ' + (c.who || c.owner) + ': ' + c.text).join('\n') + '\n\n' +
         'JOB: LEVELS. For each, how much it matters for the story: major (matters for the whole story: a life goal, a quest, a vow, a mystery), minor (matters for a while: a date, a plan for the coming days), routine (over within a scene: fetch a drink, go to class now), or arrangement (not something to do but a standing agreement, rule or signal between people, e.g. a code word, a house rule). One line each: "[id] major" / "[id] minor" / "[id] routine" / "[id] arrangement". When unsure, minor.';
       const outL = cleanOutput(await callLLM(updateSystem(), userL));
+      levelsAnswer = outL;
       const tiers = Object.assign({}, chat.commitTier);
       for (const l of outL.split('\n')) { const m = l.match(/\[([^\]]+)\]\s*[:\-–]?\s*(major|minor|routine|arrangement)\b/i); if (m && levelless.some((c) => c.id === m[1].trim())) tiers[m[1].trim()] = m[2].toLowerCase(); }
       chat.commitTier = tiers;
@@ -4270,7 +4272,7 @@
         else { have.add(key); got.push(Object.assign(r, { at, run: runId })); applied.push(line); }
       }
     }
-    chat.reconReport = { at: Date.now(), open: open.length, secrets: secrets.length, answer: out.slice(0, 6000), applied, skipped };
+    chat.reconReport = { at: Date.now(), open: open.length, secrets: secrets.length, answer: out.slice(0, 6000), applied, skipped, levels: levelsAnswer.slice(0, 4000) };
     chat.reconRecords = (chat.reconRecords || []).concat(got);
     chat.lastReconRun = runId;
     chat.secretAlias = alias;
@@ -7231,7 +7233,8 @@
       // The last check-up in full (story words: what the keeper said and what was done with it).
       ...(chat && chat.reconReport ? ['Last check-up, applied:', ...(chat.reconReport.applied.length ? chat.reconReport.applied.map((l) => '  ✓ ' + l) : ['  (nothing)']),
         'Last check-up, not used:', ...(chat.reconReport.skipped.length ? chat.reconReport.skipped.map(([l, why]) => '  ✗ ' + l + '  ← ' + why) : ['  (nothing)']),
-        'Last check-up, the keeper\'s whole answer:', chat.reconReport.answer || '(empty)', ''] : []),
+        'Last check-up, the keeper\'s whole answer:', chat.reconReport.answer || '(empty)', '',
+        'Last check-up, goal levels set:', chat.reconReport.levels || '(none asked — every goal already has a level)', ''] : []),
       'Send requests (newest first; field names and short values, no message text):',
       ...(sendShapes.length ? sendShapes.map((x) => Math.round((Date.now() - x.at) / 1000) + 's ago' + (x.injected ? ' [memory attached]' : '') + ': ' + JSON.stringify(x.shape)) : ['(none yet)']),
       '',

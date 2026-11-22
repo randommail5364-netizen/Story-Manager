@@ -21,9 +21,9 @@ function grab(name) {
 }
 const consts = '  const versionsSeen = {};\n' + src.match(/ {2}const MEM_BLOCK_RE = .*\n/)[0] + src.match(/ {2}const SECTION_ORDER = .*\n/)[0] + src.match(/ {2}const KIND_ORDER = .*\n/)[0] + src.match(/ {2}const REASONING_RE = .*\n/)[0] + src.match(/ {2}const REASONING_WORDS_RE = .*\n/)[0] + src.match(/ {2}const ASIDE_RE = .*\n/)[0] + src.match(/ {2}const GUESS_RE = .*\n/)[0] + src.match(/ {2}const STATE_RE = .*\n/)[0] + src.match(/ {2}const TITLE_RE = .*\n/)[0] + src.match(/ {2}const JUNK_RE = .*\n/)[0] + src.match(/ {2}const unquoted = .*\n/)[0] + src.match(/ {2}const isJunk = .*\n/)[0] + src.match(/ {2}const PLACE_WORDS = .*\n/)[0] + src.match(/ {2}const ITEM_WORDS = .*\n/)[0] + src.match(/ {2}const GROUP_WORDS = .*\n/)[0] + src.match(/ {2}const PERSON_RE = .*\n/)[0] + src.match(/ {2}const SUMMARY_JUNK_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_NAME_RE = .*\n/)[0] + src.match(/ {2}const TEMPLATE_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const EMPTY_FACT_RE = .*\n/)[0] + src.match(/ {2}const GENERIC_ALIAS_RE = .*\n/)[0] + src.match(/ {2}const isGeneric = .*\n/)[0] + '  const mentions = (t, k) => String(t).toLowerCase().includes(String(k).toLowerCase());\n  const sectionOf = (t, title) => { const m = String(t).match(new RegExp(\'## \' + title + \'\\\\n([\\\\s\\\\S]*?)(?=\\\\n## |$)\')); return m ? m[1] : \'\'; };\n';
 const block = (name) => { const a = src.indexOf('  const ' + name + ' = ['); return src.slice(a, src.indexOf('\n  ];\n', a) + 6); };
-const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const MINOR_PINNED = .*\n/)[0] + src.match(/ {2}const ROUTINE_PINNED = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STORY_MAJOR = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const NOT_DONE_RE = .*\n/)[0] + src.match(/ {2}const NO_NEWS_RE = .*\n/)[0] + src.match(/ {2}const NOT_HOME_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0] + src.match(/ {2}const SCENE_STATE_RE = .*\n/)[0] + src.match(/ {2}const secretKeyOf = .*\n/)[0] + src.match(/ {2}const INTENT_RE = .*\n/)[0] + src.match(/ {2}const LIFE_KINDS = .*\n/)[0] + src.match(/ {2}const SETUP_RE = .*\n/)[0] + src.match(/ {2}const SETUP_GOAL_RE = .*\n/)[0] + src.match(/ {2}const FINISH_GOAL_RE = .*\n/)[0] + src.match(/ {2}const FINISHED_RE = .*\n/)[0] + src.match(/ {2}const commitName = .*\n/)[0] + src.match(/ {2}const commitText = .*\n/)[0];
-const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'doneMeans', 'commitState', 'factStatus', 'factQuality', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel', 'cleanChapterText', 'storyMoments', 'tidyBullets']
-  .map(grab).join('\n') + '\nreturn { cleanChapterText, latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText, storyMoments, tidyBullets, sigWords, factQuality, commitState };')();
+const factsConsts = block('RECORD_KINDS') + src.match(/ {2}const SINGLE_KINDS = .*\n/)[0] + src.match(/ {2}const MOMENT_LOOK_RE = .*\n/)[0] + src.match(/ {2}const NOT_ROLE_RE = .*\n/)[0] + src.match(/ {2}const PLACEHOLDER_SUBJECT_RE = .*\n/)[0] + src.match(/ {2}const normValue = .*\n/)[0] + src.match(/ {2}const MOMENTS_RECENT = .*\n/)[0] + src.match(/ {2}const RELATION_FACTS = .*\n/)[0] + src.match(/ {2}const MINOR_PINNED = .*\n/)[0] + src.match(/ {2}const ROUTINE_PINNED = .*\n/)[0] + src.match(/ {2}const POSSESSIONS_PINNED = .*\n/)[0] + src.match(/ {2}const STORY_MAJOR = .*\n/)[0] + src.match(/ {2}const STOP_WORDS = .*\n/)[0] + src.match(/ {2}const BIG_MOMENT_RE = .*\n/)[0] + src.match(/ {2}const NOT_DONE_RE = .*\n/)[0] + src.match(/ {2}const NO_NEWS_RE = .*\n/)[0] + src.match(/ {2}const NOT_HOME_RE = .*\n/)[0] + src.match(/ {2}const GROUP_HINT_RE = .*\n/)[0] + src.match(/ {2}const SECRET_NAME_RE = .*\n/)[0] + src.match(/ {2}const EVERYONE_RE = .*\n/)[0] + src.match(/ {2}const factsMode = .*\n/)[0] + src.match(/ {2}const SCENE_STATE_RE = .*\n/)[0] + src.match(/ {2}const secretKeyOf = .*\n/)[0] + src.match(/ {2}const INTENT_RE = .*\n/)[0] + src.match(/ {2}const LIFE_KINDS = .*\n/)[0] + src.match(/ {2}const SETUP_RE = .*\n/)[0] + src.match(/ {2}const SETUP_GOAL_RE = .*\n/)[0] + src.match(/ {2}const FINISH_GOAL_RE = .*\n/)[0] + src.match(/ {2}const FINISHED_RE = .*\n/)[0] + src.match(/ {2}const sortKey = .*\n/)[0] + src.match(/ {2}const SORT_KINDS = .*\n/)[0] + src.match(/ {2}const NEGATION_RE = .*\n/)[0] + src.match(/ {2}const commitName = .*\n/)[0] + src.match(/ {2}const commitText = .*\n/)[0];
+const lib = new Function(factsConsts + consts + ['latestVersions', 'composeMemory', 'entryKeys', 'organize', 'squashRepeats', 'cleanOutput', 'dedupeEntries', 'parseKeeperAnswer', 'applySections', 'cloneEntries', 'findEntry', 'applyUpdates', 'dropReasoning', 'latestState', 'sameButTitle', 'markStale', 'forget', 'logJob', 'reconcile', 'dropJunk', 'structuredOnly', 'splitStates', 'guessKind', 'placeStates', 'cleanChat', 'splitMisplaced', 'cleanSummary', 'dropEmpty', 'greetingOf', 'dedupeSections', 'aliasOfOther', 'isEntryFor', 'recordKind', 'parseRecords', 'allRecords', 'sortingFor', 'applySortings', 'judgeSorting', 'doneMeans', 'commitState', 'factStatus', 'factQuality', 'buildEntries', 'splitByLabel', 'buildSecrets', 'secretsText', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel', 'cleanChapterText', 'storyMoments', 'tidyBullets']
+  .map(grab).join('\n') + '\nreturn { cleanChapterText, latestVersions, composeMemory, organize, squashRepeats, parseKeeperAnswer, applySections, applyUpdates, cloneEntries, dropReasoning, latestState, reconcile, dropJunk, structuredOnly, splitStates, guessKind, cleanChat, cleanSummary, greetingOf, dedupeSections, isEntryFor, parseRecords, allRecords, buildEntries, splitByLabel, buildSecrets, secretsText, storyMoments, tidyBullets, sigWords, factQuality, commitState, judgeSorting, applySortings };')();
 
 
 // The check-up, with the memory keeper's answer given by the test.
@@ -38,7 +38,7 @@ function grabAsync(name) {
   throw new Error('unbalanced ' + name);
 }
 const reconLib = new Function(factsConsts + consts + "  let answers = [];\n  const callLLM = async () => (answers.length ? answers.shift() : 'none');\n  const updateSystem = () => '';\n" +
-  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'doneMeans', 'commitState', 'factStatus', 'factQuality', 'buildEntries', 'buildSecrets', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel'].map(grab).join('\n') +
+  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'sortingFor', 'applySortings', 'judgeSorting', 'doneMeans', 'commitState', 'factStatus', 'factQuality', 'buildEntries', 'buildSecrets', 'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel'].map(grab).join('\n') +
   '\n' + grabAsync('reconcileFacts') + '\nreturn { setAnswer: (a, b) => { answers = [a].concat(b ? [b] : []); }, reconcileFacts, buildEntries, buildSecrets };')();
 
 
@@ -46,10 +46,18 @@ const reconLib = new Function(factsConsts + consts + "  let answers = [];\n  con
 const relLib = new Function(factsConsts + consts + src.match(/ {2}const REL_MIN_FACTS = .*\n/)[0] + src.match(/ {2}const REL_PER_REQUEST = .*\n/)[0] + src.match(/ {2}const PORTRAIT_MIN_FACTS = .*\n/)[0] +
   src.match(/ {2}const SHORT_PORTRAIT_MIN_FACTS = .*\n/)[0] + src.match(/ {2}const SHORT_PORTRAITS_PER_REQUEST = .*\n/)[0] +
   "  let answers = [];\n  const callLLM = async () => (answers.length ? answers.shift() : 'none');\n  const updateSystem = () => '';\n  const checkStop = () => {};\n  const saveChat = async () => {};\n" +
-  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'cleanSummary', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'doneMeans', 'commitState', 'factStatus', 'factQuality', 'buildEntries', 'buildSecrets',
+  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'cleanSummary', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'sortingFor', 'applySortings', 'judgeSorting', 'doneMeans', 'commitState', 'factStatus', 'factQuality', 'buildEntries', 'buildSecrets',
     'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel', 'relationPairs', 'mainCharacters', 'portraitDue', 'shortPortraitsDue'].map(grab).join('\n') + '\n' +
   grabAsync('writeRelationships') + '\n' + grabAsync('writeShortPortraits') +
   '\nreturn { setAnswers: (a) => { answers = a.slice(); }, writeRelationships, writeShortPortraits, buildEntries, shortPortraitsDue };')();
+
+// Step B (sorting set-aside facts), with the keeper's answers given by the test.
+const sortLib = new Function(factsConsts + consts + src.match(/ {2}const SORT_BATCH = .*\n/)[0] + src.match(/ {2}const SORT_CHARS = .*\n/)[0] +
+  "  let answers = [];\n  const asked = [];\n  const callLLM = async (sys, user) => { asked.push(user); return answers.length ? answers.shift() : ''; };\n  const updateSystem = () => '';\n  const checkStop = () => {};\n  const saveChat = async () => {};\n" +
+  ['cleanChapterText', 'squashRepeats', 'cleanOutput', 'dropReasoning', 'sameButTitle', 'guessKind', 'aliasOfOther', 'recordKind', 'parseRecords', 'allRecords', 'sortingFor', 'applySortings', 'judgeSorting', 'doneMeans', 'commitState', 'factStatus', 'factQuality', 'buildEntries', 'buildSecrets',
+    'sigWords', 'alike', 'importantMoment', 'relationsOf', 'mergeRel', 'sortCandidates', 'undoSortings', 'sortingCounts'].map(grab).join('\n') + '\n' +
+  grabAsync('sortFacts') +
+  '\nreturn { setAnswers: (a) => { answers = a.slice(); }, asked, sortFacts, sortCandidates, undoSortings, sortingCounts, buildEntries, allRecords, factQuality };')();
 
 let passed = 0;
 const pending = [];
@@ -923,5 +931,58 @@ test('v3.39: world keeps one time; repeated points once; scenes are not homes; s
   const kid = secs.filter((x) => /child/.test(x.text));
   assert.strictEqual(kid.length, 1);
   assert(!kid[0].knows.some((k) => k.who === 'Rei'));
+});
+
+test('step B: sorting set-aside facts — kept originals, checked answers, resumable, undo, survives a rebuild', async () => {
+  const R = (id, lines, text) => ({ id, text: text || 'x', records: lib.parseRecords(lines.join('\n')) });
+  const mk = () => ({ format: 'facts', ignored: [], entries: [], log: [
+    R('m1', ['- Lena | goal | [the bridge] hold the bridge until the relief column arrives', '- Lena | knows | she cooked supper for the whole camp', '- Orrin | knows | the commander refused to surrender despite losing the battle',
+      '- Lena | knows | she is always the first to volunteer', '- Lena | done | [the bridge] planned how to hold the bridge'],
+      'Lena cooked supper for the whole camp. Orrin learned that the commander refused to surrender despite losing the battle. Lena planned how to hold the bridge.'),
+  ] });
+  const job = (k, l, fn) => fn();
+  const chat = mk();
+  const before = sortLib.sortCandidates(chat).length;
+  assert.strictEqual(before, 4, 'four set-aside facts');
+  sortLib.setAnswers([[
+    'F1 | moment routine | cooked supper for the whole camp',
+    'F2 | learned | the commander surrendered after losing the battle',  // meaning flipped: must not be used
+    'F3 | personality | is always the first to volunteer',                // no quote: unsure
+    'F4 | done | [the bridge] held the bridge | quote: "planned how to hold the bridge"', // a plan: not done
+  ].join('\n')]);
+  await sortLib.sortFacts(chat, job);
+  const d = Object.values(chat.sortings);
+  assert.strictEqual(d.filter((x) => x.decision === 'sorted').length, 1, JSON.stringify(d.map((x) => [x.v, x.decision, x.why])));
+  assert(d.some((x) => /refused/.test(x.v) && x.decision === 'unsure' && /not/.test(x.why)), 'a flipped "not" is not accepted');
+  assert(d.some((x) => /volunteer/.test(x.v) && x.decision === 'unsure'), 'personality needs a quote');
+  assert(d.some((x) => /planned/.test(x.v) && x.decision !== 'sorted'), 'a plan never becomes done');
+  // The originals are untouched; the sorted one now counts as a moment.
+  assert.strictEqual(chat.log[0].records.length, 5);
+  const recs = sortLib.allRecords(chat);
+  assert(recs.some((r) => r.k === 'moment' && /cooked supper/.test(r.v) && r.orig && r.orig.k === 'knows'), JSON.stringify(Object.values(chat.sortings).map((x) => [x.key, x.decision])) + JSON.stringify(recs.map((r) => [r.id, r.k, r.v.slice(0, 20)])));
+  // Resumable: a second run only asks again about "unsure" ones (once), never the sorted one.
+  sortLib.asked.length = 0;
+  sortLib.setAnswers(['F1 | learned | the commander refused to surrender despite losing the battle | quote: "the commander refused to surrender despite losing the battle"\nF2 | unsure | x']);
+  await sortLib.sortFacts(chat, job);
+  const factsAsked = (i) => String(sortLib.asked[i] || '').split('FACTS TO SORT')[1] || '';
+  assert(!/cooked supper/.test(factsAsked(0)), 'a sorted fact is not asked again');
+  assert(Object.values(chat.sortings).some((x) => /refused/.test(x.v) && x.decision === 'sorted'));
+  sortLib.asked.length = 0;
+  await sortLib.sortFacts(chat, job);
+  assert(!/refused|cooked/.test(factsAsked(0)), 'nothing decided is asked again');
+  // A rebuild writes the same facts again (same reply): decisions still apply; one reworded a lot is not guessed.
+  const rebuilt = mk();
+  rebuilt.log[0].records[1].v = 'she cooked supper for the whole camp tonight';
+  rebuilt.sortings = chat.sortings;
+  assert(sortLib.allRecords(rebuilt).some((r) => r.k === 'moment' && r.orig), 'a slightly reworded fact keeps its sorting');
+  rebuilt.log[0].records[1].v = 'she made a stew for the soldiers by the fire';
+  assert(!sortLib.allRecords(rebuilt).some((r) => r.k === 'moment' && r.orig && /stew/.test(r.v)), 'a very different fact is not guessed');
+  // Undo one fact, then all: the originals count again.
+  const key = Object.keys(chat.sortings).find((k) => /cooked/.test(k));
+  sortLib.undoSortings(chat, { key });
+  assert(!sortLib.allRecords(chat).some((r) => r.k === 'moment' && /cooked/.test(r.v)));
+  sortLib.undoSortings(chat, { all: true });
+  assert.strictEqual(Object.keys(chat.sortings).length, 0);
+  assert.strictEqual(sortLib.sortCandidates(chat).length, before, 'back to the start');
 });
 

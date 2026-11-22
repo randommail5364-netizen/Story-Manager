@@ -237,5 +237,18 @@ test('Open Threads: of two similar goals, the finished one may be left out, the 
   assert(lib.commitState(only).closedThread('- Ren must repair the chapel bell before the festival'), 'a clearly finished one is left out');
 });
 
+test('sorting answers are judged the same way in any genre', () => {
+  const fact = (s, k, v, status) => ({ r: { s, k, v, at: 2, id: 'm2#0' }, status });
+  const ctx = { secretKeys: new Set(['ledger']), goals: [{ id: 'the-ford', owner: 'kade', text: 'take the ford before dawn', at: 1, state: 'open' }] };
+  const src = 'Inspector Vane found the torn ledger page in the study. Major Kade\'s company crossed the river and took the ford before dawn.';
+  const J = lib.judgeSorting;
+  assert.strictEqual(J(fact('Vane', 'knows', 'found the torn ledger page', 'no-secret'), { kind: 'moment minor', value: 'found the torn ledger page in the study' }, src, ctx).decision, 'sorted');
+  assert.strictEqual(J(fact('Vane', 'knows', 'found the torn ledger page', 'no-secret'), { kind: 'moment minor', value: 'found the torn ledger page with Sergeant Holt' }, src, ctx).decision, 'unsure', 'a new name');
+  assert.strictEqual(J(fact('Vane', 'knows', 'found the torn ledger page', 'no-secret'), { kind: 'knows', value: '[the will] found it' }, src, ctx).decision, 'unsure', 'a secret that does not exist');
+  assert.strictEqual(J(fact('Kade', 'done', 'took the ford', 'unmatched-done'), { kind: 'done', value: '[the-ford] took the ford before dawn', quote: 'took the ford before dawn' }, src, ctx).decision, 'sorted');
+  assert.strictEqual(J(fact('Kade', 'done', 'took the ford', 'unmatched-done'), { kind: 'done', value: '[the-ford] took the ford before dawn', quote: 'stormed the castle at noon' }, src, ctx).decision, 'failed', 'a quote not in the summary');
+  assert.strictEqual(J(fact('Kade', 'stands', 'crossed the river', 'suspect-state'), { kind: 'keep', value: '' }, src, ctx).decision, 'kept');
+});
+
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');
 process.exit(failed ? 1 : 0);

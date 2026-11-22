@@ -748,7 +748,7 @@
     return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
       chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
       factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
-      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg, chat.commitAlias]));
+      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg, chat.commitAlias, chat.sortings]));
   }
 
   async function saveChat(chat, fromSync) {
@@ -2728,6 +2728,7 @@
   //   things stand" that reads like a scene; flagged only, still used).
   const SCENE_STATE_RE = /^\s*(he|she|they|i|we)\s+\w+ed\b|^\s*\w+ed (him|her|them|his|the)\b/i;
   function factStatus(r, secretKeys, keyOf, commits) {
+    if (r.keptAsIs) return 'ok';
     if (r.k === 'unclassified') return 'unclassified';
     if (LIFE_KINDS.has(r.k) && commits) {
       const s = (commits.ofRecord.get(r.id) || {}).status;
@@ -2754,6 +2755,96 @@
     return out;
   }
 
+  // ---- Step B: sorting facts the checks set aside (see factQuality) ----
+  // chat.sortings: { key: { key, reply, s, k, v (the original), to: {k, t, v, tier}, decision, batch, at, why } }
+  // decision: sorted (counts as "to") · dropped (left out of memory, kept in the log) · kept (the
+  // original kind was right) · unsure / failed (stays unsorted).
+  // A decision is tied to the original fact by its reply, subject, kind and wording, so a rebuild that
+  // writes the same fact again keeps it; one reworded only a little keeps it too; one reworded
+  // more is listed for review, never guessed.
+  const sortKey = (reply, r) => [reply, String(r.s).trim().toLowerCase(), r.k, normValue(r.v)].join('|');
+  function sortingFor(chat, reply, r, index) {
+    const all = chat.sortings || {};
+    const exact = all[sortKey(reply, r)];
+    if (exact) return { d: exact, sure: true };
+    const same = (index && index.get(reply)) || [];
+    let best = null, bestV = 0;
+    for (const d of same) {
+      if (d.s !== String(r.s).trim().toLowerCase() || d.k !== r.k) continue;
+      const a = sigWords(d.v), b = sigWords(r.v);
+      let n = 0; for (const w of a) if (b.has(w)) n++;
+      const v = a.size && b.size ? n / Math.max(a.size, b.size) : 0;
+      if (v > bestV) { bestV = v; best = d; }
+    }
+    if (best && bestV >= 0.8) return { d: best, sure: true };
+    if (best && bestV >= 0.5) return { d: best, sure: false };
+    return null;
+  }
+  function applySortings(chat, recs) {
+    const all = Object.values(chat.sortings || {});
+    if (!all.length) return recs;
+    const index = new Map();
+    for (const d of all) { if (!index.has(d.reply)) index.set(d.reply, []); index.get(d.reply).push(d); }
+    const out = [];
+    const review = [];
+    for (const r of recs) {
+      if (r.manual || r.recon || r.at === Infinity) { out.push(r); continue; }
+      const reply = String(r.id).split('#')[0];
+      const hit = sortingFor(chat, reply, r, index);
+      if (!hit) { out.push(r); continue; }
+      if (!hit.sure) { review.push(hit.d.key); out.push(r); continue; }
+      const d = hit.d;
+      if (d.decision === 'dropped') continue;
+      if (d.decision === 'sorted' && d.to) out.push(Object.assign({}, r, { k: d.to.k, t: d.to.t || '', v: d.to.v, label: d.to.label || d.to.k, orig: { k: r.k, t: r.t, v: r.v }, sortedBy: d.key }, d.to.tier ? { tier: d.to.tier, imp: d.to.tier === 'major' } : {}));
+      else out.push(Object.assign({}, r, d.decision === 'kept' ? { keptAsIs: true } : {}, { sortDecision: d.decision }));
+    }
+    Object.defineProperty(chat, '__sortReview', { value: review, configurable: true, enumerable: false, writable: true });
+    return out;
+  }
+  // The keeper's answer for one fact, checked at three levels: structure (kind, ids), evidence
+  // (the quote is in the source summary) and meaning (stays close to the original, no new names,
+  // no flipped "not"). Returns { decision, to, why }.
+  const SORT_KINDS = ['moment major', 'moment minor', 'moment routine', 'learned', 'knows', 'stands', 'progress', 'done', 'want', 'personality', 'keep', 'drop', 'unsure'];
+  const NEGATION_RE = /\b(not|never|no|refused|refuses|didn['’]t|doesn['’]t|won['’]t|wouldn['’]t|cannot|can['’]t|without|failed to|declined)\b/i;
+  function judgeSorting(fact, answer, source, ctx) {
+    const kind = String(answer.kind || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const base = /^moment\b/.test(kind) ? 'moment' : kind.split(':')[0].trim();
+    if (!SORT_KINDS.includes(base) && base !== 'moment' && !/^(moment|stands|knows|progress|done)\b/.test(base)) return { decision: 'failed', why: 'unknown kind "' + kind + '"' };
+    if (base === 'unsure') return { decision: 'unsure', why: 'the keeper was unsure' };
+    if (base === 'drop') return { decision: 'dropped', why: 'not worth keeping' };
+    if (base === 'keep') return fact.status === 'suspect-state' ? { decision: 'kept', why: 'the original kind was right' } : { decision: 'unsure', why: '"keep" for a fact that failed its check' };
+    const v = String(answer.value || '').trim();
+    if (v.length < 4) return { decision: 'failed', why: 'no value' };
+    const src = normValue(source);
+    const quote = normValue(answer.quote || '');
+    // Evidence: a quote, when given, must be in the source summary.
+    if (quote && (quote.length < 12 || !src.includes(quote))) return { decision: 'failed', why: 'the quote is not in the source summary' };
+    // Lasting things need evidence.
+    if (/^(personality|stands|done)$/.test(base) && !quote) return { decision: 'unsure', why: base + ' needs a quote from the summary' };
+    // Meaning: close to the original fact (or the quote), no new names, no flipped negation.
+    const near = (a, b) => { const x = sigWords(a), y = sigWords(b); if (!x.size) return 0; let n = 0; for (const w of x) if (y.has(w)) n++; return n / x.size; };
+    const support = Math.max(near(v, fact.r.v), near(v, answer.quote || ''), near(v, source) * 0.9);
+    if (support < 0.5) return { decision: 'unsure', why: 'reads like something new, not the same fact' };
+    const names = (v.match(/\b[A-Z][\p{L}'’-]{2,}\b/gu) || []).filter((n, i) => i > 0 || !/^[A-Z]/.test(v));
+    const newName = names.find((n) => !String(source).includes(n) && !String(fact.r.v).includes(n) && n !== fact.r.s);
+    if (newName) return { decision: 'unsure', why: 'names someone not in the source ("' + newName + '")' };
+    if (NEGATION_RE.test(v) !== NEGATION_RE.test(fact.r.v + ' ' + (answer.quote || '')) && NEGATION_RE.test(v) !== NEGATION_RE.test(source)) return { decision: 'unsure', why: 'a "not" was added or lost' };
+    const to = { v };
+    if (base === 'moment') { const tier = (kind.match(/major|minor|routine/) || ['minor'])[0]; Object.assign(to, { k: 'moment', tier, label: tier + ' moment' }); }
+    else if (base === 'stands') { const t = (kind.split(':')[1] || answer.target || '').trim(); if (!t) return { decision: 'failed', why: '"where things stand" without the other person' }; Object.assign(to, { k: 'stands', t, label: 'where things stand' }); }
+    else if (base === 'knows') { const m = v.match(/^\s*\[([^\]]+)\]/); if (!m || !ctx.secretKeys.has(secretKeyOf(m[1]))) return { decision: 'unsure', why: 'knows a secret that does not exist' }; to.k = 'knows'; }
+    else if (base === 'progress' || base === 'done') {
+      const m = v.match(/^\s*\[([^\]]+)\]/);
+      const c = m && ctx.goals.find((g) => g.id === m[1].trim() && g.owner === String(fact.r.s).trim().toLowerCase());
+      if (!c) return { decision: 'unsure', why: 'names no goal of this person' };
+      if (c.at !== undefined && fact.r.at < c.at) return { decision: 'unsure', why: 'the goal only appears later' };
+      if (base === 'done' && (INTENT_RE.test(commitText(v)) || doneMeans(c.text, commitText(v)) !== 'done')) return { decision: 'unsure', why: 'not a completion' };
+      to.k = base;
+    } else to.k = base;
+    if (!to.label) to.label = to.k;
+    return { decision: 'sorted', to, why: '' };
+  }
+
   // Every record of the story, oldest first: from the summaries (in story
   // order), then the ones the user added. Hidden ones (deleted by the user)
   // are left out. Each gets an id: "<reply id>#<n>" or "manual#<n>".
@@ -2768,7 +2859,11 @@
       if ((r.k === 'done' && NOT_DONE_RE.test(r.v)) || (r.k === 'knows' && NO_NEWS_RE.test(r.v)) || ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v))) return;
       out.push(Object.assign({ id: 'recon#' + n, recon: true }, r));
     });
-    return out.filter((r) => !hidden.has(r.id));
+    // Sorting decisions (step B, see sortFacts) are a layer over the original
+    // facts: the original is never changed and stays in r.orig. Facts the user
+    // hid stay hidden; check-up and hand-added facts are never re-sorted.
+    const sorted = applySortings(chat, out.filter((r) => !hidden.has(r.id)));
+    return sorted;
   }
 
   // An "appearance" fact about a passing moment (what someone is wearing or
@@ -3983,6 +4078,113 @@
     chat.reconAt = at;
     return got.length;
   }
+  // Step B: "Sort unsorted facts". Only when the user asks. Small batches (at most
+  // SORT_BATCH facts and SORT_CHARS characters of input, each source summary
+  // once); after every batch the decisions are saved, so a stopped run goes on
+  // where it stopped. Facts already decided are skipped; "unsure" ones get one
+  // more try.
+  const SORT_BATCH = 40;
+  const SORT_CHARS = 14000;
+  function sortCandidates(chat) {
+    const all = chat.sortings || {};
+    return factQuality(chat).filter((x) => /^(no-secret|unresolved|unclassified|intent-not-done|unmatched-done|suspect-state)$/.test(x.status) &&
+      !x.r.manual && !x.r.recon && x.r.at !== Infinity && !x.r.keptAsIs &&
+      (() => { const d = all[sortKey(String(x.r.id).split('#')[0], x.r)]; return !d || (d.decision === 'unsure' && (d.tries || 1) < 2); })());
+  }
+  async function sortFacts(chat, job) {
+    const todo = sortCandidates(chat);
+    if (!todo.length) return { sorted: 0, batches: 0 };
+    const keys = new Set();
+    for (const r of allRecords(chat)) if (r.k === 'secret') { const m = String(r.v).match(/^\s*\[([^\]]+)\]/); if (m) keys.add(secretKeyOf(m[1])); }
+    const secretNames = [...new Set(allRecords(chat).filter((r) => r.k === 'secret').map((r) => (String(r.v).match(/^\s*\[([^\]]+)\]/) || [])[1]).filter(Boolean))];
+    const goals = commitState(chat).reg;
+    // Batches: facts of the same reply together; each summary once.
+    const byReply = new Map();
+    for (const x of todo) { const rep = String(x.r.id).split('#')[0]; if (!byReply.has(rep)) byReply.set(rep, []); byReply.get(rep).push(x); }
+    const batches = [];
+    let cur = { facts: [], chars: 0 };
+    for (const [rep, facts] of byReply) {
+      const e = chat.log.find((l) => l.id === rep);
+      const size = (e ? e.text.length : 0) + facts.reduce((n, x) => n + String(x.r.v).length + 40, 0);
+      if (cur.facts.length && (cur.facts.length + facts.length > SORT_BATCH || cur.chars + size > SORT_CHARS)) { batches.push(cur); cur = { facts: [], chars: 0 }; }
+      cur.facts.push(...facts.slice(0, SORT_BATCH));
+      cur.chars += size;
+    }
+    if (cur.facts.length) batches.push(cur);
+    let sorted = 0;
+    const batchId = 'b' + Date.now().toString(36);
+    for (let bi = 0; bi < batches.length; bi++) {
+      checkStop();
+      const b = batches[bi];
+      const replies = [...new Set(b.facts.map((x) => String(x.r.id).split('#')[0]))];
+      const src = new Map(replies.map((rep, i) => [rep, { tag: 'S' + (i + 1), text: (chat.log.find((l) => l.id === rep) || {}).text || '' }]));
+      const people = new Set(b.facts.map((x) => String(x.r.s).trim().toLowerCase()));
+      const goalLines = goals.filter((g) => people.has(g.owner) && g.state !== 'done' && g.state !== 'cancelled').map((g) => (g.who || g.owner) + ': [' + g.id + '] ' + g.text);
+      const user = 'SOURCE SUMMARIES:\n<<<\n' + [...src.values()].map((x) => '[' + x.tag + '] ' + x.text).join('\n\n') + '\n>>>\n\n' +
+        (secretNames.length ? 'SECRETS (by name): ' + secretNames.map((n) => '[' + n + ']').join(', ') + '\n\n' : '') +
+        (goalLines.length ? 'OPEN GOALS AND PROMISES:\n' + goalLines.join('\n') + '\n\n' : '') +
+        'FACTS TO SORT (each was filed under a kind that does not fit):\n' + b.facts.map((x, i) => 'F' + (i + 1) + ' (' + src.get(String(x.r.id).split('#')[0]).tag + ') ' + x.r.s + ' | ' + (x.r.label || x.r.k) + (x.r.t ? ': ' + x.r.t : '') + ' | ' + x.r.v).join('\n') + '\n\n' +
+        'JOB: SORT FACTS. For each fact F#, choose its right kind using only its source summary. Do not add anything the summary does not say; keep the fact\'s meaning and wording close; never turn one action into a lasting trait. One line per fact:\n' +
+        'F# | kind | the fact | quote: "words copied exactly from its source summary"\n' +
+        'Kinds: moment major / moment minor / moment routine (something that happened) · learned (non-secret knowledge) · knows ([secret name] from SECRETS) · stands: Other Person (how things are between them now — never a scene) · progress ([goal] a step towards it) · done ([goal] it actually happened) · want (a wish or interest) · personality (a lasting trait, shown more than once) · keep (the original kind was right) · drop (not worth keeping) · unsure.\n' +
+        'A quote is required for personality, stands and done. When in doubt, write unsure.';
+      const out = cleanOutput(await job('sort', 'Sorting facts, batch ' + (bi + 1) + ' of ' + batches.length, () => callLLM(updateSystem(), user)));
+      const seen = new Set();
+      const answers = new Map();
+      for (const l of out.split('\n')) {
+        const m = l.match(/^\s*[-*•]?\s*F(\d+)\s*\|\s*([^|]+?)\s*\|\s*(.+?)(?:\s*\|\s*quote:\s*["“]?(.+?)["”]?\s*)?$/i);
+        if (!m) continue;
+        const n = Number(m[1]);
+        if (seen.has(n)) { answers.set(n, null); continue; } // the same fact twice: not used
+        seen.add(n);
+        answers.set(n, { kind: m[2], value: m[3], quote: m[4] || '' });
+      }
+      const ctx = { secretKeys: keys, goals };
+      chat.sortings = Object.assign({}, chat.sortings);
+      b.facts.forEach((x, i) => {
+        const rep = String(x.r.id).split('#')[0];
+        const key = sortKey(rep, x.r);
+        const a = answers.get(i + 1);
+        const prev = chat.sortings[key];
+        const res = !a ? { decision: 'unsure', why: a === null ? 'answered twice' : 'no answer' } : judgeSorting(x, a, src.get(rep).text, ctx);
+        chat.sortings[key] = { key, reply: rep, s: String(x.r.s).trim().toLowerCase(), k: x.r.k, v: x.r.v, status: x.status, to: res.to || null, decision: res.decision, why: res.why, batch: batchId + '-' + (bi + 1), at: Date.now(), tries: (prev && prev.tries || 0) + 1, answer: a ? (a.kind + ' | ' + a.value).slice(0, 300) : '' };
+        if (res.decision === 'sorted') sorted++;
+      });
+      await saveChat(chat);
+    }
+    return { sorted, batches: batches.length };
+  }
+  // Undo: one fact, one batch, or all. The originals were never changed.
+  function undoSortings(chat, which) {
+    const all = Object.assign({}, chat.sortings || {});
+    for (const [k, d] of Object.entries(all)) if (which.all || (which.key && k === which.key) || (which.batch && String(d.batch).startsWith(which.batch))) delete all[k];
+    chat.sortings = all;
+  }
+  function sortingCounts(chat) {
+    const c = { sorted: 0, dropped: 0, kept: 0, unsure: 0, failed: 0 };
+    for (const d of Object.values(chat.sortings || {})) c[d.decision] = (c[d.decision] || 0) + 1;
+    return c;
+  }
+  async function runSortFacts(id) {
+    const chat = await getChat(id, true);
+    return withBusy(id, 1, async () => {
+      const t0 = Date.now();
+      const job = async (kind, label, fn) => { setStep(id, label + '…'); const t = Date.now(); try { const r = await fn(); logJob(chat, { kind, label, ok: true, ms: Date.now() - t }); return r; } catch (e) { if (!e.stopped) logJob(chat, { kind, label, ok: false, ms: Date.now() - t, error: String(e.message || e).slice(0, 200) }); throw e; } };
+      try {
+        const r = await sortFacts(chat, job);
+        logJob(chat, { kind: 'sort', label: 'Sorted ' + r.sorted + ' facts in ' + r.batches + ' batches', ok: true, ms: Date.now() - t0 });
+        await saveChat(chat);
+        const c = sortingCounts(chat);
+        toast('Sorted ' + r.sorted + ' facts. Dropped ' + c.dropped + ', unsure ' + c.unsure + ', failed checks ' + c.failed + '. Nothing was deleted.');
+        return 'done';
+      } catch (e) {
+        await saveChat(chat);
+        toast(e.stopped ? 'Stopped. Pressing the button again goes on where it stopped.' : 'Sorting stopped: ' + (e.message || e) + '. Pressing the button again goes on where it stopped.', !e.stopped);
+        return e.stopped ? 'stopped' : 'failed';
+      }
+    });
+  }
+
   async function runReconcile(id) {
     const chat = await getChat(id, true);
     return withBusy(id, 1, async () => {
@@ -6213,7 +6415,22 @@
           if (!confirm('Have the memory keeper check what is out of date (finished goals and promises, old roles or places, who now knows each secret, the same secret under two names)? One request. Nothing is deleted.')) return;
           await save(true);
           await runReconcile(chat.id);
-        } }, 'Check what is out of date') : null),
+        } }, 'Check what is out of date') : null,
+        factsMode(chat) && sortCandidates(chat).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
+          const n = sortCandidates(chat).length;
+          if (!confirm('Have the memory keeper sort ' + n + ' facts that were filed under the wrong kind? About ' + Math.ceil(n / SORT_BATCH) + ' or more requests. The original facts are kept; every decision can be undone.')) return;
+          await save(true);
+          await runSortFacts(chat.id);
+        } }, 'Sort unsorted facts (' + sortCandidates(chat).length + ')') : null,
+        factsMode(chat) && Object.keys(chat.sortings || {}).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+          const batches = [...new Set(Object.values(chat.sortings).map((d) => String(d.batch).replace(/-\d+$/, '')))].sort();
+          const last = batches[batches.length - 1];
+          const which = prompt('Undo sorting: type "last" for the last run, "all" for everything, or paste a fact\'s key from Diagnostics.', 'last');
+          if (!which) return;
+          undoSortings(chat, which === 'all' ? { all: true } : which === 'last' ? { batch: last } : { key: which });
+          await saveChat(chat); renderPanel(true); toast('Undone. The original facts count again.');
+        } }, 'Undo sorting…') : null),
       chat.ignored.length ? el('div', { class: 'hint' }, 'Deleted, not created again: ' + chat.ignored.join(', ') + ' ',
         el('button', { class: 'btn', onclick: async () => { chat.ignored = []; await saveChat(chat); renderPanel(true); } }, 'Allow again')) : null),
       el('div', { class: 'btns' },
@@ -6298,6 +6515,21 @@
     const withPos = q.filter((x) => byLog.get(x.r.at) && byLog.get(x.r.at).hp);
     const pos = withPos.length ? ' · by helper chat position: ' + [[1, 5], [6, 15], [16, 30], [31, 9999]].map(([a, b]) => { const l = withPos.filter((x) => byLog.get(x.r.at).hp >= a && byLog.get(x.r.at).hp <= b); return l.length ? (b > 999 ? a + '+' : a + '–' + b) + ' ' + pct(l) + ' (' + l.length + ')' : ''; }).filter(Boolean).join(', ') : ' · by helper chat position: not recorded yet (summaries from v3.41 on)';
     return parts.join(', ') + ' · ok by replies: ' + ranges.join(', ') + pos;
+  }
+  // Sorting (step B) for Diagnostics: decisions by kind, what is left, what needs a look.
+  function sortingText(chat) {
+    const all = Object.values(chat.sortings || {});
+    allRecords(chat);
+    const review = chat.__sortReview || [];
+    const left = sortCandidates(chat).length;
+    if (!all.length && !left) return '';
+    const c = sortingCounts(chat);
+    const to = {};
+    for (const d of all) if (d.decision === 'sorted' && d.to) to[d.to.label || d.to.k] = (to[d.to.label || d.to.k] || 0) + 1;
+    let t = 'Sorting: ' + c.sorted + ' sorted (' + Object.entries(to).map(([k, n]) => n + ' ' + k).join(', ') + '), ' + c.dropped + ' dropped (kept in the log), ' + c.kept + ' kept as they were, ' + c.unsure + ' unsure, ' + c.failed + ' failed its checks · ' + left + ' still to sort' + (review.length ? ' · ' + review.length + ' decisions need a look (the fact was reworded by a rebuild)' : '') + '\n';
+    const odd = all.filter((d) => d.decision === 'unsure' || d.decision === 'failed').slice(-12);
+    if (odd.length) t += odd.map((d) => '  ? ' + d.s + ' | ' + d.k + ' | ' + String(d.v).slice(0, 70) + ' ← ' + d.decision + ': ' + d.why + '  [key: ' + d.key.slice(0, 120) + ']').join('\n') + '\n';
+    return t;
   }
   function memoryHealth(chat) {
     const junk = chat.entries.reduce((n, e) => n + e.text.split('\n').filter((l) => isJunk(l, true)).length, 0) +
@@ -6584,6 +6816,7 @@
         ' · on GitHub: ' + (!settings.githubToken ? 'sync off' : sync.remoteSettings ? 'saved ' + new Date(sync.remoteSettings.at).toLocaleString() + ', keeper ' + sync.remoteSettings.keeper : 'none yet') + '\n' +
       'Memory health: ' + (chat ? memoryHealth(chat) : 'no chat') + '\n' +
       (chat && factsMode(chat) ? 'Fact quality: ' + factQualityText(chat) + '\n' : '') +
+      (chat && factsMode(chat) ? sortingText(chat) : '') +
       'Summaries made with: ' + (chat && chat.log.length ? summaryVersions(chat).join(', ') : 'none yet') + (chat && chat.rebuiltWith ? ', rebuilt with v' + chat.rebuiltWith : '') + '\n' +
       'Pipeline: ' + (chat ? (() => { const st = stages(chat); return st.summaries + ' summaries (' + factsSplit(chat) + '), ' +
         chat.log.filter((e) => e.checked).length + ' facts-checked, ' + st.unfolded + ' waiting for story & characters, ' + st.unchaptered + ' waiting for a chapter, ' + st.chapters + ' chapters' +
@@ -6746,7 +6979,7 @@
       log: chat.log.map((e, i) => ({ reply: i + 1, id: e.id, v: e.v || '', chapter: e.chapter, folded: !!e.folded, summary: e.text, facts: e.facts || '', records: e.records || [], helperChat: e.hc || '', helperPos: e.hp || 0 })),
       manualRecords: chat.manualRecords || [], hiddenRecords: chat.hiddenRecords || [],
       reconRecords: chat.reconRecords || [], reconReport: chat.reconReport || null, reconAt: chat.reconAt || 0,
-      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], commitAlias: chat.commitAlias || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
+      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], commitAlias: chat.commitAlias || {}, sortings: chat.sortings || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
       relMap: chat.relMap || null, portraits: chat.portraits || {},
       chapters: (chat.chapters || []).map((c) => ({ title: c.title, text: c.text, short: c.short || '' })),
       memory: chat.memory || '', pinnedNote: chat.pinned || '',

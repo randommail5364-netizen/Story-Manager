@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.49.0
+// @version      3.49.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -6446,8 +6446,22 @@
 
     // Only the open sub-tab is drawn (a long story has a lot of text); switching tabs keeps edits.
     const showTab = (k) => memTab === k || allMemTabs;
-    const editors = showTab('characters') ? chat.entries.map((e) => (factsMode(chat) ? factsEntryView(chat, e) : entryEditor(chat, e))) : [];
-    const chapterEds = showTab('chapters') ? chat.chapters.map((c, i) => chapterEditor(c, i, chat)) : [];
+    const editors = [];
+    const chapterEds = [];
+    const chapterBox = el('div', {}), entryBox = el('div', {}), secretsBox = el('div', {});
+    const built = {};
+    const buildTab = (k) => {
+      if (built[k]) return;
+      built[k] = true;
+      if (k === 'chapters') { chat.chapters.forEach((c, i) => chapterEds.push(chapterEditor(c, i, chat))); chapterBox.replaceChildren(...chapterEds.map((ed) => ed.node)); }
+      if (k === 'characters') {
+        chat.entries.forEach((e) => editors.push(factsMode(chat) ? factsEntryView(chat, e) : entryEditor(chat, e)));
+        entryBox.replaceChildren(...editors.map((ed) => ed.node));
+        if (factsMode(chat)) secretsBox.replaceChildren(secretsView(chat));
+      }
+    };
+    if (showTab('chapters')) buildTab('chapters');
+    if (showTab('characters')) buildTab('characters');
 
     const save = async (quiet) => {
       const snap = snapshot(chat);
@@ -6610,7 +6624,10 @@
     const total = chat.knownMessages || 0;
     const st = stages(chat);
     const inPlay = entriesInPlay(chat).map((e) => e.name);
-    const sortCount = factsMode(chat) ? sortCandidates(chat).length : 0; // once per drawing (it is not cheap)
+    // Not cheap: worked out again only when the facts changed.
+    const sortKeyNow = [chat.log.length, (chat.log[chat.log.length - 1] || {}).id, (chat.reconRecords || []).length, Object.keys(chat.sortings || {}).length, (chat.hiddenRecords || []).length].join('|');
+    if (!chat.__sortCount || chat.__sortCount.key !== sortKeyNow) Object.defineProperty(chat, '__sortCount', { value: { key: sortKeyNow, n: factsMode(chat) ? sortCandidates(chat).length : 0 }, configurable: true, enumerable: false, writable: true });
+    const sortCount = chat.__sortCount.n;
     return el('div', {},
       el('div', { class: 'status' },
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
@@ -6694,13 +6711,11 @@
       (() => {
         const views = [['story', '📖 Story'], ['chapters', '📚 Chapters (' + chat.chapters.length + ')'], ['characters', '👥 Characters (' + chat.entries.length + ')']];
         const bar = el('nav', { class: 'subtabs' }, ...views.map(([k, label]) => el('button', { class: memTab === k ? 'on' : '', onclick: (ev) => {
-          void ev;
-          // Keep what was typed in the tab being left, then draw the new one.
-          chat.pinned = pinned.value; chat.memory = mem.value;
-          for (const ed of editors) ed.apply();
-          for (const ed of chapterEds) ed.apply();
+          // Only show/hide (what was typed stays); a tab is drawn the first time it is opened.
           memTab = k;
-          renderPanel(true);
+          buildTab(k);
+          for (const b of bar.children) b.classList.toggle('on', b === ev.currentTarget);
+          for (const d of ui.body.querySelectorAll('[data-memtab]')) d.style.display = d.getAttribute('data-memtab') === k ? '' : 'none';
         } }, label)));
         return bar;
       })(),
@@ -6718,17 +6733,19 @@
         : chat.chapters.length
         ? 'The story\'s history. The newest chapters are sent in full, older ones by title once they no longer fit.'
         : 'Every ' + chapterSize() + ' AI replies become a chapter of the story\'s history.'),
-      chapterEds.map((ed) => ed.node)),
+      chapterBox),
       el('div', { 'data-memtab': 'characters', style: memTab === 'characters' || allMemTabs ? undefined : 'display:none' },
-      factsMode(chat) && showTab('characters') ? secretsView(chat) : null,
+      secretsBox,
       el('label', {}, '👥 Entries (' + chat.entries.length + ')'),
       el('div', { class: 'hint' }, chat.entries.length && memoryInMessage(chat) && !chat.memoryMsgCut
         ? 'Every entry is in the pinned memory message in full.' + (inPlay.length ? ' In the current scene: ' + inPlay.join(', ') + '.' : '')
         : inPlay.length
         ? 'In play right now (sent with every message): ' + inPlay.join(', ') + '. Others are sent when your message mentions them.'
         : 'Characters, places and items get their own entries as the story goes on. Each is sent when it is in the current scene or your message mentions it.'),
-      editors.map((ed) => ed.node),
+      entryBox,
       el('div', { class: 'btns' }, el('button', { class: 'btn', onclick: addEntry }, '+ Add entry')),
+      chat.ignored.length ? el('div', { class: 'hint' }, 'Deleted, not created again: ' + chat.ignored.join(', ') + ' ',
+        el('button', { class: 'btn', onclick: async () => { chat.ignored = []; await saveChat(chat); renderPanel(true); } }, 'Allow again')) : null),
       el('details', { class: 'entrybox' }, el('summary', {}, '🛠 More tools (rarely needed — Story Manager does these by itself)'), el('div', { class: 'btns' },
         factsMode(chat) ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
@@ -6776,8 +6793,6 @@
           undoSortings(chat, which === 'all' ? { all: true } : which === 'last' ? { batch: last } : { key: which });
           await saveChat(chat); renderPanel(true); toast('Undone. The original facts count again.');
         } }, 'Undo sorting…') : null)),
-      chat.ignored.length ? el('div', { class: 'hint' }, 'Deleted, not created again: ' + chat.ignored.join(', ') + ' ',
-        el('button', { class: 'btn', onclick: async () => { chat.ignored = []; await saveChat(chat); renderPanel(true); } }, 'Allow again')) : null),
       el('div', { class: 'btns' },
         el('button', { class: 'btn primary', onclick: save }, 'Save'),
         el('button', { class: 'btn', disabled: isBusy, onclick: () => runNow(false) }, 'Update now'),

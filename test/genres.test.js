@@ -165,5 +165,51 @@ test('commitments: the check-up can merge two goals of one person, never of two 
   assert.strictEqual(cs.reg.filter((c) => c.owner === 'tomas').length, 1, 'Tomas keeps his own: ' + JSON.stringify(chat.commitReg));
 });
 
+test('goal steps: scheduled, promised again or partly done never completes (five real failures, neutral wording)', () => {
+  const chat = story([
+    ['- Ren | goal | [follow-up] meet Ilsa for the follow-up study', '- Ren | promise | [the ride] give Cora a real ride on the bike next week',
+     '- Ren | promise | [the draft] bring Ada the essay draft', '- Ren | goal | [the essay] finish the essay on memory', '- Ren | goal | [the lecture] attend the lecture in twenty minutes'],
+    ['- Ilsa | done | [follow-up] scheduled a follow-up study for Thursday afternoon; Ren confirmed',
+     '- Ren | done | [the ride] promised Cora the ride next week; she reminded him and he confirmed',
+     '- Ren | done | [the draft] agreed to bring the draft on Monday',
+     '- Ren | done | [the essay] wrote three pages on Saturday',
+     '- Ren | done | resolved the lighting rig crisis with a new preset'],
+  ]);
+  const cs = lib.commitState(chat);
+  for (const id of ['follow-up', 'the-ride', 'the-draft', 'the-essay', 'the-lecture']) assert.strictEqual((cs.reg.find((c) => c.id === id) || {}).state, 'open', id + ' must stay open: ' + JSON.stringify(cs.reg.find((c) => c.id === id)));
+  assert(/progress: wrote three pages/.test(pin(entry(lib.buildEntries(chat), 'Ren'))), 'a part is progress');
+  // And the real completions still complete.
+  const later = story(chat.log.map((e) => e.records.map((r) => '- ' + r.s + ' | ' + (r.label || r.k) + ' | ' + r.v)).concat([['- Ren | done | [the essay] finished the essay and handed it in', '- Ren | done | [the ride] took Cora on the ride along the coast']]));
+  const cs2 = lib.commitState(later);
+  assert.strictEqual(cs2.reg.find((c) => c.id === 'the-essay').state, 'done');
+  assert.strictEqual(cs2.reg.find((c) => c.id === 'the-ride').state, 'done');
+});
+
+test('goal steps depend on the goal: agreeing completes a goal to reach agreement; writing three pages completes "write three pages"', () => {
+  const chat = story([
+    ['- Envoy Sel | goal | [peace] secure the clans\' agreement to a peace treaty', '- Pia | goal | [pages] write three pages tonight', '- Pia | goal | [the hall] book the great hall for the feast'],
+    ['- Envoy Sel | done | [peace] agreed the peace treaty with the clans at the ford', '- Pia | done | [pages] wrote three pages', '- Pia | done | [the hall] booked the great hall'],
+  ]);
+  const cs = lib.commitState(chat);
+  for (const id of ['peace', 'pages', 'the-hall']) assert.strictEqual(cs.reg.find((c) => c.id === id).state, 'done', id);
+});
+
+test('wants are not goals: shown as motivations, never as open commitments', () => {
+  const chat = story([['- Mina | want | to understand the shape of his gravity', '- Kael | want | to become king one day', '- Kael | goal | [the crown] win the council\'s vote for the crown']]);
+  const es = common(chat);
+  assert(/Motivations & Desires[\s\S]*become king/.test(pin(entry(es, 'Kael'))) && /Goal \[the-crown\]/.test(pin(entry(es, 'Kael'))));
+  assert(!/Goal/.test(pin(entry(es, 'Mina'))) && lib.commitState(chat).reg.length === 1);
+});
+
+test('a step never belongs to a goal that only appears later in the story', () => {
+  const chat = story([['- Ren | goal | [the lecture] attend the lecture'], []]);
+  lib.buildEntries(chat);
+  // Rebuilt: the keeper reused the old name for an unrelated earlier action.
+  const re = story([['- Ren | done | [the lecture] fixed the lighting rig before the concert'], ['- Ren | goal | [the lecture] attend the lecture']]);
+  re.commitReg = chat.commitReg;
+  const cs = lib.commitState(re);
+  assert.strictEqual(cs.reg[0].state, 'open');
+});
+
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');
 process.exit(failed ? 1 : 0);

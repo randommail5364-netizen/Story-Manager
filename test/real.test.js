@@ -83,6 +83,13 @@ function run(file) {
   const INTENT = /^\s*(plan(s|ned|ning)?|intend(s|ed)?|will|would|wants? to|decided to|agreed to|promised to|is going to|prepar(es|ed|ing) to)\b/i;
   const falseDone = cs.reg.filter((c) => c.state === 'done' && INTENT.test(c.how || '')).map((c) => c.who + ' [' + c.id + ']: ' + c.how);
   check(!falseDone.length, 'no goal is completed by a statement of intent', falseDone.join('\n'));
+  // Open Threads vs goals: threads that clearly are a finished goal are left out of the pinned message.
+  const threadLines = lib.tidyBullets(section(chat.memory, 'Open Threads').trim()).split('\n').filter((l) => /^\s*[-*•]\s/.test(l));
+  const hidden = threadLines.map((l) => [l, cs.closedThread(l)]).filter(([, c]) => c);
+  const closedIds = new Set(cs.reg.filter((c) => c.state === 'done' || c.state === 'cancelled').map((c) => c));
+  const disagree = threadLines.filter((l) => !cs.closedThread(l) && [...closedIds].some((c) => overlap(c.text, l) >= 0.9) && !cs.reg.some((c) => c.state !== 'done' && c.state !== 'cancelled' && overlap(c.text, l) >= 0.5));
+  check(!disagree.length, 'no pinned thread is a goal that is already done or cancelled', disagree.join('\n'));
+  if (hidden.length) console.log('  · ' + hidden.length + ' threads left out as finished goals:\n      ' + hidden.map(([l, c]) => l.trim().slice(0, 90) + '  ← [' + c.id + '] ' + c.state).join('\n      '));
   console.log('  · commitments: ' + cs.reg.length + ' (open ' + cs.reg.filter((c) => c.state === 'open').length + ', done ' + cs.reg.filter((c) => c.state === 'done').length + ', cancelled ' + cs.reg.filter((c) => c.state === 'cancelled').length + ', postponed ' + cs.reg.filter((c) => c.state === 'postponed').length + ')');
   const repeatGoals = [], maybeGoals = [];
   for (const e of es) {

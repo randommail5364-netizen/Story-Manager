@@ -72,13 +72,21 @@ function run(file) {
   const dones = recs.filter((r) => r.k === 'done');
   const stillOpen = [];
   for (const e of es) {
-    const open = pin(e).split('\n').filter((l) => /^- (Goal|Promise):/.test(l));
+    const open = pin(e).split('\n').filter((l) => /^- (Goal|Promise)( \[[^\]]*\])?( \([^)]*\))?:/.test(l));
     for (const l of open) if (dones.some((d) => d.s.toLowerCase() === e.name.toLowerCase() && overlap(l.replace(/^- \w+: /, ''), d.v) >= 0.6)) stillOpen.push(e.name + ': ' + l);
   }
-  check(!stillOpen.length, 'no goal or promise marked done is shown as open', stillOpen.join('\n'));
+  // Since v3.42 a goal closes only through its own [name] or a close match, never through a plan; open
+  // goals that merely resemble some "done" line are listed for a look, not failed.
+  if (stillOpen.length) console.log('  ⚠ open goals that resemble a "done" line (check by hand):\n      ' + stillOpen.join('\n      '));
+  // A statement of intent or an unrelated action never completes a goal.
+  const cs = lib.commitState(chat);
+  const INTENT = /^\s*(plan(s|ned|ning)?|intend(s|ed)?|will|would|wants? to|decided to|agreed to|promised to|is going to|prepar(es|ed|ing) to)\b/i;
+  const falseDone = cs.reg.filter((c) => c.state === 'done' && INTENT.test(c.how || '')).map((c) => c.who + ' [' + c.id + ']: ' + c.how);
+  check(!falseDone.length, 'no goal is completed by a statement of intent', falseDone.join('\n'));
+  console.log('  · commitments: ' + cs.reg.length + ' (open ' + cs.reg.filter((c) => c.state === 'open').length + ', done ' + cs.reg.filter((c) => c.state === 'done').length + ', cancelled ' + cs.reg.filter((c) => c.state === 'cancelled').length + ', postponed ' + cs.reg.filter((c) => c.state === 'postponed').length + ')');
   const repeatGoals = [];
   for (const e of es) {
-    const open = pin(e).split('\n').filter((l) => /^- (Goal|Promise):/.test(l)).map((l) => l.replace(/^- \w+: /, ''));
+    const open = pin(e).split('\n').filter((l) => /^- (Goal|Promise)( \[[^\]]*\])?( \([^)]*\))?:/.test(l)).map((l) => l.replace(/^- \w+( \[[^\]]*\])?( \([^)]*\))?: /, ''));
     for (let i = 0; i < open.length; i++) for (let j = i + 1; j < open.length; j++) if (overlap(open[i], open[j]) >= 0.6) repeatGoals.push(e.name + ': ' + open[i] + ' / ' + open[j]);
   }
   check(!repeatGoals.length, 'no goal or promise listed twice', repeatGoals.join('\n'));
@@ -119,7 +127,7 @@ function run(file) {
   console.log('    moments ' + ms.length + ' (major ' + ms.filter((r) => r.tier === 'major' || r.tier === 'turning' || r.imp).length + ', minor ' + ms.filter((r) => r.tier === 'minor').length + ', routine ' + ms.filter((r) => r.tier === 'routine').length + ') · replies without a moment ' + without + ' · story moments shown ' + sm.lines.length);
   console.log('    open threads ' + threads.length + ', of which say "today/tomorrow/tonight" ' + threads.filter((l) => staleWords.test(l)).length);
   console.log('    world lines ' + world.split('\n').filter((l) => /^\s*[-*•]/.test(l)).length + ' (before tidying ' + section(chat.memory, 'World & Timeline').split('\n').filter((l) => /^\s*[-*•]/.test(l)).length + ')');
-  console.log('    open goals and promises ' + es.reduce((n, e) => n + pin(e).split('\n').filter((l) => /^- (Goal|Promise):/.test(l)).length, 0) + ' · repeated ' + repeatGoals.length);
+  console.log('    open goals and promises ' + es.reduce((n, e) => n + pin(e).split('\n').filter((l) => /^- (Goal|Promise)( \[[^\]]*\])?( \([^)]*\))?:/.test(l)).length, 0) + ' · repeated ' + repeatGoals.length);
   console.log('    exported pinned message ' + (ex.pinnedMessage || '').length + ' characters');
   const cnt = (list) => list.reduce((m, x) => (m[x.status] = (m[x.status] || 0) + 1, m), {});
   const ok = (list) => (list.length ? Math.round(100 * list.filter((x) => x.status === 'ok').length / list.length) + '%' : '-');

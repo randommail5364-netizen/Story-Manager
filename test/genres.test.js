@@ -14,7 +14,7 @@ function story(replies, memory = '') {
     log: replies.map((lines, i) => ({ id: 'r' + (i + 1), text: 'summary ' + (i + 1), records: lib.parseRecords(lines.join('\n')) })) };
 }
 const entry = (es, n) => es.find((e) => e.name === n) || { text: '', pinText: '' };
-const pin = (e) => e.pinText || e.text;
+const pin = (e) => (e.pinText != null ? e.pinText : e.text);
 let n = 0, failed = 0;
 function test(name, fn) { n++; try { fn(); console.log('  ✓ ' + name); } catch (e) { failed++; console.log('  ✗ ' + name + '\n    ' + e.message.split('\n').slice(0, 6).join('\n    ')); } }
 // Checks every story must pass.
@@ -103,6 +103,41 @@ test('slice of life: a small cast with no secrets works and nothing is invented'
   assert.strictEqual(lib.buildSecrets(chat).length, 0);
   assert(/blunt but kind/.test(pin(entry(es, 'Priya'))));
   assert(lib.factQuality(chat).every((x) => x.status === 'ok'));
+});
+
+
+test('commitments: intent never completes; actions are not completions; progress, postpone, cancel', () => {
+  const chat = story([
+    ['- Lena | goal | [retake Varn] lead the Ember Circle back to Varn', '- Tomas | promise | [the letter] will deliver the letter to the queen', '- Ada | goal | [tell the others] tell the household about the engagement'],
+    ['- Ada | done | [tell the others] planned to tell everyone at dinner', '- Lena | done | cooked supper for the camp', '- Lena | progress | [retake Varn] won the council vote'],
+    ['- Tomas | postponed | [the letter] the roads are closed until spring'],
+    ['- Ada | done | [tell the others] told everyone at dinner', '- Tomas | cancelled | [the letter] the queen died before he arrived'],
+  ]);
+  const es = common(chat);
+  const q = lib.factQuality(chat);
+  assert.strictEqual(q.filter((x) => x.status === 'intent-not-done').length, 1, 'a plan is not done');
+  assert.strictEqual(q.filter((x) => x.status === 'unmatched-done').length, 1, 'cooking supper completes nothing');
+  assert(/Goal \[retake-varn\] \(progress: won the council vote\)/.test(pin(entry(es, 'Lena'))), pin(entry(es, 'Lena')));
+  assert(/Unsorted[\s\S]*cooked supper/.test(entry(es, 'Lena').text), 'the action is kept');
+  assert(!/tell the household/.test(pin(entry(es, 'Ada'))) && /done, reply 4/.test(entry(es, 'Ada').text), 'done only when it happened');
+  assert(!/deliver the letter/.test(pin(entry(es, 'Tomas'))) && /cancelled, reply 4/.test(entry(es, 'Tomas').text));
+  // After reply 2 only: the plan did not close the goal.
+  const early = story([chat.log[0].records, chat.log[1].records].map((rs) => rs.map((r) => '- ' + r.s + ' | ' + (r.label || r.k) + ' | ' + r.v)));
+  assert(/tell the household/.test(pin(entry(lib.buildEntries(early), 'Ada'))), 'still open after only planning');
+});
+
+test('commitments keep their id through a rebuild with other names and wording', () => {
+  const first = story([['- Mira | goal | [the lighthouse] repair the old lighthouse before the storms']]);
+  lib.buildEntries(first);
+  const id = first.commitReg[0].id;
+  // A rebuild: the keeper words it differently and names it differently; a check-up correction used the old id.
+  const rebuilt = story([['- Mira | goal | [fix lighthouse] repair the old lighthouse lamp before the winter storms']]);
+  rebuilt.commitReg = first.commitReg;
+  rebuilt.reconRecords = [{ s: 'Mira', k: 'done', t: '', v: '[' + id + '] the lamp was lit again', at: 1 }];
+  const es = lib.buildEntries(rebuilt);
+  assert.strictEqual(rebuilt.commitReg.length, 1, 'one commitment, not two');
+  assert.strictEqual(rebuilt.commitReg[0].id, id, 'same id');
+  assert(/done/.test(entry(es, 'Mira').text) && !/lighthouse/.test(pin(entry(es, 'Mira'))), 'the old correction still applies');
 });
 
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');

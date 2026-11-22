@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.41.0
+// @version      3.42.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -1731,12 +1731,14 @@
     '  Secrets: give each secret a short name in square brackets and use the same name every time. "- Person | secret | [short name] what the secret is" for whose secret it is;',
     '  "- Person | knows | [short name] how they found out" when someone learns, is told or overhears it; "- Person | does not know | [short name]" for someone it is kept from;',
     '  "- Everyone | knows | [short name]" when it comes out (e.g. confessed in the group chat); when someone is told or confesses it to someone, a knows record for each person who now knows; reuse the exact short name already used for that secret; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
-    '  "done": a goal, plan or promise of theirs that was carried out, kept, dropped or replaced in this reply: "- Person | done | the goal or promise, in a few of its words".',
+    '  Goals and promises (a plan, a quest, a mission, a vow, an appointment) get a short name in square brackets, like secrets: "- Person | goal | [short name] what they mean to do". Reuse the [short name] given in OPEN GOALS AND PROMISES when it is the same one.',
+    '  What becomes of one, always with its [short name]: "done" only when it actually happened or was kept in this reply ("- Person | done | [short name] what happened"); "progress" for one step of it; "postponed" when it was moved to later; "cancelled" when it was dropped or broken. Planning, agreeing or preparing to do it is NOT done. Something someone did that completes no goal is a moment, never "done".',
     '  Times: write the story day or date ("the day of the escape room", "Saturday"), never "today", "tomorrow" or "tonight" (they are wrong a day later).',
     '  Moments (a short line saying what happened to or because of them in this reply) have three levels; choose one:',
     '  For a major moment, write what happened and, when the story shows a lasting change, what is different since: "argued about his calm → since then she offers quiet comfort when he is down (affects: Shuhua & Jacek)". Leave out the arrow part when nothing lasting changed.',
     '  "major moment": only when it changes something that lasts: a relationship starts, changes or ends, a secret comes out, a first time, a confession, a promise or vow, a fight or making up, a move, a big decision. Rare: most replies have none. Hugs, kisses, meals, teasing, coffee and dozing off are never major.',
     '  "minor moment": worth remembering but changes little (a date, a gift, a small plan, a meaningful talk).',
+    '  Use all three moment levels: most everyday replies have routine moments.',
     '  "routine moment": everyday things (meals, chores, banter, sleeping, texts, an intimate scene with nothing new in it). Every reply has at least one moment for the main characters in it (minor or routine when nothing major happened).',
     '  A secret is something a character hides from someone in the story, always with what it is after its [short name]; an intimate scene is a key moment, not a secret.',
     '  "knows" is ONLY for a secret: it always starts with the secret\'s [short name]. Anything else someone found out or was told (not a secret) is "learned". Something that happened is a moment, never "knows".',
@@ -1757,7 +1759,9 @@
     '  - Captain Orrin | believes | [Varn] Tomas held the gate to the end',
     '  - Orrin | role | captain of the city watch',
     '  - The silver key | status | hidden under the chapel floor',
-    '  Wrong: "- Lena | knows | Tomas kissed her by the fire" (a moment, not a secret). Wrong: "- Lena | where things stand: Tomas | he mended her cloak" (a scene, not a state).',
+    '  - Lena | goal | [retake Varn] lead the Ember Circle back to Varn before winter',
+    '  - Lena | progress | [retake Varn] won the council\'s vote for the march',
+    '  Wrong: "- Lena | done | [retake Varn] planned the march" (planning is not done). Wrong: "- Lena | done | cooked supper for the camp" (completes no goal: a moment). Wrong: "- Lena | knows | Tomas kissed her by the fire" (a moment, not a secret). Wrong: "- Lena | where things stand: Tomas | he mended her cloak" (a scene, not a state).',
   ];
   function summarySystem(facts) {
     return [
@@ -2061,8 +2065,11 @@
     if (!replies.length) return [];
     const names = chat.entries.map((e) => e.name + (e.aliases && e.aliases.length ? ' (' + e.aliases.join(', ') + ')' : ''));
     const scene = sectionOf(chat.memory, 'Current Scene').trim();
+    const openCommits = factsMode(chat) ? (chat.commitReg || []).filter((c) => c.state !== 'done' && c.state !== 'cancelled').slice(-80)
+      .map((c) => (c.who || c.owner) + ': [' + c.id + '] ' + c.text) : [];
     const ask = async (list) => {
       const user = (names.length ? 'KNOWN NAMES: ' + names.join('; ') + '\n\n' : '') +
+        (openCommits.length ? 'OPEN GOALS AND PROMISES (use these [short names] for their done / progress / postponed / cancelled):\n' + openCommits.join('\n') + '\n\n' : '') +
         (scene ? 'WHERE THE STORY STOOD BEFORE THESE MESSAGES:\n<<<\n' + scene + '\n>>>\n\n' : '') +
         'MESSAGES (oldest first):\n<<<\n' + formatMessages(list, chat.title) + '\n>>>\n\n' +
         (factsMode(chat) ? 'JOB: SUMMARISE. Write one summary and its FACTS records for each [R…] reply now.' : 'JOB: SUMMARISE. Write one summary and one FACTS line for each [R…] reply now.');
@@ -2537,7 +2544,10 @@
     ['believes', /^(believes?|thinks?|suspects?|assumes?|is convinced|convinced|claims?)$/],
     ['cover', /^(cover story|cover|public story|official story|what others are told|what outsiders are told|alibi)$/],
     ['goal', /^(goals?|plans?|wants|desires?|intentions?)$/],
-    ['done', /^(done|completed|complete|kept|fulfilled|dropped|cancelled|canceled|resolved|goal done|promise kept|no longer|finished)$/],
+    ['done', /^(done|completed|complete|kept|fulfilled|resolved|goal done|promise kept|finished|achieved|accomplished)$/],
+    ['cancelled', /^(dropped|cancelled|canceled|abandoned|no longer|called off|broken|promise broken|failed)$/],
+    ['postponed', /^(postponed|delayed|rescheduled|put off|on hold)$/],
+    ['progress', /^(progress|partly done|partial|step done|underway|in progress|step)$/],
     ['nickname', /^(nicknames?|alias(es)?|called|also known as|pet names?)$/],
     ['moment', /^(key moments?|moments?|events?|did|milestones?|turning points?|(major|important|big|key major|minor|routine|small) (key )?moments?)$/],
   ];
@@ -2568,6 +2578,8 @@
       if (s.split(/\s+/).length > 5 || /\b(is|was|are|were|has|had|did|does|became|got|gave|said|told)\b/i.test(s) || /^(the|a|an|they|she|he|it|we|i)\b/i.test(s)) continue;
       // A kind Story Manager does not know is kept (as "unclassified"), never dropped.
       if (k.kind === 'other' && k.label.split(/\s+/).length > 3) k.kind = 'unclassified';
+      // "done | dropped: …" (older check-ups): a cancellation.
+      if (k.kind === 'done' && /^\s*(\[[^\]]+\]\s*)?(dropped|cancelled|canceled|abandoned)\s*:/i.test(m[3])) k.kind = 'cancelled';
       // Learning a named secret is knowing it.
       if (k.kind === 'learned' && /^\s*\[[^\]]+\]/.test(m[3])) k.kind = 'knows';
       // "Lecture Hall B | place | a raked auditorium…": the kind says what it IS.
@@ -2589,6 +2601,68 @@
     return out;
   }
 
+  // Commitments: goals and promises (a quest, a mission, a date, a vow — any
+  // story). Each gets a permanent id from Story Manager when it first appears,
+  // kept in chat.commitReg, so it survives rebuilds: a rebuilt goal with
+  // another name or wording is matched to the one it already is. The keeper
+  // refers to it by its [short name]; a "done" must name a real commitment of
+  // that person and say it happened — a statement of intent never completes
+  // anything, and an action that completes nothing is a moment filed wrongly.
+  const INTENT_RE = /^\s*(plan(s|ned|ning)?|intend(s|ed)?|will|would|shall|wants? to|wanted to|decided to|agreed to|promised to|vowed to|swore to|is going to|was going to|hopes? to|hoped to|prepar(es|ed|ing) to|set out to|aims? to|means? to|offered to|asked to|tried to|plans? for)\b/i;
+  const LIFE_KINDS = new Set(['done', 'progress', 'cancelled', 'postponed']);
+  const commitName = (v) => (String(v || '').match(/^\s*\[([^\]]{1,60})\]\s*/) || [])[1] || '';
+  const commitText = (v) => String(v || '').replace(/^\s*\[[^\]]{1,60}\]\s*/, '').trim();
+  function commitState(chat, persist) {
+    const recs = allRecords(chat);
+    const sim = (a, b) => { const x = sigWords(a), y = sigWords(b); if (x.size < 2 || y.size < 2) return 0; let n = 0; for (const w of x) if (y.has(w)) n++; return n < 2 ? 0 : n / Math.min(x.size, y.size); };
+    const reg = (chat.commitReg || []).map((x) => Object.assign({}, x, { names: (x.names || []).slice(), state: 'open', events: [] }));
+    const ids = new Set(reg.map((x) => x.id));
+    const newId = (owner, nm, text) => {
+      const base = (normValue(nm) || normValue(text).split(' ').filter((w) => w.length > 2 && !STOP_WORDS.has(w)).slice(0, 4).join(' ') || 'goal').replace(/ /g, '-').slice(0, 40);
+      let id = base, i = 2;
+      while (ids.has(id)) id = base + '-' + i++;
+      ids.add(id);
+      return id;
+    };
+    const ownerOf = (r) => r.s.trim().toLowerCase();
+    const byName = (owner, nm) => { const k = secretKeyOf(nm); if (!k) return null; return reg.find((x) => x.owner === owner && (x.names.includes(k) || secretKeyOf(x.id) === k)) || (() => { const all = reg.filter((x) => x.names.includes(k) || secretKeyOf(x.id) === k); return all.length === 1 ? all[0] : null; })(); };
+    const ofRecord = new Map();
+    for (const r of recs) {
+      if (r.k !== 'goal' && r.k !== 'promise') continue;
+      const owner = ownerOf(r), nm = commitName(r.v), text = commitText(r.v);
+      let c = (nm && byName(owner, nm)) || reg.filter((x) => x.owner === owner).map((x) => [x, sim(x.text, text)]).filter(([, v]) => v >= 0.6).sort((a, b) => b[1] - a[1]).map(([x]) => x)[0];
+      if (!c) { c = { id: newId(owner, nm, text), owner, who: r.s.trim(), names: [], text, kind: r.k, at: r.at, state: 'open', events: [] }; reg.push(c); }
+      if (nm && !c.names.includes(secretKeyOf(nm))) c.names.push(secretKeyOf(nm));
+      if (text.length > (c.text || '').length && sim(c.text, text) >= 0.6) c.text = text;
+      if (!c.at || r.at < c.at) c.at = r.at;
+      c.seen = true;
+      ofRecord.set(r.id, { status: 'ok', c });
+    }
+    for (const r of recs) {
+      if (!LIFE_KINDS.has(r.k)) continue;
+      const owner = ownerOf(r), nm = commitName(r.v), text = commitText(r.v);
+      if (r.k === 'done' && INTENT_RE.test(text)) { ofRecord.set(r.id, { status: 'intent' }); continue; }
+      let c = nm ? byName(owner, nm) : null;
+      if (!c && !nm) c = reg.filter((x) => x.owner === owner && (x.at || 0) <= r.at).map((x) => [x, sim(x.text, text)]).filter(([, v]) => v >= 0.6).sort((a, b) => b[1] - a[1]).map(([x]) => x)[0];
+      if (!c) { ofRecord.set(r.id, { status: 'unmatched' }); continue; }
+      ofRecord.set(r.id, { status: 'ok', c });
+      c.events.push({ k: r.k, at: r.at, v: text });
+    }
+    for (const c of reg) {
+      c.events.sort((a, b) => a.at - b.at);
+      for (const ev of c.events) {
+        if (ev.k === 'done') { c.state = 'done'; c.doneAt = ev.at; c.how = ev.v; }
+        else if (ev.k === 'cancelled') { c.state = 'cancelled'; c.doneAt = ev.at; c.how = ev.v; }
+        else if (c.state !== 'done' && c.state !== 'cancelled') { if (ev.k === 'postponed') { c.state = 'postponed'; c.note = ev.v; } else c.note = ev.v; }
+      }
+    }
+    if (persist) {
+      const keep = reg.filter((x) => x.seen || (chat.commitReg || []).some((y) => y.id === x.id)).map((x) => ({ id: x.id, owner: x.owner, who: x.who, names: x.names, text: x.text, kind: x.kind, at: x.at, state: x.state }));
+      if (JSON.stringify(keep) !== JSON.stringify(chat.commitReg || [])) chat.commitReg = keep;
+    }
+    return { reg: reg.filter((x) => x.seen), ofRecord };
+  }
+
   // Fact quality: each record checked against its kind. Nothing is dropped —
   // a record that fails is kept (in the full entry, under "Unsorted") with
   // why, so it can be sorted later. Statuses:
@@ -2598,8 +2672,13 @@
   //   may come later, or be another name for one) · suspect-state ("where
   //   things stand" that reads like a scene; flagged only, still used).
   const SCENE_STATE_RE = /^\s*(he|she|they|i|we)\s+\w+ed\b|^\s*\w+ed (him|her|them|his|the)\b/i;
-  function factStatus(r, secretKeys, keyOf) {
+  function factStatus(r, secretKeys, keyOf, commits) {
     if (r.k === 'unclassified') return 'unclassified';
+    if (LIFE_KINDS.has(r.k) && commits) {
+      const s = (commits.ofRecord.get(r.id) || {}).status;
+      if (s === 'intent') return 'intent-not-done';
+      if (s === 'unmatched') return 'unmatched-done';
+    }
     if (r.k === 'knows' || r.k === 'notknows') {
       const m = String(r.v).match(/^\s*\[([^\]]+)\]/);
       if (!m) return r.k === 'knows' ? 'no-secret' : 'ok';
@@ -2615,7 +2694,8 @@
     const keys = new Set();
     for (const r of recs) if (r.k === 'secret') { const m = String(r.v).match(/^\s*\[([^\]]+)\]/); if (m) keys.add(secretKeyOf(m[1])); }
     for (const k of Object.keys(alias)) keys.add(k);
-    const out = recs.map((r) => ({ r, status: factStatus(r, keys, secretKeyOf) }));
+    const commits = commitState(chat);
+    const out = recs.map((r) => ({ r, status: factStatus(r, keys, secretKeyOf, commits) }));
     return out;
   }
 
@@ -2725,7 +2805,8 @@
     // of their own: they make a person exist and feed "Who knows what".
     const records = allRecords(chat).filter((r) => r.k !== 'cover');
     // Records that failed the fact check (see factQuality) stay in the full entry, under "Unsorted".
-    const unsortedIds = new Set(factQuality(chat).filter((x) => x.status === 'no-secret' || x.status === 'unresolved' || x.status === 'unclassified').map((x) => x.r.id));
+    const unsortedIds = new Set(factQuality(chat).filter((x) => /^(no-secret|unresolved|unclassified|intent-not-done|unmatched-done)$/.test(x.status)).map((x) => x.r.id));
+    const commits = commitState(chat, true);
     // Secrets are put together once; each person's entry lists what they know.
     Object.defineProperty(chat, '__secrets', { value: buildSecrets(chat), configurable: true, enumerable: false, writable: true });
     const skip = new Set((chat.ignored || []).map((n) => n.toLowerCase()));
@@ -2863,17 +2944,22 @@
       const unknownNames = (chat.__secrets || []).filter((x) => x.notKnows.some((k) => k.who.toLowerCase() === p.name.toLowerCase())).map((x) => '[' + x.name + ']');
       // A goal or promise marked done later (a "done" record) leaves the pinned
       // message; the full entry keeps it, marked done.
-      const dones = by('done');
-      const doneAt = (r) => { const w = sigWords(r.v); const d = dones.find((x) => x.at >= r.at && (() => { const o = sigWords(x.v); let n = 0; for (const a of w) if (o.has(a)) n++; return n >= 2 && n / Math.min(w.size, o.size) >= 0.5; })()); return d ? d.at : 0; };
-      const gp = [].concat(uniq(by('goal')).map((r) => ['Goal', r]), uniq(by('promise')).map((r) => ['Promise', r]));
-      const gpLine = ([k, r], mark) => { const d = doneAt(r); return mark && d ? '- ' + k + ' (done' + (d !== Infinity ? ', reply ' + d : '') + '): ' + r.v : '- ' + k + ': ' + r.v; };
+      // Their goals and promises, once each, with where each stands (see commitState).
+      const mine = new Set([p.name].concat(p.aliases, p.records.map((r) => r.s.trim())).map((n) => n.toLowerCase()));
+      const own = commits.reg.filter((c) => mine.has(c.owner)).sort((a, b) => (a.at || 0) - (b.at || 0));
+      const gpWord = (c) => (c.kind === 'promise' ? 'Promise' : 'Goal');
+      const atTxt = (n) => (n && n !== Infinity ? ', reply ' + n : '');
+      // The full entry keeps every step (progress, postponements) as history.
+      const steps = (c) => { const l = (c.events || []).filter((ev) => ev.k === 'progress' || ev.k === 'postponed').map((ev) => ev.k + ' ' + atTxt(ev.at).slice(2) + ': ' + ev.v); return l.length ? ' [history: ' + l.join('; ') + ']' : ''; };
+      const gpFull = own.map((c) => '- ' + gpWord(c) + ' [' + c.id + ']' + (c.state === 'done' ? ' (done' + atTxt(c.doneAt) + (c.how ? ': ' + c.how : '') + ')' : c.state === 'cancelled' ? ' (cancelled' + atTxt(c.doneAt) + (c.how ? ': ' + c.how : '') + ')' : c.state === 'postponed' ? ' (postponed' + (c.note ? ': ' + c.note : '') + ')' : c.note ? ' (progress: ' + c.note + ')' : '') + ': ' + c.text + steps(c));
+      const gpOpen = own.filter((c) => c.state !== 'done' && c.state !== 'cancelled').map((c) => '- ' + gpWord(c) + ' [' + c.id + ']' + (c.state === 'postponed' ? ' (postponed' + (c.note ? ': ' + c.note : '') + ')' : c.note ? ' (progress: ' + c.note + ')' : '') + ': ' + c.text);
       // Their secrets, once each (merged in "Who knows what").
       const ownSecrets = (chat.__secrets || []).filter((x) => (x.owners || []).some((o) => [p.name].concat(p.aliases).some((n) => n.toLowerCase() === o.toLowerCase())))
         .map((x) => '- Secret: [' + x.name + '] ' + x.text);
       const secretLines = ownSecrets.length ? ownSecrets : uniq(by('secret')).map((r) => '- Secret: ' + r.v);
-      const goals = [].concat(gp.map((x) => gpLine(x, true)), secretLines,
+      const goals = [].concat(gpFull, secretLines,
         knownNames.length ? ['- Knows: ' + knownNames.join(', ')] : [], unknownNames.length ? ['- Does NOT know: ' + unknownNames.join(', ')] : []);
-      const openGoals = [].concat(gp.filter(([, r]) => !doneAt(r)).map((x) => gpLine(x, false)), goals.slice(gp.length));
+      const openGoals = [].concat(gpOpen, goals.slice(gpFull.length));
       section('Goals, Promises & Secrets', goals, openGoals, openGoals.filter((x) => /^- (Promise|Secret|Does NOT know)/.test(x)));
       const moments = uniq(by('moment'));
       const momentLine = (r) => '- ' + (r.at !== Infinity ? '(reply ' + r.at + ') ' : '') + (r.tier === 'turning' ? 'Turning point: ' : '') + r.v;
@@ -3740,7 +3826,7 @@
     const recs = allRecords(chat);
     const open = [];
     for (const e of chat.entries.filter((x) => (x.kind || 'character') === 'character')) {
-      const lines = (e.pinText || e.text).split('\n').filter((l) => /^- (Goal|Promise|Lives \/ based|Role):/.test(l));
+      const lines = (e.pinText || e.text).split('\n').filter((l) => /^- (Goal|Promise)( \[[^\]]*\])?( \([^)]*\))?:|^- (Lives \/ based|Role):/.test(l));
       if (lines.length) open.push(e.name + '\n' + lines.map((l) => '  ' + l).join('\n'));
     }
     const secrets = (chat.__secrets || buildSecrets(chat)).map((x) => '[' + x.name + '] ' + x.text + ' — knows: ' + (x.everyone ? 'everyone' : x.knows.map((k) => k.who).join(', ') || 'nobody listed'));
@@ -3758,7 +3844,7 @@
       'THE LATEST REPLIES (summaries):\n<<<\n' + recent.slice(-30000) + '\n>>>\n\n' +
       'STILL LISTED AS OPEN:\n<<<\n' + open.join('\n').slice(-30000) + '\n>>>\n\nSECRETS AND WHO KNOWS THEM:\n<<<\n' + secrets.join('\n').slice(-15000) + '\n>>>\n\n' +
       'JOB: CHECK-UP. Using only what the texts above show, list ONLY real changes, one per line, each ending with the reply that shows it as "(reply N)":\n' +
-      '- "- Person | done | a few words of the goal or promise (reply N)" only when the thing itself happened or was kept, dropped or replaced. Not when planning for it moved on, it is underway or still ahead (a party in 20 days is not done because its plan is locked), and never because it is not mentioned. Also, for a plan set for a day or time the story has clearly passed (a lunch "tomorrow at 1 PM" when the story is days later) that never happened: "- Person | done | dropped: a few of its words (reply N)" with the reply that shows the later day.\n' +
+      '- "- Person | done | [its short name as listed] what happened (reply N)" only when the thing itself happened or was kept, dropped or replaced. Not when planning for it moved on, it is underway or still ahead (a party in 20 days is not done because its plan is locked), and never because it is not mentioned. Also, for a plan set for a day or time the story has clearly passed (a lunch "tomorrow at 1 PM" when the story is days later) that never happened: "- Person | postponed | [its short name] the day passed and it never happened (reply N)" with the reply that shows the later day; "- Person | cancelled | [its short name] why (reply N)" only when the story shows it was dropped.\n' +
       '- "- Person | location | their new home or base (reply N)" only when they moved house; never where they are at the moment (that is the scene). "- Person | role | new role (reply N)" only when their job or role changed.\n' +
       '- "- Person | knows | [exact listed secret name] how they learned it (reply N)" only for a person NOT already listed as knowing it, who clearly learned it (told, confessed to, overheard, said in the group chat; "Everyone" when everyone knows).\n' +
       '- "- [secret name] = [other secret name]" when two listed secrets are the same secret (use the listed names exactly).\n' +
@@ -3807,9 +3893,10 @@
       for (const r of recs) {
         const key = [r.s, r.k, normValue(r.v)].join('|').toLowerCase();
         const sec = r.k === 'knows' ? (chat.__secrets || []).find((x) => { const m = r.v.match(/\[([^\]]+)\]/); return m && keyOfName(x.name) === keyOfName(alias[keyOfName(m[1])] || m[1]); }) : null;
-        if (!/^(done|role|location|knows)$/.test(r.k)) skipped.push([line, 'kind "' + (r.label || r.k) + '" is not a check-up correction']);
+        if (!/^(done|cancelled|postponed|progress|role|location|knows)$/.test(r.k)) skipped.push([line, 'kind "' + (r.label || r.k) + '" is not a check-up correction']);
         else if (!(Number((line.match(/\(reply (\d+)\)/i) || [])[1]) <= at)) skipped.push([line, 'no reply given as evidence']);
         else if (r.k === 'done' && NOT_DONE_RE.test(r.v)) skipped.push([line, 'says it is not done']);
+        else if (r.k === 'done' && INTENT_RE.test(commitText(r.v))) skipped.push([line, 'a plan, not something done']);
         else if (r.k === 'knows' && NO_NEWS_RE.test(r.v)) skipped.push([line, 'nothing new']);
         else if (r.k === 'knows' && !sec) skipped.push([line, 'no such secret']);
         else if (r.k === 'knows' && (sec.everyone || sec.knows.some((k) => k.who.toLowerCase() === r.s.toLowerCase()))) skipped.push([line, 'already listed as knowing']);

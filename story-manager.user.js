@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.46.0
+// @version      3.46.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2678,7 +2678,7 @@
     // Monday" and "visit her on Friday" are two commitments. When unsure they
     // stay separate — a wrong merge could silently erase an obligation.
     const SPECIFIC_RE = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|\d+(:\d+)?(st|nd|rd|th|am|pm)?|[A-Z][\p{L}'-]+)\b/gu;
-    const specifics = (t) => new Set((String(t).replace(/^\s*\S+/, '').match(SPECIFIC_RE) || []).map((w) => w.toLowerCase()));
+    const specifics = (t) => new Set((String(t).replace(/^\s*\S+/, '').match(SPECIFIC_RE) || []).map((w) => w.toLowerCase().replace(/['’]s$/, '')));
     const conflict = (a, b) => { const x = specifics(a), y = specifics(b); return [...x].some((w) => !y.has(w)) && [...y].some((w) => !x.has(w)); };
     const sameByWords = (a, b) => sim(a, b) >= 0.75 && !conflict(a, b);
     const ownName = (owner, nm) => { const k = secretKeyOf(nm); return k ? reg.find((x) => x.owner === owner && (x.names.includes(k) || secretKeyOf(x.id) === k)) : null; };

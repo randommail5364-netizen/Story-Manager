@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.47.0
+// @version      3.47.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4046,6 +4046,8 @@
   // facts; nothing is deleted (the full entries keep the history).
   const RECONCILE_EVERY = 10;
   const GOALS_PER_CHECK = 25;
+  // The reply a check-up line cites: "(reply 12)", or the newest of "(reply 51, 265)" / "(replies 3 and 9)".
+  const evidenceReply = (line) => { const m = String(line).match(/\(repl(?:y|ies)\s+([\d\s,and&–-]+)\)/i); if (!m) return NaN; const ns = (m[1].match(/\d+/g) || []).map(Number); return ns.length ? Math.max(...ns) : NaN; };
   async function reconcileFacts(chat) {
     const runId = 'c' + Date.now().toString(36);
     const at = chat.log.length;
@@ -4159,14 +4161,14 @@
         const key = [r.s, r.k, normValue(r.v)].join('|').toLowerCase();
         const sec = r.k === 'knows' ? (chat.__secrets || []).find((x) => { const m = r.v.match(/\[([^\]]+)\]/); return m && keyOfName(x.name) === keyOfName(alias[keyOfName(m[1])] || m[1]); }) : null;
         if (!/^(done|cancelled|postponed|progress|role|location|knows)$/.test(r.k)) skipped.push([line, 'kind "' + (r.label || r.k) + '" is not a check-up correction']);
-        else if (!(Number((line.match(/\(reply (\d+)\)/i) || [])[1]) <= at)) skipped.push([line, 'no reply given as evidence']);
+        else if (!(evidenceReply(line) <= at)) skipped.push([line, 'no reply given as evidence']);
         else if (r.k === 'done' && NOT_DONE_RE.test(r.v)) skipped.push([line, 'says it is not done']);
         else if (r.k === 'done' && isIntent(commitText(r.v))) skipped.push([line, 'a plan, not something done']);
         else if (r.k === 'knows' && NO_NEWS_RE.test(r.v)) skipped.push([line, 'nothing new']);
         else if (r.k === 'knows' && !sec) skipped.push([line, 'no such secret']);
         else if (r.k === 'knows' && (sec.everyone || sec.knows.some((k) => k.who.toLowerCase() === r.s.toLowerCase()))) skipped.push([line, 'already listed as knowing']);
         else if ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v)) skipped.push([line, 'where they are now, not a home or role']);
-        else if (/^(done|cancelled|postponed|progress)$/.test(r.k) && (() => { const nm = commitName(r.v); const c = nm && (chat.commitReg || []).find((x) => secretKeyOf(x.id) === secretKeyOf(nm) || (x.names || []).includes(secretKeyOf(nm))); const n = Number((line.match(/\(reply (\d+)\)/i) || [])[1]); return c && c.at && n <= c.at; })()) skipped.push([line, 'the evidence is from before the goal existed']);
+        else if (/^(done|cancelled|postponed|progress)$/.test(r.k) && (() => { const nm = commitName(r.v); const c = nm && (chat.commitReg || []).find((x) => secretKeyOf(x.id) === secretKeyOf(nm) || (x.names || []).includes(secretKeyOf(nm))); const n = evidenceReply(line); return c && c.at && n <= c.at; })()) skipped.push([line, 'the evidence is from before the goal existed']);
         else if (have.has(key)) skipped.push([line, 'already applied before']);
         else { have.add(key); got.push(Object.assign(r, { at, run: runId })); applied.push(line); }
       }
@@ -6179,7 +6181,9 @@
         (/^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName) || a.isContentEditable));
       const vv = window.visualViewport;
       const keyboard = !!(vv && vv.height < window.innerHeight * 0.75);
-      ui.fab.classList.toggle('typing', (field || keyboard) && !(ui.panel && ui.panel.classList.contains('open')));
+      // (Touch screens only: on a computer the button never covers the message box.)
+      const touch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+      ui.fab.classList.toggle('typing', touch && (field || keyboard) && !(ui.panel && ui.panel.classList.contains('open')));
     };
     document.addEventListener('focusin', typingOnSite, true);
     document.addEventListener('focusout', () => setTimeout(typingOnSite, 50), true);
@@ -6504,6 +6508,7 @@
     const total = chat.knownMessages || 0;
     const st = stages(chat);
     const inPlay = entriesInPlay(chat).map((e) => e.name);
+    const sortCount = factsMode(chat) ? sortCandidates(chat).length : 0; // once per drawing (it is not cheap)
     return el('div', {},
       el('div', { class: 'status' },
         el('div', {}, el('b', {}, chat.title || 'Chat'), ' · ', chat.id.slice(0, 8)),
@@ -6650,13 +6655,13 @@
           const n = undoCheckup(chat, run.key);
           await saveChat(chat); renderPanel(true); toast('Undone: ' + n + ' corrections from the last check-up.');
         } }, 'Undo a check-up…') : null,
-        factsMode(chat) && sortCandidates(chat).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
+        factsMode(chat) && sortCount ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           if (busy[chat.id]) { toast('The memory is being updated right now — try again in a moment'); return; }
           const n = sortCandidates(chat).length;
           if (!confirm('Have the memory keeper sort ' + n + ' facts that were filed under the wrong kind? About ' + Math.ceil(n / SORT_BATCH) + ' or more requests. The original facts are kept; every decision can be undone.')) return;
           await save(true);
           await runSortFacts(chat.id);
-        } }, 'Sort unsorted facts (' + sortCandidates(chat).length + ')') : null,
+        } }, 'Sort unsorted facts (' + sortCount + ')') : null,
         factsMode(chat) && Object.keys(chat.sortings || {}).length ? el('button', { class: 'btn', disabled: isBusy, onclick: async () => {
           const batches = [...new Set(Object.values(chat.sortings).map((d) => String(d.batch).replace(/-\d+$/, '')))].sort();
           const last = batches[batches.length - 1];
@@ -7015,15 +7020,17 @@
   function logView(chat) {
     const box = el('textarea', { readonly: true, class: 'log' });
     // ⏳ = not yet in the story & characters; 📚n = part of chapter n.
-    box.value = chat.log.length
+    // Filled only when opened: a long log is a lot of text to draw every time the panel opens.
+    const fill = () => { box.value = chat.log.length
       ? chat.log.slice().reverse().map((e, i) => '#' + (chat.log.length - i) +
         (!e.folded ? ' ⏳' : e.chapter != null ? ' 📚' + (e.chapter + 1) : '') + '  ' + e.text +
         (e.facts ? '\n   Facts: ' + e.facts : '')).join('\n\n')
-      : 'Each AI reply gets a detailed summary here as the story goes on.';
+      : 'Each AI reply gets a detailed summary here as the story goes on.'; };
     const attached = Math.min(chat.log.length, Math.max(0, Number(settings.logAttach) || 0));
+    const d = el('details', { class: 'entrybox' }, el('summary', {}, '📜 Reply-by-reply log (' + chat.log.length + ' entries, newest first)'), box);
+    d.addEventListener('toggle', () => { if (d.open && !box.value) fill(); });
     return el('div', {},
-      el('label', {}, '📜 Reply-by-reply log (' + chat.log.length + ' entries, newest first)'),
-      box,
+      d,
       el('div', { class: 'hint' }, 'Everything since the last chapter (at least the latest ' + attached + ') is attached to your messages, newest first, as far as the space allows. ⏳ = not yet in the story & characters; 📚 = in that chapter.'));
   }
 

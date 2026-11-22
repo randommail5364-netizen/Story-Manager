@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.47.1
+// @version      3.47.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -6344,8 +6344,10 @@
       toast(chat.enabled ? 'Auto-managing this chat' : 'Paused for this chat');
     });
 
-    const editors = chat.entries.map((e) => (factsMode(chat) ? factsEntryView(chat, e) : entryEditor(chat, e)));
-    const chapterEds = chat.chapters.map((c, i) => chapterEditor(c, i, chat));
+    // Only the open sub-tab is drawn (a long story has a lot of text); switching tabs keeps edits.
+    const showTab = (k) => memTab === k || allMemTabs;
+    const editors = showTab('characters') ? chat.entries.map((e) => (factsMode(chat) ? factsEntryView(chat, e) : entryEditor(chat, e))) : [];
+    const chapterEds = showTab('chapters') ? chat.chapters.map((c, i) => chapterEditor(c, i, chat)) : [];
 
     const save = async (quiet) => {
       const snap = snapshot(chat);
@@ -6592,9 +6594,13 @@
       (() => {
         const views = [['story', '📖 Story'], ['chapters', '📚 Chapters (' + chat.chapters.length + ')'], ['characters', '👥 Characters (' + chat.entries.length + ')']];
         const bar = el('nav', { class: 'subtabs' }, ...views.map(([k, label]) => el('button', { class: memTab === k ? 'on' : '', onclick: (ev) => {
+          void ev;
+          // Keep what was typed in the tab being left, then draw the new one.
+          chat.pinned = pinned.value; chat.memory = mem.value;
+          for (const ed of editors) ed.apply();
+          for (const ed of chapterEds) ed.apply();
           memTab = k;
-          for (const b of bar.children) b.classList.toggle('on', b === ev.currentTarget);
-          for (const d of ui.body.querySelectorAll('[data-memtab]')) d.style.display = d.getAttribute('data-memtab') === k ? '' : 'none';
+          renderPanel(true);
         } }, label)));
         return bar;
       })(),
@@ -6614,7 +6620,7 @@
         : 'Every ' + chapterSize() + ' AI replies become a chapter of the story\'s history.'),
       chapterEds.map((ed) => ed.node)),
       el('div', { 'data-memtab': 'characters', style: memTab === 'characters' || allMemTabs ? undefined : 'display:none' },
-      factsMode(chat) ? secretsView(chat) : null,
+      factsMode(chat) && showTab('characters') ? secretsView(chat) : null,
       el('label', {}, '👥 Entries (' + chat.entries.length + ')'),
       el('div', { class: 'hint' }, chat.entries.length && memoryInMessage(chat) && !chat.memoryMsgCut
         ? 'Every entry is in the pinned memory message in full.' + (inPlay.length ? ' In the current scene: ' + inPlay.join(', ') + '.' : '')

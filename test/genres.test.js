@@ -211,5 +211,31 @@ test('a step never belongs to a goal that only appears later in the story', () =
   assert.strictEqual(cs.reg[0].state, 'open');
 });
 
+test('a rebuild turns an old speculative "goal" into a want: no duplicate, nothing lost, no open goal left', () => {
+  const before = story([['- Mina | goal | [gravity] understand the shape of his gravity', '- Mina | goal | [the archive] take him to the archive on Thursday']]);
+  lib.buildEntries(before);
+  const rebuilt = story([['- Mina | want | to understand the shape of his gravity', '- Mina | goal | [the archive] take him to the archive on Thursday']]);
+  rebuilt.commitReg = before.commitReg;
+  const es = common(rebuilt);
+  const mina = entry(es, 'Mina');
+  assert(/Motivations & Desires[\s\S]*shape of his gravity/.test(pin(mina)), 'kept as a want');
+  assert(!/Goal \[gravity\]/.test(mina.text), 'no longer a goal');
+  assert.strictEqual((mina.text.match(/shape of his gravity/g) || []).length, 1, 'once');
+  assert.strictEqual(lib.commitState(rebuilt).reg.length, 1, 'only the real goal is active');
+  assert(rebuilt.commitReg.some((c) => c.id === 'gravity'), 'its id stays on record (history), unused');
+});
+
+test('Open Threads: of two similar goals, the finished one may be left out, the active one never', () => {
+  const chat = story([
+    ['- Ren | promise | [ride monday] give Cora a ride to the harbour on Monday', '- Ren | promise | [ride friday] give Cora a ride to the harbour on Friday'],
+    ['- Ren | done | [ride monday] gave Cora the ride to the harbour on Monday'],
+  ]);
+  const cs = lib.commitState(chat);
+  assert.strictEqual(cs.closedThread('- Ren will give Cora a ride to the harbour on Friday'), null, 'the active thread stays');
+  assert.strictEqual(cs.closedThread('- Ren gives Cora a ride to the harbour'), null, 'unclear: stays');
+  const only = story([['- Ren | promise | [the bell] repair the chapel bell before the festival'], ['- Ren | done | [the bell] repaired the chapel bell']]);
+  assert(lib.commitState(only).closedThread('- Ren must repair the chapel bell before the festival'), 'a clearly finished one is left out');
+});
+
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');
 process.exit(failed ? 1 : 0);

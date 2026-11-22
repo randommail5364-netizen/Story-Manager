@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.48.0
+// @version      3.49.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -748,7 +748,7 @@
     return hashText(JSON.stringify([chat.format, chat.memory, chat.pinned, chat.enabled, chat.title, chat.ignored, chat.chapters,
       chat.log.map((e) => [e.id, e.text, e.facts, e.records, e.folded, e.chapter, e.nofacts]),
       factsMode(chat) ? null : (chat.entries || []).map((e) => [e.name, e.kind, e.aliases, e.text, e.always]),
-      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg, chat.commitAlias, chat.sortings, chat.commitChecked]));
+      chat.manualRecords, chat.hiddenRecords, chat.portraits, chat.keptMoments, chat.relMap, chat.reconRecords, chat.secretAlias, chat.commitReg, chat.commitAlias, chat.sortings, chat.commitChecked, chat.commitTier]));
   }
 
   async function saveChat(chat, fromSync) {
@@ -1736,6 +1736,7 @@
     '  "- Everyone | knows | [short name]" when it comes out (e.g. confessed in the group chat); when someone is told or confesses it to someone, a knows record for each person who now knows; reuse the exact short name already used for that secret; "- Public | cover story | [short name] what others are told". Write these whenever this reply changes who knows.',
     '  A goal or promise is only an explicit commitment (a promise, an appointment, an order, a vow) or a stated intention (decided to, means to, sets out to). A wish, a hope, an interest or a figure of speech is "want" ("- Lena | want | to see the sea again"), never a goal.',
     '  "scheduled": something set for a later time (an appointment, a session, a date, a meeting), with a [short name] and when: "- Lena | scheduled | [council] council meeting on Thursday at noon". It has not happened yet: never a moment. When it happens, write "done" with its [short name]; moved: "postponed"; called off: "cancelled".',
+    '  Give each goal, promise or scheduled event a level: "major goal" (matters for the whole story: a life goal, a quest, a vow, a mystery), "minor goal" (matters for a while: a date, plans for the coming days), "routine goal" (over within a scene: fetch a drink, go to class now) — e.g. "- Lena | major goal | [retake Varn] …". When unsure, minor.',
     '  Goals and promises (a plan, a quest, a mission, a vow) get a short name in square brackets, like secrets: "- Person | goal | [short name] what they mean to do". Reuse the [short name] given in OPEN GOALS AND PROMISES when it is the same one.',
     '  What becomes of one, always with its [short name]: "done" only when it actually happened or was kept in this reply ("- Person | done | [short name] what happened"); "progress" for one step of it; "postponed" when it was moved to later; "cancelled" when it was dropped or broken. Planning, scheduling, agreeing to it, confirming it, being reminded of it or promising it again is NOT done (that is "progress", e.g. "progress | [visit] set for Thursday"); a part of it is "progress" too ("wrote three pages" of an essay to finish). Something someone did that completes no goal is a moment, never "done".',
     '  Times: write the story day or date ("the day of the tournament", "Saturday"), never "today", "tomorrow" or "tonight" (they are wrong a day later).',
@@ -2592,9 +2593,12 @@
     raw = raw.replace(/^(relationships?|relation|bond|where things stand|stands|feelings?)\s+(?:with|to|toward|towards|for|about)\s+(.+)$/i, '$1: $2');
     const m = raw.match(/^([^:]+?)\s*(?::\s*(.+))?$/);
     if (!m) return null;
-    const name = m[1].trim().toLowerCase();
+    let name = m[1].trim().toLowerCase();
+    // "major goal", "routine promise", "minor scheduled": a goal with its level.
+    const lv = name.match(/^(major|minor|routine)\s+(goals?|promises?|plans?|scheduled|appointments?|upcoming)$/);
+    if (lv) name = lv[2];
     const hit = RECORD_KINDS.find(([, re]) => re.test(name));
-    return { kind: hit ? hit[0] : 'other', target: (m[2] || '').trim(), label: name };
+    return Object.assign({ kind: hit ? hit[0] : 'other', target: (m[2] || '').trim(), label: name }, lv ? { level: lv[1] } : {});
   }
   // "- Karina | relationship: Winter | close friends since the dorm night"
   function parseRecords(block) {
@@ -2624,7 +2628,7 @@
         out.push({ s, k: 'basics', t: '', v, label: 'basics' });
         continue;
       }
-      const rec = { s, k: k.kind, t: k.target, v, label: k.label };
+      const rec = Object.assign({ s, k: k.kind, t: k.target, v, label: k.label }, k.level ? { level: k.level } : {});
       // Moments come in four levels (see RECORD_RULES).
       if (k.kind === 'moment') {
         rec.tier = /turning/.test(k.label) ? 'turning' : /^(major|important|big|key major)\b/.test(k.label) ? 'major' : /^(routine|small)\b/.test(k.label) ? 'routine' : /^minor\b/.test(k.label) ? 'minor' : undefined;
@@ -2646,6 +2650,8 @@
   const INTENT_RE = /^\s*(plan(s|ned|ning)?|intend(s|ed)?|will|would|shall|wants? to|wanted to|decided to|agreed to(?! (the|a|an|his|her|their|its|our|terms)\b)|promised to|vowed to|swore to|is going to|was going to|hopes? to|hoped to|prepar(es|ed|ing) to|set out to|aims? to|means? to|offered to|asked to|tried to|plans? for)\b/i;
   // A plan, wish or promise, with or without a subject first ("he will …", "Mira wants to …", "she vowed …").
   const isIntent = (t) => { const x = String(t).replace(/^\s*["“']+/, ''); return INTENT_RE.test(x) || INTENT_RE.test(x.replace(/^\s*(he|she|they|i|we|it|[A-Z][\p{L}'’-]+)\s+(?:(?:is|was|has|had)\s+)?/u, '')) || /^\s*(he|she|they|[A-Z][\p{L}'’-]+)\s+(wants?|wished?|hopes?|vowed|swore|promised|reaffirmed|is thinking|was thinking|thinks|plans?|will|would)\b/u.test(x); };
+  const STALE_ROUTINE = 10; // replies without a mention after which a routine goal is probably over
+  const STALE_MINOR = 50;   // … and a minor one
   const LIFE_KINDS = new Set(['done', 'progress', 'cancelled', 'postponed']);
   // A "done" is judged against what the goal asks for:
   //  - setting it up (scheduled, arranged, agreed, confirmed, promised again,
@@ -2698,6 +2704,9 @@
       if (nm && !c.names.includes(secretKeyOf(nm))) c.names.push(secretKeyOf(nm));
       if (text.length > (c.text || '').length && sameByWords(c.text, text)) c.text = text;
       if (!c.at || r.at < c.at) c.at = r.at;
+      // Its level: the most important one given for it.
+      const order = ['routine', 'minor', 'major'];
+      if (r.level && order.indexOf(r.level) > order.indexOf(c.level || '')) { c.level = r.level; c.levelFromRecord = true; }
       c.seen = true;
       ofRecord.set(r.id, { status: 'ok', c });
     }
@@ -2726,6 +2735,23 @@
       ofRecord.set(r.id, { status: 'ok', c });
       c.events.push({ k, at: r.at, v: text });
     }
+    // Levels set by a check-up for goals the keeper wrote without one; unsure ones count as minor.
+    // A promise or something with a set time is never routine.
+    const tiers = chat.commitTier || {};
+    const now = chat.log.length;
+    const logWords = chat.log.map((e) => ({ t: String(e.text || '').toLowerCase(), w: sigWords(e.text) }));
+    for (const c of reg) {
+      c.level = c.level || tiers[c.id] || 'minor';
+      if (c.level === 'routine' && (c.kind === 'promise' || c.kind === 'scheduled')) c.level = 'minor';
+      // When the story last touched it: a step, or a reply that names its person and its words.
+      let last = c.at || 0;
+      for (const ev of c.events) if (ev.at !== Infinity && ev.at > last) last = ev.at;
+      if (c.seen && c.level !== 'major') {
+        const w = sigWords(c.text), who = String(c.who || c.owner || '').toLowerCase();
+        for (let i = now - 1; i >= last; i--) { const x = logWords[i]; if (!x || !x.t.includes(who)) continue; let m = 0; for (const a of w) if (x.w.has(a)) m++; if (m >= 2) { last = i + 1; break; } }
+      }
+      c.lastSeen = last;
+    }
     for (const c of reg) {
       c.events.sort((a, b) => a.at - b.at);
       for (const ev of c.events) {
@@ -2733,9 +2759,11 @@
         else if (ev.k === 'cancelled') { c.state = 'cancelled'; c.doneAt = ev.at; c.how = ev.v; }
         else if (c.state !== 'done' && c.state !== 'cancelled') { if (ev.k === 'postponed') { c.state = 'postponed'; c.note = ev.v; } else c.note = ev.v; }
       }
+      // Not closed, but long untouched: probably over (kept, marked; back as soon as it is mentioned).
+      if (c.state !== 'done' && c.state !== 'cancelled' && c.level !== 'major' && now - (c.lastSeen || 0) >= (c.level === 'routine' ? STALE_ROUTINE : STALE_MINOR)) c.stale = true;
     }
     if (persist) {
-      const keep = reg.filter((x) => x.seen || (chat.commitReg || []).some((y) => y.id === x.id)).map((x) => { const old = (chat.commitReg || []).find((y) => y.id === x.id) || {}; return { id: x.id, owner: x.owner, who: x.who, names: x.names, text: x.text, kind: x.kind, at: x.seen ? x.at : old.at, state: x.seen ? x.state : old.state }; });
+      const keep = reg.filter((x) => x.seen || (chat.commitReg || []).some((y) => y.id === x.id)).map((x) => { const old = (chat.commitReg || []).find((y) => y.id === x.id) || {}; return { id: x.id, owner: x.owner, who: x.who, names: x.names, text: x.text, kind: x.kind, at: x.seen ? x.at : old.at, state: x.seen ? (x.stale ? 'stale' : x.state) : old.state }; });
       if (JSON.stringify(keep) !== JSON.stringify(chat.commitReg || [])) chat.commitReg = keep;
     }
     // Open Threads must not contradict the goals (until threads are built from
@@ -3187,8 +3215,8 @@
       const atTxt = (n) => (n && n !== Infinity ? ', reply ' + n : '');
       // The full entry keeps every step (progress, postponements) as history.
       const steps = (c) => { const l = (c.events || []).filter((ev) => ev.k === 'progress' || ev.k === 'postponed').map((ev) => ev.k + ' ' + atTxt(ev.at).slice(2) + ': ' + ev.v); return l.length ? ' [history: ' + l.join('; ') + ']' : ''; };
-      const gpFull = own.map((c) => '- ' + gpWord(c) + ' [' + c.id + ']' + (c.state === 'done' ? ' (done' + atTxt(c.doneAt) + (c.how ? ': ' + c.how : '') + ')' : c.state === 'cancelled' ? ' (cancelled' + atTxt(c.doneAt) + (c.how ? ': ' + c.how : '') + ')' : c.state === 'postponed' ? ' (postponed' + (c.note ? ': ' + c.note : '') + ')' : c.note ? ' (progress: ' + c.note + ')' : '') + ': ' + c.text + steps(c));
-      const gpOpen = own.filter((c) => c.state !== 'done' && c.state !== 'cancelled').map((c) => '- ' + gpWord(c) + ' [' + c.id + ']' + (c.state === 'postponed' ? ' (postponed' + (c.note ? ': ' + c.note : '') + ')' : c.note ? ' (progress: ' + c.note + ')' : '') + ': ' + c.text);
+      const gpFull = own.map((c) => '- ' + gpWord(c) + ' [' + c.id + ']' + (c.stale && c.state !== 'done' && c.state !== 'cancelled' ? ' (probably over — not mentioned since reply ' + c.lastSeen + ')' : '') + (c.state === 'done' ? ' (done' + atTxt(c.doneAt) + (c.how ? ': ' + c.how : '') + ')' : c.state === 'cancelled' ? ' (cancelled' + atTxt(c.doneAt) + (c.how ? ': ' + c.how : '') + ')' : c.state === 'postponed' ? ' (postponed' + (c.note ? ': ' + c.note : '') + ')' : c.note ? ' (progress: ' + c.note + ')' : '') + ': ' + c.text + steps(c));
+      const gpOpen = own.filter((c) => c.state !== 'done' && c.state !== 'cancelled' && !c.stale).map((c) => '- ' + gpWord(c) + ' [' + c.id + ']' + (c.state === 'postponed' ? ' (postponed' + (c.note ? ': ' + c.note : '') + ')' : c.note ? ' (progress: ' + c.note + ')' : '') + ': ' + c.text);
       // Their secrets, once each (merged in "Who knows what").
       const ownSecrets = (chat.__secrets || []).filter((x) => (x.owners || []).some((o) => [p.name].concat(p.aliases).some((n) => n.toLowerCase() === o.toLowerCase())))
         .map((x) => '- Secret: [' + x.name + '] ' + x.text);
@@ -4140,13 +4168,24 @@
         'Only what the texts show; never guess. Write "none" if nothing is missing. Output only those lines.';
       out2 = cleanOutput(await callLLM(updateSystem(), user2));
     }
+    // Levels for goals written without one (older summaries): one request, up to 100 at a time.
+    const levelless = commitState(chat).reg.filter((c) => !c.levelFromRecord && !(chat.commitTier || {})[c.id] && c.state !== 'done' && c.state !== 'cancelled').slice(0, 100);
+    if (levelless.length) {
+      const userL = 'GOALS, PROMISES AND UPCOMING EVENTS:\n' + levelless.map((c) => '[' + c.id + '] ' + (c.who || c.owner) + ': ' + c.text).join('\n') + '\n\n' +
+        'JOB: LEVELS. For each, how much it matters for the story: major (matters for the whole story: a life goal, a quest, a vow, a mystery), minor (matters for a while: a date, a plan for the coming days), routine (over within a scene: fetch a drink, go to class now). One line each: "[id] major" / "[id] minor" / "[id] routine". When unsure, minor.';
+      const outL = cleanOutput(await callLLM(updateSystem(), userL));
+      const tiers = Object.assign({}, chat.commitTier);
+      for (const l of outL.split('\n')) { const m = l.match(/\[([^\]]+)\]\s*[:\-–]?\s*(major|minor|routine)\b/i); if (m && levelless.some((c) => c.id === m[1].trim())) tiers[m[1].trim()] = m[2].toLowerCase(); }
+      chat.commitTier = tiers;
+    }
     // The goals check (third request): the oldest open goals, promises and upcoming events not
     // checked lately, each with the later summaries that mention its person and its words, asked
     // one by one: done, cancelled, postponed, progress or still open — with the reply that shows it.
     let out3 = '';
     const reg = commitState(chat).reg.filter((c) => c.state !== 'done' && c.state !== 'cancelled' && (c.at || 0) <= at - 3);
     const checked = chat.commitChecked || {};
-    const due = reg.filter((c) => !checked[c.id] || checked[c.id] <= at - 30).sort((a, b) => (a.at || 0) - (b.at || 0)).slice(0, GOALS_PER_CHECK);
+    const rank = (c) => (c.stale ? 3 : c.level === 'major' ? 0 : c.level === 'minor' ? 1 : 2);
+    const due = reg.filter((c) => !checked[c.id] || checked[c.id] <= at - 30).sort((a, b) => rank(a) - rank(b) || (a.at || 0) - (b.at || 0)).slice(0, GOALS_PER_CHECK);
     if (due.length) {
       let ev = '';
       const used = new Set();
@@ -7289,7 +7328,7 @@
       log: chat.log.map((e, i) => ({ reply: i + 1, id: e.id, v: e.v || '', chapter: e.chapter, folded: !!e.folded, summary: e.text, facts: e.facts || '', records: e.records || [], helperChat: e.hc || '', helperPos: e.hp || 0 })),
       manualRecords: chat.manualRecords || [], hiddenRecords: chat.hiddenRecords || [],
       reconRecords: chat.reconRecords || [], reconReport: chat.reconReport || null, reconAt: chat.reconAt || 0,
-      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], commitAlias: chat.commitAlias || {}, sortings: chat.sortings || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
+      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], commitAlias: chat.commitAlias || {}, commitTier: chat.commitTier || {}, sortings: chat.sortings || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
       relMap: chat.relMap || null, portraits: chat.portraits || {},
       chapters: (chat.chapters || []).map((c) => ({ title: c.title, text: c.text, short: c.short || '' })),
       memory: chat.memory || '', pinnedNote: chat.pinned || '',

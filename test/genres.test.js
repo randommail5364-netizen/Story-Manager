@@ -330,5 +330,22 @@ test('profiles: the same trait in other words counts once in the pinned version 
   assert.strictEqual((e.text.match(/loyal/g) || []).length, 2);
 });
 
+test('goal levels: a routine goal untouched for 10 replies is probably over; major stays; mentioning it again brings it back', () => {
+  const quiet = Array.from({ length: 12 }, () => ['- Ren | minor moment | trained in the yard']);
+  const chat = story([[
+    '- Ren | major goal | [the crown] win the council\'s vote for the crown',
+    '- Ren | routine goal | [the punch] fetch a cup of punch from the kitchen',
+    '- Ren | routine promise | [the letter] will deliver the letter to Ilse',
+  ]].concat(quiet));
+  const es = lib.buildEntries(chat);
+  const p = pin(entry(es, 'Ren'));
+  assert(/the-crown/.test(p), 'major stays');
+  assert(!/the-punch/.test(p) && /probably over/.test(entry(es, 'Ren').text), 'routine goal is probably over, kept in the full entry');
+  assert(/the-letter/.test(p), 'a promise is never routine');
+  // Mentioned again: back in the pinned message.
+  chat.log.push({ id: 'r99', text: 'Ren finally went to fetch the punch from the kitchen.', records: [] });
+  assert(/the-punch/.test(pin(entry(lib.buildEntries(chat), 'Ren'))));
+});
+
 console.log(failed ? failed + ' of ' + n + ' genre checks failed.' : 'All ' + n + ' genre checks passed.');
 process.exit(failed ? 1 : 0);

@@ -19,7 +19,7 @@ const overlap = (a, b) => { const x = sig(a), y = sig(b); if (!x.size || !y.size
 function chatOf(ex) {
   return {
     format: ex.format, ignored: ex.ignored || [], entries: [], secretAlias: ex.secretAlias || {}, keptMoments: ex.keptMoments || [],
-    commitReg: ex.commitReg || [], commitAlias: ex.commitAlias || {}, sortings: ex.sortings || {}, manualRecords: ex.manualRecords || [], hiddenRecords: ex.hiddenRecords || [], reconRecords: ex.reconRecords || [],
+    commitReg: ex.commitReg || [], commitAlias: ex.commitAlias || {}, commitTier: ex.commitTier || {}, sortings: ex.sortings || {}, manualRecords: ex.manualRecords || [], hiddenRecords: ex.hiddenRecords || [], reconRecords: ex.reconRecords || [],
     relMap: ex.relMap, portraits: ex.portraits || {}, memory: ex.memory || '', pinned: ex.pinnedNote || '',
     chapters: ex.chapters || [], log: ex.log.map((e) => ({ id: e.id, text: e.summary, records: e.records, chapter: e.chapter, folded: e.folded, hc: e.helperChat, hp: e.helperPos })),
   };

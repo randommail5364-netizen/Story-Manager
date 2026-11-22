@@ -2763,6 +2763,8 @@
   // writes the same fact again keeps it; one reworded only a little keeps it too; one reworded
   // more is listed for review, never guessed.
   const sortKey = (reply, r) => [reply, String(r.s).trim().toLowerCase(), r.k, normValue(r.v)].join('|');
+  const QUANTITY_RE = /\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|all|none|neither|either|single|pair|couple|dozen|half|twice|once|several|many|few)\b/gi;
+  const quantityConflict = (a, b) => { const q = (t) => (String(t).toLowerCase().match(QUANTITY_RE) || []).sort().join(' '); return q(a) !== q(b); };
   function sortingFor(chat, reply, r, index) {
     const all = chat.sortings || {};
     const exact = all[sortKey(reply, r)];
@@ -2776,7 +2778,8 @@
       const v = a.size && b.size ? n / Math.max(a.size, b.size) : 0;
       if (v > bestV) { bestV = v; best = d; }
     }
-    if (best && bestV >= 0.8) return { d: best, sure: true };
+    // A close match must also agree on numbers and quantities ("both" / "all three").
+    if (best && bestV >= 0.8 && !quantityConflict(best.v, r.v)) return { d: best, sure: true, reworded: true };
     if (best && bestV >= 0.5) return { d: best, sure: false };
     return null;
   }
@@ -2798,7 +2801,8 @@
       if (d.decision === 'dropped') continue;
       // Decisions the current rules no longer allow (into "where things stand", or "kept") are not applied.
       if (!decisionValid(d)) { out.push(r); continue; }
-      if (d.decision === 'sorted' && d.to) out.push(Object.assign({}, r, { k: d.to.k, t: d.to.t || '', v: d.to.v, label: d.to.label || d.to.k, orig: { k: r.k, t: r.t, v: r.v }, sortedBy: d.key }, d.to.tier ? { tier: d.to.tier, imp: d.to.tier === 'major' } : {}));
+      // On a reworded fact only the kind carries over; the fact keeps its own (new) wording.
+      if (d.decision === 'sorted' && d.to) out.push(Object.assign({}, r, { k: d.to.k, t: d.to.t || '', v: hit.reworded ? (d.to.k === 'progress' || d.to.k === 'done' || d.to.k === 'knows' ? String(d.to.v).match(/^\s*\[[^\]]+\]/)[0] + ' ' + commitText(r.v) : r.v) : d.to.v, label: d.to.label || d.to.k, orig: { k: r.k, t: r.t, v: r.v }, sortedBy: d.key }, d.to.tier ? { tier: d.to.tier, imp: d.to.tier === 'major' } : {}));
       else out.push(Object.assign({}, r, d.decision === 'kept' ? { keptAsIs: true } : {}, { sortDecision: d.decision }));
     }
     Object.defineProperty(chat, '__sortReview', { value: review, configurable: true, enumerable: false, writable: true });

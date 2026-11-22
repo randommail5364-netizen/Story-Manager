@@ -318,6 +318,20 @@ test('a check-up closing a goal must quote its reply, and the quote must involve
   assert.strictEqual(P('- Ilse | done | [tell about Bram] she told Ren (reply 3) quote: "told Ren she had talked to Bram at the market"'), '');
 });
 
+test('a place in a goal is not a person the evidence must name; goals set up together close together', () => {
+  const chat = story([
+    ['- Ilse | goal | [lantern trip] take Ren to the Harrow Market lanterns at dusk', '- Ren | goal | [lanterns with Ilse] go see the Harrow Market lanterns with Ilse at dusk'],
+    [],
+    ['- Ilse | done | [lantern trip] they saw the lanterns together'],
+  ]);
+  chat.log[1].text = 'Ilse and Ren walked under the lanterns at dusk.';
+  lib.buildEntries(chat);
+  const line = '- Ilse | done | [lantern trip] they saw the lanterns (reply 2) quote: "walked under the lanterns at dusk"';
+  assert.strictEqual(lib.closureProblem(chat, lib.parseRecords(line)[0], line), '');
+  const reg = lib.commitState(chat).reg;
+  assert(reg.every((x) => x.state === 'done'), JSON.stringify(reg.map((x) => [x.id, x.state])));
+});
+
 test('profiles: the same trait in other words counts once in the pinned version (newest wording); the full entry keeps all', () => {
   const chat = story([
     ['- Ren | personality | fiercely loyal to his friends, even when it costs him'],

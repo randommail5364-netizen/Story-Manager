@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.51.0
+// @version      3.51.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -2765,6 +2765,26 @@
         else if (ev.k === 'cancelled') { c.state = 'cancelled'; c.doneAt = ev.at; c.how = ev.v; }
         else if (c.state !== 'done' && c.state !== 'cancelled') { if (ev.k === 'postponed') { c.state = 'postponed'; c.note = ev.v; } else c.note = ev.v; }
       }
+      // (Not closed, but long untouched: see below, after goals closed together.)
+    }
+    // Goals set up in the same moment for the same thing close together: when one is done or
+    // cancelled, another open goal from within a few replies that shares its specific words (not
+    // just names) — three of them, or two for the same person — closes with it.
+    {
+      const people = knownPeople(chat);
+      for (const x of reg) people.add(String(x.owner || '').toLowerCase()); // (whoever has a goal is a person)
+      const words = (t) => new Set([...sigWords(t)].filter((w) => !people.has(w.replace(/['’]s$/, ''))));
+      const specNoPeople = (t) => new Set([...specifics(t)].filter((w) => !people.has(w)));
+      const specConflict = (a, b) => { const p = specNoPeople(a), q = specNoPeople(b); return [...p].some((w) => !q.has(w)) && [...q].some((w) => !p.has(w)); };
+      const closed = reg.filter((x) => x.seen && (x.state === 'done' || x.state === 'cancelled') && x.level !== 'arrangement');
+      for (const x of reg) {
+        if (!x.seen || x.state === 'done' || x.state === 'cancelled' || !x.at || x.level === 'arrangement' || x.level === 'none') continue; // (standing agreements never close with something else)
+        const wx = words(x.text);
+        const by = closed.find((c) => { if (!c.at || Math.abs(c.at - x.at) > 3 || !(c.doneAt >= x.at) || specConflict(c.text, x.text)) return false; let m = 0; for (const w of words(c.text)) if (wx.has(w)) m++; return m >= (c.owner === x.owner ? 2 : 3); });
+        if (by) { x.state = by.state; x.doneAt = by.doneAt; x.how = by.how; x.closedWith = by.id; }
+      }
+    }
+    for (const c of reg) {
       // Not closed, but long untouched: probably over (kept, marked; back as soon as it is mentioned).
       if (c.state !== 'done' && c.state !== 'cancelled' && c.level !== 'major' && c.level !== 'arrangement' && c.level !== 'none' && now - (c.lastSeen || 0) >= (c.level === 'routine' ? STALE_ROUTINE : STALE_MINOR)) c.stale = true;
     }
@@ -4124,10 +4144,21 @@
   // says what is done, out of date or now known. Story Manager adds those as
   // facts; nothing is deleted (the full entries keep the history).
   const RECONCILE_EVERY = 10;
+  // A step may cite a reply from shortly before its goal was written down (the keeper often records a goal a few replies late).
+  const EVIDENCE_GAP = 3;
   const GOALS_PER_CHECK = 25;
   // A check-up "done" or "cancelled" for a goal must show its evidence: a quote that really is in
   // the summary of the reply it cites, and that names the other people the goal is about (a
   // completion involves them). Returns why it is refused, or ''.
+  // First names (and aliases) of the story's characters, lower-case.
+  function knownPeople(chat) {
+    const out = new Set();
+    for (const e of chat.entries || []) {
+      if ((e.kind || 'character') !== 'character') continue;
+      for (const n of [e.name].concat(e.aliases || [])) for (const w of String(n || '').split(/\s+/)) if (w.length > 1) out.add(w.toLowerCase().replace(/['’]s$/, ''));
+    }
+    return out;
+  }
   function closureProblem(chat, r, line) {
     const nm = commitName(r.v);
     const c = nm && (chat.commitReg || []).find((x) => secretKeyOf(x.id) === secretKeyOf(nm) || (x.names || []).includes(secretKeyOf(nm)));
@@ -4139,8 +4170,18 @@
     if (!e || !normValue(e.text).includes(normValue(q))) return 'the quote is not in that reply';
     const owner = String(c.who || c.owner || '').toLowerCase();
     const said = (q + ' ' + commitText(r.v)).toLowerCase(); // (not the [name], which may mention them)
-    const others = (String(c.text).match(/\b[A-Z][\p{L}'’-]{2,}\b/gu) || []).map((w) => w.replace(/['’]s$/, '')).filter((w, i, a) => a.indexOf(w) === i && w.toLowerCase() !== owner && !/^(I|The|A|An|He|She|They|His|Her|Their|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/.test(w));
-    const missing = others.find((w) => !said.includes(w.toLowerCase()));
+    // The other people the goal is about: only known characters (not places or things), and
+    // they may be named anywhere in the cited reply, not only in the short quote.
+    // A capitalised word with no entry counts as a person unless it reads like a place or thing
+    // ("from the Hongdae market", "Bay 3", "at Lotte").
+    const people = knownPeople(chat);
+    const things = new Set((chat.entries || []).filter((x) => (x.kind || 'character') !== 'character').flatMap((x) => String(x.name || '').toLowerCase().split(/\s+/)));
+    const looksLikePlace = (w) => new RegExp('\\b(the|at|in|from|on|near|inside)\\s+' + w + '\\b|\\b' + w + '\\s+(\\d|street|market|station|building|hall|park|bay|district|cafe|café|bar|restaurant|hotel|mall|tower|university)', 'i').test(c.text);
+    const PLACE_WORD = /^(street|market|station|building|hall|park|bay|district|cafe|café|bar|restaurant|hotel|mall|tower|university|square|garden|gardens|bridge|river|lake|mountain|temple|palace|castle|village|city|town)$/i;
+    const isPerson = (w) => people.has(w.toLowerCase()) || (!things.has(w.toLowerCase()) && !PLACE_WORD.test(w) && !looksLikePlace(w));
+    const others = (String(c.text).match(/\b[A-Z][\p{L}'’-]{2,}\b/gu) || []).map((w) => w.replace(/['’]s$/, '')).filter((w, i, a) => a.indexOf(w) === i && w.toLowerCase() !== owner && !/^(I|The|A|An|He|She|They|His|Her|Their|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$/.test(w) && isPerson(w));
+    const replyText = (said + ' ' + String(e.text || '')).toLowerCase();
+    const missing = others.find((w) => !replyText.includes(w.toLowerCase()));
     if (missing) return 'the evidence does not mention ' + missing + ', whom the goal is about';
     // …and it must be about the same thing: at least one of the goal's own words (not a name).
     const stem = (w) => w.slice(0, 4);
@@ -4293,7 +4334,7 @@
         else if (r.k === 'knows' && (sec.everyone || sec.knows.some((k) => k.who.toLowerCase() === r.s.toLowerCase()))) skipped.push([line, 'already listed as knowing']);
         else if ((r.k === 'location' || r.k === 'role') && NOT_HOME_RE.test(r.v)) skipped.push([line, 'where they are now, not a home or role']);
         else if (/^(done|cancelled)$/.test(r.k) && closureProblem(chat, r, line)) skipped.push([line, closureProblem(chat, r, line)]);
-        else if (/^(done|cancelled|postponed|progress)$/.test(r.k) && (() => { const nm = commitName(r.v); const c = nm && (chat.commitReg || []).find((x) => secretKeyOf(x.id) === secretKeyOf(nm) || (x.names || []).includes(secretKeyOf(nm))); const n = evidenceReply(line); return c && c.at && n <= c.at; })()) skipped.push([line, 'the evidence is from before the goal existed']);
+        else if (/^(done|cancelled|postponed|progress)$/.test(r.k) && (() => { const nm = commitName(r.v); const c = nm && (chat.commitReg || []).find((x) => secretKeyOf(x.id) === secretKeyOf(nm) || (x.names || []).includes(secretKeyOf(nm))); const n = evidenceReply(line); return c && c.at && (r.k === 'progress' ? n < c.at - EVIDENCE_GAP : n <= c.at); })()) skipped.push([line, 'the evidence is from before the goal existed']);
         else if (have.has(key)) skipped.push([line, 'already applied before']);
         else { have.add(key); got.push(Object.assign(r, { at, run: runId })); applied.push(line); }
       }

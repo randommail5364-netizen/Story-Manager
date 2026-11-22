@@ -332,6 +332,19 @@ test('a place in a goal is not a person the evidence must name; goals set up tog
   assert(reg.every((x) => x.state === 'done'), JSON.stringify(reg.map((x) => [x.id, x.state])));
 });
 
+test('Open Threads from the records: a thread about a finished goal is gone, an open goal shows where it stands, other lines are kept as not checked', () => {
+  const chat = story([
+    ['- Ilse | goal | [lantern trip] take Ren to see the harbour lanterns at dusk', '- Ren | major goal | [find the forger] find who forged the guild seal'],
+    ['- Ren | progress | [find the forger] questioned the ink seller'],
+    ['- Ilse | done | [lantern trip] they saw the harbour lanterns together'],
+  ]);
+  lib.buildEntries(chat);
+  const out = lib.commitState(chat).openThreads('- Ilse still means to take Ren to the harbour lanterns at dusk.\n- A grey cat keeps following Ren through the docks.');
+  assert(!/lantern/.test(out), out);
+  assert(/find who forged the guild seal \[find-the-forger\] \(so far: questioned the ink seller\)/.test(out), out);
+  assert(/grey cat .*\(not checked\)/.test(out), out);
+});
+
 test('profiles: the same trait in other words counts once in the pinned version (newest wording); the full entry keeps all', () => {
   const chat = story([
     ['- Ren | personality | fiercely loyal to his friends, even when it costs him'],

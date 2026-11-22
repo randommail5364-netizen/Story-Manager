@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.51.1
+// @version      3.52.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -639,6 +639,7 @@
     hideHelpers: true, // leave Story Manager's helper chats out of MiniApps' chat lists
     autoEnable: true, // manage new chats automatically
     newFormat: 'facts', // memory format for new stories: 'facts' or 'classic'
+    threadsShown: 'records', // Open Threads in the pinned message: 'records' (built from the goals) or 'keeper' (the keeper's own text)
     momentsShown: 'important', // key moments in the pinned message: 'important' or 'all'
     blockSounds: true, // keep MiniApps' own sounds from taking the phone's audio
     buttonSide: 'right',
@@ -836,7 +837,7 @@
   // it works). The GitHub token, the button position and API keys stay on
   // each device.
   const SHARED_SETTINGS = ['provider', 'model', 'miniappsSlug', 'detail', 'holdBack', 'updateEvery', 'foldEvery', 'chapterSize', 'parallel', 'helperRotate',
-    'injectEvery', 'injectBudget', 'logAttach', 'pinMemory', 'memoryMessage', 'hideHelpers', 'autoEnable', 'newFormat', 'blockSounds', 'momentsShown'];
+    'injectEvery', 'injectBudget', 'logAttach', 'pinMemory', 'memoryMessage', 'hideHelpers', 'autoEnable', 'newFormat', 'blockSounds', 'momentsShown', 'threadsShown'];
   function sharedSettings() {
     const v = {};
     for (const k of SHARED_SETTINGS) if (settings[k] !== undefined) v[k] = settings[k];
@@ -1107,7 +1108,7 @@
     const head = [];
     if (chat.pinned.trim()) head.push('## Must remember\n' + chat.pinned.trim());
     const commits = factsMode(chat) ? commitState(chat) : null;
-    const threads = (t) => tidyBullets(t).split('\n').filter((l) => !(commits && /^\s*[-*•]\s/.test(l) && commits.closedThread(l))).join('\n');
+    const threads = (t) => commits && settings.threadsShown !== 'keeper' ? commits.openThreads(t) : tidyBullets(t).split('\n').filter((l) => !(commits && /^\s*[-*•]\s/.test(l) && commits.closedThread(l))).join('\n');
     const now = ['Current Scene', 'Open Threads'].map((t) => [t, t === 'Open Threads' ? threads(sectionOf(chat.memory, t).trim()) : sectionOf(chat.memory, t).trim()]).filter(([, x]) => x);
     // Any other section the keeper wrote (except the world) belongs to "now" too.
     const others = (chat.memory.match(/^##\s*(.+?)\s*$/gm) || []).map((h) => h.replace(/^##\s*/, '').trim())
@@ -2811,7 +2812,32 @@
       const strong = near.filter(([x, v]) => v >= 0.75 && !conflict(x.text, t));
       return strong.length === 1 ? strong[0][0] : null;
     };
-    return { reg: reg.filter((x) => x.seen), ofRecord, closedThread };
+    // Open Threads built from the records: what is still open and still matters (major goals,
+    // upcoming events, promises, and any open goal one of the keeper's thread lines is about),
+    // each with where it stands now. A keeper line about no goal at all (a mystery, a danger)
+    // is kept as it is, marked "not checked"; one about a goal is replaced by that goal.
+    // (Word stems, so "paint" and "painting" agree; three shared stems are enough on long lines.)
+    const whoSet = new Set([...knownPeople(chat)].concat(reg.map((x) => String(x.owner || '').toLowerCase())));
+    const stems = (t) => new Set([...sigWords(t)].map((w) => w.replace(/['’]s$/, '')).filter((w) => !whoSet.has(w)).map((w) => w.slice(0, 5)));
+    const stemSim = (a, b) => { const x = stems(a), y = stems(b); let n = 0; for (const w of x) if (y.has(w)) n++; return n < 2 ? 0 : n >= 3 ? Math.max(0.4, n / Math.min(x.size, y.size)) : n / Math.min(x.size, y.size); };
+    const noteOf = (v) => String(v || '').replace(/\s*\(repl(?:y|ies)[^)]*\)\s*quote:[\s\S]*$/i, '').replace(/\s*\(repl(?:y|ies)[^)]*\)\s*$/i, '').trim();
+    const openThreads = (prose) => {
+      const live = reg.filter((x) => x.seen && !x.stale && x.state !== 'done' && x.state !== 'cancelled' && x.level !== 'none' && x.level !== 'arrangement'); // (standing agreements have their own place)
+      const pick = new Set(live.filter((x) => x.level === 'major' || x.kind === 'scheduled' || x.kind === 'promise'));
+      const loose = [];
+      for (const l of String(prose || '').split('\n')) {
+        const b = l.match(/^\s*[-*•]\s+(.*)$/);
+        if (!b) continue;
+        const near = reg.filter((x) => x.seen).map((x) => [x, stemSim(x.text, b[1])]).filter(([, v]) => v >= 0.4).sort((a, c) => c[1] - a[1]);
+        if (!near.length) { loose.push('- ' + b[1].replace(/\s*\(not checked\)\s*$/, '') + ' (not checked)'); continue; }
+        for (const [x] of near) if (live.includes(x)) pick.add(x); // (a thread about closed goals is simply over)
+      }
+      const order = { major: 0, minor: 1, arrangement: 2, routine: 3 };
+      const lines = [...pick].sort((a, c) => (order[a.level] ?? 1) - (order[c.level] ?? 1) || (a.at || 0) - (c.at || 0)).map((x) =>
+        '- ' + x.who + ': ' + x.text + ' [' + x.id + ']' + (x.state === 'postponed' ? ' (postponed' + (x.note ? ': ' + noteOf(x.note) : '') + ')' : x.note ? ' (so far: ' + noteOf(x.note) + ')' : ''));
+      return lines.concat(tidyBullets(loose.join('\n')).split('\n').filter(Boolean)).join('\n');
+    };
+    return { reg: reg.filter((x) => x.seen), ofRecord, closedThread, openThreads };
   }
 
   // Fact quality: each record checked against its kind. Nothing is dropped —
@@ -7523,6 +7549,8 @@
     f.newFormat.value = s.newFormat === 'classic' ? 'classic' : 'facts';
     f.momentsShown = el('select', {}, el('option', { value: 'important' }, 'Shortened: what matters for the story (everything stays stored)'), el('option', { value: 'all' }, 'Everything in full'));
     f.momentsShown.value = s.momentsShown === 'all' ? 'all' : 'important';
+    f.threadsShown = el('select', {}, el('option', { value: 'records' }, 'Built from the goals (always matches them)'), el('option', { value: 'keeper' }, "The keeper's own text"));
+    f.threadsShown.value = s.threadsShown === 'keeper' ? 'keeper' : 'records';
     f.buttonSide = el('select', {},
       el('option', { value: 'right' }, 'Bottom right'), el('option', { value: 'left' }, 'Bottom left'),
       el('option', { value: 'top-right' }, 'Top right'), el('option', { value: 'top-left' }, 'Top left'),
@@ -7570,6 +7598,7 @@
       autoEnable: f.autoEnable.checked,
       newFormat: f.newFormat.value,
       momentsShown: f.momentsShown.value,
+      threadsShown: f.threadsShown.value,
       blockSounds: f.blockSounds.checked,
       hideHelpers: f.hideHelpers.checked,
       githubToken: f.githubToken.value.trim(),
@@ -7660,6 +7689,7 @@
       el('div', { class: 'row' }, f.autoEnable, el('label', { for: 'smx-auto' }, 'Automatically manage new chats')),
       el('label', {}, 'Memory format for new stories'), f.newFormat,
       el('label', {}, 'Characters and history in the pinned message'), f.momentsShown,
+      el('label', {}, 'Open Threads in the pinned message'), f.threadsShown,
       el('div', { class: 'row' }, f.blockSounds, el('label', { for: 'smx-sounds' }, 'Block MiniApps\' own sounds (so your music is not paused)')),
       el('div', { class: 'hint' }, 'Stops MiniApps\' ringtones and notification sounds, and keeps its audio channel off until you tap something. Turn off if a MiniApps voice feature stops working.'),
       el('label', {}, 'Button position'), f.buttonSide,

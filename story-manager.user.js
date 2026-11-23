@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.53.1
+// @version      3.53.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -3999,7 +3999,8 @@
   async function readSetupCast(chat, text) {
     const user = 'THE USER\'S FIRST MESSAGE (it sets up the story):\n<<<\n' + String(text).slice(0, 60000) + '\n>>>\n\n' +
       'JOB: CAST. List every person or character this message names (people only: never places, groups, companies, items or the setting). ' +
-      'One per line, exactly "Name | main" for the central characters the story is about, or "Name | side" for the others. Use the name the message uses most. Output only the lines; "NONE" if there are none.';
+      'One per line, exactly "Name | main" or "Name | side". "main" is only for the user\'s own character and the few the story is centred on (usually 1 to 6); ' +
+      'everyone else, including members of a big group or cast who are only listed or described, is "side". Side characters are still characters. Use the name the message uses most. Output only the lines; "NONE" if there are none.';
     const out = cleanOutput(await callLLM(updateSystem(), user));
     checkStop();
     const cast = [];
@@ -4024,6 +4025,7 @@
     try {
       const cast = t ? await readSetupCast(chat, t) : [];
       chat.setupCast = { text: t, cast, at: Date.now() };
+      await saveChat(chat); // (saved now: the update may stop before it saves, and it would be read again)
       logJob(chat, { kind: 'update', label: 'Read the cast from your first message (' + cast.filter((c) => c.main).length + ' main, ' + cast.filter((c) => !c.main).length + ' others)', ok: true, ms: 0 });
     } catch (e) { if (e.stopped) throw e; } // (tried again next update)
   }

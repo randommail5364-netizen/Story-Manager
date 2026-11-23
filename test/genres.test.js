@@ -345,6 +345,14 @@ test('Open Threads from the records: a thread about a finished goal is gone, an 
   assert(/grey cat .*\(not checked\)/.test(out), out);
 });
 
+test('the cast from the first message decides who is a character, even when the facts look like a place', () => {
+  const chat = story([['- Harbour | type | place', '- Harbour | appearance | weathered hands and a grey coat'], ['- Harbour | minor moment | sold Ren a map']]);
+  assert.strictEqual(entry(lib.buildEntries(chat), 'Harbour').kind, 'place');
+  chat.setupCast = { text: 'x', cast: [{ name: 'Harbour', main: true }, { name: 'Ren', main: false }] };
+  chat.entries = [];
+  assert.strictEqual(entry(lib.buildEntries(chat), 'Harbour').kind, 'character');
+});
+
 test('profiles: the same trait in other words counts once in the pinned version (newest wording); the full entry keeps all', () => {
   const chat = story([
     ['- Ren | personality | fiercely loyal to his friends, even when it costs him'],

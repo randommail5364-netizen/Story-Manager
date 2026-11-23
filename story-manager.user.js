@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.52.0
+// @version      3.53.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -3329,7 +3329,8 @@
       const chatGroup = /\b(group chat|chat|channel|forum|server|board)$/i.test(p.name);
       // A "type: place/item" for a person (the keeper describing their apartment) does not make them a place.
       const typedThing = kindWord && /^(place|item|object)$/i.test(kindWord) && personal && p.records.some((r) => /^(personality|likes|relationship|stands|moment|goal|learned)$/.test(r.k));
-      const kind = chatGroup ? 'group' : capsGroup && !kindWord ? 'group' : kindWord && !typedThing ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase()) : typedThing ? 'character'
+      const inCast = !chatGroup && castOf(chat, p);
+      const kind = inCast ? 'character' : chatGroup ? 'group' : capsGroup && !kindWord ? 'group' : kindWord && !typedThing ? ({ person: 'character', object: 'item' }[kindWord.toLowerCase()] || kindWord.toLowerCase()) : typedThing ? 'character'
         : (guessKind(p.name, [], personal ? L.join('\n') : '') || (personal ? 'character' : GROUP_HINT_RE.test(p.name + '\n' + L.join('\n')) || /^[A-Z0-9]{2,6}$/.test(p.name) ? 'group' : (/^(setting|world|story|scene|timeline|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(p.name) ? 'lore' : 'item')));
       const old = before.get(p.name.toLowerCase());
       const pinText = P.join('\n');
@@ -3812,6 +3813,7 @@
     if (busy[id] || compare.running || (!chat.enabled && !force)) return 'skipped';
     // A first read of the chat starts at its beginning: note the greeting.
     if (!chat.processedIds.length && !chat.log.length && msgs.length) chat.greetingId = greetingOf(msgs);
+    if (factsMode(chat)) await ensureSetupCast(chat, msgs).catch((e) => { if (e.stopped) throw e; });
     let todo = unprocessed(chat, msgs);
     // The newest replies wait: the user often has them redone.
     const hold = Math.max(0, Number(settings.holdBack) || 0);
@@ -3979,9 +3981,57 @@
   // per update.
   const PORTRAIT_MIN_FACTS = 12;
   const PORTRAITS_PER_UPDATE = 2;
+  // The cast named in the user's first message (the story setup): who is a character, and
+  // who the main ones are. Only for Story Manager's own decisions; nothing of it is pinned.
+  function castWords(n) { return String(n || '').toLowerCase().replace(/['’]s\b/g, '').split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1); }
+  function castOf(chat, e) {
+    const cast = (chat.setupCast && chat.setupCast.cast) || [];
+    const names = [e.name].concat(e.aliases || []).map((n) => castWords(n).join(' '));
+    return cast.find((c) => { const k = castWords(c.name).join(' '); return k && names.some((n) => n && (n === k || k.split(' ').includes(n))); }) || null;
+  }
   function mainCharacters(chat) {
-    return chat.entries.filter((e) => e.fromFacts && (e.kind || 'character') === 'character' && (e.records || 0) >= PORTRAIT_MIN_FACTS)
+    const byFacts = chat.entries.filter((e) => e.fromFacts && (e.kind || 'character') === 'character' && (e.records || 0) >= PORTRAIT_MIN_FACTS)
       .sort((a, b) => (b.records || 0) - (a.records || 0)).slice(0, 8);
+    // The setup's main characters always count, once the story has said something about them.
+    const fromSetup = chat.entries.filter((e) => e.fromFacts && (e.kind || 'character') === 'character' && (e.records || 0) >= 1 && (castOf(chat, e) || {}).main);
+    return fromSetup.concat(byFacts.filter((e) => !fromSetup.includes(e)));
+  }
+  async function readSetupCast(chat, text) {
+    const user = 'THE USER\'S FIRST MESSAGE (it sets up the story):\n<<<\n' + String(text).slice(0, 60000) + '\n>>>\n\n' +
+      'JOB: CAST. List every person or character this message names (people only: never places, groups, companies, items or the setting). ' +
+      'One per line, exactly "Name | main" for the central characters the story is about, or "Name | side" for the others. Use the name the message uses most. Output only the lines; "NONE" if there are none.';
+    const out = cleanOutput(await callLLM(updateSystem(), user));
+    checkStop();
+    const cast = [];
+    for (const l of out.split('\n')) {
+      const m = l.replace(/^\s*[-*•\d.)]+\s*/, '').match(/^([^|]{2,60}?)\s*\|\s*(main|side)\b/i);
+      if (m && !cast.some((c) => c.name.toLowerCase() === m[1].trim().toLowerCase())) cast.push({ name: m[1].trim().replace(/^["'*]+|["'*]+$/g, ''), main: /main/i.test(m[2]) });
+    }
+    return cast;
+  }
+  // Once per story (and again if the first message is edited): read the cast from it.
+  async function ensureSetupCast(chat, msgs) {
+    let first = firstUserMessage(chat, msgs);
+    if (!first && !(chat.setupCast && chat.setupCast.text)) {
+      try { first = firstUserMessage(chat, await fetchMessages(chat.id, { cache: false, mode: 'full' })); } catch (e) { return; }
+    }
+    if (!first) { if (!chat.setupCast) chat.setupCast = { text: '', cast: [] }; return; }
+    const t = String(first.text || '').trim();
+    if (chat.setupCast && chat.setupCast.text === t) return;
+    try {
+      const cast = t ? await readSetupCast(chat, t) : [];
+      chat.setupCast = { text: t, cast, at: Date.now() };
+      logJob(chat, { kind: 'update', label: 'Read the cast from your first message (' + cast.filter((c) => c.main).length + ' main, ' + cast.filter((c) => !c.main).length + ' others)', ok: true, ms: 0 });
+    } catch (e) { if (e.stopped) throw e; } // (tried again next update)
+  }
+  // The user's first message: the first one in the chat, if the list starts at the chat's start.
+  function firstUserMessage(chat, msgs) {
+    const list = (msgs || []).filter((m) => m.role === 'user' || m.role === 'assistant');
+    if (!list.length) return null;
+    const startsAtStart = list[0].role === 'user' || list[0].id === chat.greetingId || list[0].id === greetingOf(msgs);
+    if (!startsAtStart) return null;
+    const u = list.find((m) => m.role === 'user' && String(m.text || '').replace(MEM_BLOCK_RE, '').trim());
+    return u ? { id: u.id, text: String(u.text).replace(MEM_BLOCK_RE, '') } : null;
   }
   function portraitDue(chat, e) {
     const p = (chat.portraits || {})[e.name.toLowerCase()];
@@ -4179,6 +4229,7 @@
   // First names (and aliases) of the story's characters, lower-case.
   function knownPeople(chat) {
     const out = new Set();
+    for (const c of (chat.setupCast && chat.setupCast.cast) || []) for (const w of castWords(c.name)) out.add(w);
     for (const e of chat.entries || []) {
       if ((e.kind || 'character') !== 'character') continue;
       for (const n of [e.name].concat(e.aliases || [])) for (const w of String(n || '').split(/\s+/)) if (w.length > 1) out.add(w.toLowerCase().replace(/['’]s$/, ''));
@@ -7457,7 +7508,7 @@
       log: chat.log.map((e, i) => ({ reply: i + 1, id: e.id, v: e.v || '', chapter: e.chapter, folded: !!e.folded, summary: e.text, facts: e.facts || '', records: e.records || [], helperChat: e.hc || '', helperPos: e.hp || 0 })),
       manualRecords: chat.manualRecords || [], hiddenRecords: chat.hiddenRecords || [],
       reconRecords: chat.reconRecords || [], reconReport: chat.reconReport || null, reconAt: chat.reconAt || 0,
-      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], commitAlias: chat.commitAlias || {}, commitTier: chat.commitTier || {}, sortings: chat.sortings || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
+      secretAlias: chat.secretAlias || {}, commitReg: chat.commitReg || [], commitAlias: chat.commitAlias || {}, commitTier: chat.commitTier || {}, setupCast: chat.setupCast || null, sortings: chat.sortings || {}, keptMoments: chat.keptMoments || [], ignored: chat.ignored || [],
       relMap: chat.relMap || null, portraits: chat.portraits || {},
       chapters: (chat.chapters || []).map((c) => ({ title: c.title, text: c.text, short: c.short || '' })),
       memory: chat.memory || '', pinnedNote: chat.pinned || '',

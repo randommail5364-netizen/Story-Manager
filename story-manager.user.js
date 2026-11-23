@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.53.0
+// @version      3.53.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -4013,6 +4013,9 @@
   async function ensureSetupCast(chat, msgs) {
     let first = firstUserMessage(chat, msgs);
     if (!first && !(chat.setupCast && chat.setupCast.text)) {
+      // Reading the whole chat is slow on a long story: at most once a day when it fails.
+      if (Date.now() - (chat.setupCastTried || 0) < 86400000) return;
+      chat.setupCastTried = Date.now();
       try { first = firstUserMessage(chat, await fetchMessages(chat.id, { cache: false, mode: 'full' })); } catch (e) { return; }
     }
     if (!first) { if (!chat.setupCast) chat.setupCast = { text: '', cast: [] }; return; }

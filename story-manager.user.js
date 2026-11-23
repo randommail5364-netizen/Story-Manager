@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.53.4
+// @version      3.54.0
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -659,7 +659,6 @@
   const progress = {};          // id -> { done, total } requests of the running update
   const stopRequested = {};     // id -> true when the user tapped Stop
   let activeChatId = null;      // chat whose memory is being updated right now
-  const AUTO_MAX_REQUESTS = 2;  // bigger catch-ups only run when the user asks
 
   function stopError() {
     const e = new Error('Stopped');
@@ -5748,17 +5747,6 @@
   // Story Manager's own request text (see callMiniAppsOnce).
   const OWN_REQUEST_RE = /^Request [0-9a-f]{8}\. This is a new, separate task/;
 
-  // The messages an update would summarise now: the newest "hold back" replies (and the
-  // user's messages just before them) wait in case they are redone.
-  function withoutHeld(todo, msgs) {
-    const hold = Math.max(0, Number(settings.holdBack) || 0);
-    if (!hold) return todo;
-    const replies = msgs.filter((m) => m.role === 'assistant');
-    if (replies.length < hold) return [];
-    let cut = msgs.indexOf(replies[replies.length - hold]);
-    while (cut > 0 && msgs[cut - 1].role === 'user') cut--;
-    return todo.filter((m) => msgs.indexOf(m) < cut);
-  }
   async function syncChat(id, msgs, { final }) {
     if (helperIds.has(id)) return;
     // A chat where everything the "user" wrote is a Story Manager request is a
@@ -5792,19 +5780,8 @@
       usable = usable.slice(-FIRST_RUN_MESSAGES);
       toast('Story memory started from the latest messages. Tap 📖 → Rebuild to read the whole chat.');
     }
-    // Catching up on many messages takes many requests: only when asked. (Counting only what
-    // this update would really summarise: the newest replies held back are not part of it.)
-    const todo = withoutHeld(unprocessed(chat, usable), usable);
-    const plan = estimate(chat, todo);
-    const requests = plan.total;
-    if (plan.summaries > AUTO_MAX_REQUESTS) {
-      const was = chat.backlog && chat.backlog.messages;
-      chat.backlog = { messages: todo.length, requests };
-      await saveChat(chat);
-      if (was !== todo.length) toast(todo.length + ' messages are not in the story memory yet. Tap 📖 → Update now to read them (about ' + requests + ' requests).');
-      if (id === currentId) renderPanel();
-      return;
-    }
+    // Auto-manage on: every catch-up runs by itself, however big.
+    chat.backlog = null;
     await updateMemory(id, usable);
   }
 

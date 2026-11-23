@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.53.2
+// @version      3.53.3
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -3813,7 +3813,6 @@
     if (busy[id] || compare.running || (!chat.enabled && !force)) return 'skipped';
     // A first read of the chat starts at its beginning: note the greeting.
     if (!chat.processedIds.length && !chat.log.length && msgs.length) chat.greetingId = greetingOf(msgs);
-    if (factsMode(chat)) await ensureSetupCast(chat, msgs).catch((e) => { if (e.stopped) throw e; });
     let todo = unprocessed(chat, msgs);
     // The newest replies wait: the user often has them redone.
     const hold = Math.max(0, Number(settings.holdBack) || 0);
@@ -3869,6 +3868,8 @@
       }
     };
     try {
+      // The cast from the first message, once (inside the run, so two updates never read it at once).
+      if (factsMode(chat)) await ensureSetupCast(chat, msgs).catch((e) => { if (e.stopped) throw e; });
       // 0. Changed replies get a new summary in place of the old one.
       if (redo.length) {
         const got = await job('summarise', 'Summarised ' + redo.length + ' changed repl' + (redo.length === 1 ? 'y' : 'ies') + ' again',

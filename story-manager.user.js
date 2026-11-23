@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.54.0
+// @version      3.54.1
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -5719,7 +5719,6 @@
     return cache ? remember(id, msgs) : msgs;
   }
 
-  const FIRST_RUN_MESSAGES = 40;
 
   // How many messages the chat has (a regenerated reply's versions count once).
   // AI replies (newest version of each) that have no summary yet: the held
@@ -5774,11 +5773,12 @@
     if (id === currentId) renderPanel();
     if (fresh < Math.max(1, Number(settings.updateEvery) || 1)) return;
     if (learned && done.size && usable.some((m) => done.has(m.id))) usable = await sinceRead();
-    // A chat seen for the first time starts from its recent messages; the
-    // whole history is read only when asked (Rebuild), as it can be long.
-    if (!chat.processedIds.length && !chat.memory.trim() && usable.length > FIRST_RUN_MESSAGES) {
-      usable = usable.slice(-FIRST_RUN_MESSAGES);
-      toast('Story memory started from the latest messages. Tap 📖 → Rebuild to read the whole chat.');
+    // A chat seen for the first time is read from its very start (the site only loads the newest messages).
+    if (!chat.processedIds.length && !chat.memory.trim() && learned) {
+      try {
+        const all = await fetchMessages(id, { mode: 'full' });
+        if (all.length > usable.length) usable = final || all[all.length - 1].role !== 'assistant' ? all : all.slice(0, -1);
+      } catch (e) { /* the loaded messages are used */ }
     }
     // Auto-manage on: every catch-up runs by itself, however big.
     chat.backlog = null;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MiniApps Story Manager
 // @namespace    https://github.com/randommail5364-netizen/Story-Manager
-// @version      3.54.1
+// @version      3.54.2
 // @description  Keeps an automatic "story memory" for every MiniApps.ai chat and quietly feeds it back to the AI so it never forgets important facts.
 // @downloadURL  https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
 // @updateURL    https://raw.githubusercontent.com/randommail5364-netizen/Story-Manager/claude/brave-mayer-u1eutx/story-manager.user.js
@@ -47,9 +47,14 @@
   // If anything stops the script from starting, say where instead of failing silently.
   let stage = 'starting';
   let uiStarted = false;
-  setTimeout(() => {
-    if (!uiStarted) alert('Story Manager did not finish starting (stuck at: ' + stage + '). Please send this message to Claude.');
+  // (A slow page — common on phones — is not a fault: it is only reported if the page itself
+  // loaded and Story Manager still did not start.)
+  const startCheck = (n) => setTimeout(() => {
+    if (uiStarted) return;
+    if (stage === 'waiting for the page to load' && n < 20) { startCheck(n + 1); return; }
+    alert('Story Manager did not finish starting (stuck at: ' + stage + '). Please send this message to Claude.');
   }, 15000);
+  startCheck(0);
 
   const MEM_START = '[[STORY-MEMORY]]';
   const MEM_END = '[[/STORY-MEMORY]]';
@@ -7800,6 +7805,9 @@
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', startUI);
     window.addEventListener('load', startUI);
+    // The button only needs the page's body, not the whole page: on a phone the page can take
+    // a long time to finish loading, so start as soon as the body is there.
+    const early = setInterval(() => { if (startCalled) clearInterval(early); else if (document.body) { clearInterval(early); startUI(); } }, 300);
   } else {
     startUI();
   }
